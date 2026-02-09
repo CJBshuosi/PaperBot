@@ -131,30 +131,81 @@ function StatCard({ label, value, icon }: { label: string; value: string | numbe
 function buildDagStatuses(args: {
   phase: WorkflowPhase
   hasError: boolean
-  llmEnabled: boolean
-  judgeEnabled: boolean
-  reportReady: boolean
+  llmIntent: boolean
+  judgeIntent: boolean
+  hasSearchData: boolean
+  hasReportData: boolean
+  hasLLMData: boolean
+  hasJudgeData: boolean
+  schedulerDone: boolean
 }): Record<string, StepStatus> {
-  const { phase, hasError, llmEnabled, judgeEnabled, reportReady } = args
-  const base: Record<string, StepStatus> = {
-    source: "pending",
-    normalize: "pending",
-    search: "pending",
-    rank: "pending",
-    llm: llmEnabled ? "pending" : "skipped",
-    judge: judgeEnabled ? "pending" : "skipped",
-    report: "pending",
-    scheduler: "pending",
+  const {
+    phase,
+    hasError,
+    llmIntent,
+    judgeIntent,
+    hasSearchData,
+    hasReportData,
+    hasLLMData,
+    hasJudgeData,
+    schedulerDone,
+  } = args
+
+  const statuses: Record<string, StepStatus> = {
+    source: hasSearchData ? "done" : "pending",
+    normalize: hasSearchData ? "done" : "pending",
+    search: hasSearchData ? "done" : "pending",
+    rank: hasSearchData ? "done" : "pending",
+    llm: "pending",
+    judge: "pending",
+    report: hasReportData ? "done" : "pending",
+    scheduler: schedulerDone ? "done" : "pending",
   }
-  if (phase === "searching") return { ...base, source: "done", normalize: "done", search: "running", rank: "running" }
-  if (phase === "searched") return { ...base, source: "done", normalize: "done", search: "done", rank: "done" }
-  if (phase === "reporting")
-    return { ...base, source: "done", normalize: "done", search: "done", rank: "done", llm: llmEnabled ? "running" : "skipped", judge: judgeEnabled ? "running" : "skipped", report: "running" }
-  if (phase === "reported")
-    return { ...base, source: "done", normalize: "done", search: "done", rank: "done", llm: llmEnabled ? "done" : "skipped", judge: judgeEnabled ? "done" : "skipped", report: reportReady ? "done" : "pending", scheduler: reportReady ? "done" : "pending" }
-  if (phase === "error" || hasError)
-    return { ...base, source: "done", normalize: "done", search: "error", rank: "error", llm: llmEnabled ? "error" : "skipped", judge: judgeEnabled ? "error" : "skipped", report: "error", scheduler: "pending" }
-  return base
+
+  if (phase === "searching") {
+    statuses.source = "done"
+    statuses.normalize = "done"
+    statuses.search = "running"
+    statuses.rank = "running"
+  }
+
+  if (phase === "reporting") {
+    statuses.source = "done"
+    statuses.normalize = "done"
+    statuses.search = "done"
+    statuses.rank = "done"
+    statuses.report = "running"
+  }
+
+  if (hasLLMData) {
+    statuses.llm = "done"
+  } else if (phase === "reporting" && llmIntent) {
+    statuses.llm = "running"
+  } else if (hasReportData) {
+    statuses.llm = "skipped"
+  }
+
+  if (hasJudgeData) {
+    statuses.judge = "done"
+  } else if (phase === "reporting" && judgeIntent) {
+    statuses.judge = "running"
+  } else if (hasReportData) {
+    statuses.judge = "skipped"
+  }
+
+  if (phase === "error" || hasError) {
+    if (!hasSearchData) {
+      statuses.search = "error"
+      statuses.rank = "error"
+    }
+    if (!hasReportData) {
+      statuses.report = "error"
+    }
+    if (llmIntent && !hasLLMData) statuses.llm = "error"
+    if (judgeIntent && !hasJudgeData) statuses.judge = "error"
+  }
+
+  return statuses
 }
 
 /* ── Paper Card ───────────────────────────────────────── */
@@ -392,12 +443,17 @@ export default function TopicWorkflowDashboard() {
   const [useArxiv, setUseArxiv] = useState(true)
   const [useVenue, setUseVenue] = useState(true)
   const [usePapersCool, setUsePapersCool] = useState(true)
-  const [enableLLM, setEnableLLM] = useState(false)
+  const persistedDailyResult = useWorkflowStore.getState().dailyResult
+  const [enableLLM, setEnableLLM] = useState(
+    () => Boolean(persistedDailyResult?.report?.llm_analysis?.enabled),
+  )
   const [useSummary, setUseSummary] = useState(true)
   const [useTrends, setUseTrends] = useState(true)
   const [useInsight, setUseInsight] = useState(true)
   const [useRelevance, setUseRelevance] = useState(false)
-  const [enableJudge, setEnableJudge] = useState(false)
+  const [enableJudge, setEnableJudge] = useState(
+    () => Boolean(persistedDailyResult?.report?.judge?.enabled),
+  )
   const [judgeRuns, setJudgeRuns] = useState(1)
   const [judgeMaxItems, setJudgeMaxItems] = useState(5)
   const [judgeTokenBudget, setJudgeTokenBudget] = useState(0)
@@ -426,9 +482,34 @@ export default function TopicWorkflowDashboard() {
     [useInsight, useRelevance, useSummary, useTrends],
   )
 
+  const hasSearchData = Boolean((searchResult?.items?.length || 0) > 0 || dailyResult?.report)
+  const hasReportData = Boolean(dailyResult?.report)
+  const hasLLMData = Boolean(
+    (dailyResult?.report?.llm_analysis?.daily_insight || "").trim() ||
+      (dailyResult?.report?.llm_analysis?.query_trends?.length || 0) > 0,
+  )
+  const hasJudgeData = Boolean(
+    dailyResult?.report?.judge?.enabled ||
+      (dailyResult?.report?.queries || []).some((query) =>
+        (query.top_items || []).some((item) => (item.judge?.overall || 0) > 0),
+      ),
+  )
+  const schedulerDone = Boolean(dailyResult?.markdown_path)
+
   const dagStatuses = useMemo(
-    () => buildDagStatuses({ phase, hasError: Boolean(error), llmEnabled: enableLLM, judgeEnabled: enableJudge, reportReady: Boolean(dailyResult?.report) }),
-    [phase, error, enableLLM, enableJudge, dailyResult],
+    () =>
+      buildDagStatuses({
+        phase,
+        hasError: Boolean(error),
+        llmIntent: enableLLM,
+        judgeIntent: enableJudge,
+        hasSearchData,
+        hasReportData,
+        hasLLMData,
+        hasJudgeData,
+        schedulerDone,
+      }),
+    [phase, error, enableLLM, enableJudge, hasSearchData, hasReportData, hasLLMData, hasJudgeData, schedulerDone],
   )
 
   const allPapers = useMemo(() => {
@@ -450,6 +531,10 @@ export default function TopicWorkflowDashboard() {
   }, [dailyResult, searchResult, sortBy])
 
   const judgedPapersCount = allPapers.filter((p) => (p.judge?.overall ?? 0) > 0).length
+  const hasInsightData = Boolean((dailyResult?.report?.llm_analysis?.daily_insight || "").trim())
+  const hasTrendData = (dailyResult?.report?.llm_analysis?.query_trends || []).length > 0
+  const hasLLMContent = hasInsightData || hasTrendData
+  const hasJudgeContent = hasJudgeData || judgedPapersCount > 0
 
   const queryHighlightRows = useMemo(() => {
     const rows: Array<{
@@ -540,16 +625,136 @@ export default function TopicWorkflowDashboard() {
 
       for await (const event of readSSE(res.body)) {
         if (event.type === "progress") {
-          const d = (event.data || {}) as { phase?: string; message?: string }
+          const d = (event.data || {}) as { phase?: string; message?: string; total?: number }
           store.addAnalyzeLog(`[${d.phase || "step"}] ${d.message || "running"}`)
-        } else if (event.type === "trend") {
-          const d = (event.data || {}) as { query?: string; done?: number; total?: number }
-          store.addAnalyzeLog(`trend ${d.done}/${d.total}: ${d.query}`)
-        } else if (event.type === "judge") {
-          const d = (event.data || {}) as { title?: string; done?: number; total?: number }
+          if (d.phase === "judge" && (d.total || 0) > 0) {
+            setAnalyzeProgress({ done: 0, total: d.total || 0 })
+          }
+          continue
+        }
+
+        if (event.type === "trend") {
+          const d = (event.data || {}) as {
+            query?: string
+            analysis?: string
+            done?: number
+            total?: number
+          }
+          store.addAnalyzeLog(`trend ${d.done || 0}/${d.total || 0}: ${d.query || "query"}`)
+          const trendQuery = d.query
+          const trendAnalysis = d.analysis
+          if (trendQuery && trendAnalysis) {
+            store.updateDailyResult((prev) => {
+              const llmAnalysis = prev.report.llm_analysis || {
+                enabled: true,
+                features: [],
+                daily_insight: "",
+                query_trends: [],
+              }
+              const features = new Set(llmAnalysis.features || [])
+              features.add("trends")
+              const trendList = [...(llmAnalysis.query_trends || [])]
+              const existingIndex = trendList.findIndex((item) => item.query === trendQuery)
+              if (existingIndex >= 0) {
+                trendList[existingIndex] = { query: trendQuery, analysis: trendAnalysis }
+              } else {
+                trendList.push({ query: trendQuery, analysis: trendAnalysis })
+              }
+              return {
+                ...prev,
+                report: {
+                  ...prev.report,
+                  llm_analysis: {
+                    ...llmAnalysis,
+                    enabled: true,
+                    features: Array.from(features),
+                    query_trends: trendList,
+                  },
+                },
+              }
+            })
+          }
+          continue
+        }
+
+        if (event.type === "judge") {
+          const d = (event.data || {}) as {
+            query?: string
+            title?: string
+            judge?: SearchItem["judge"]
+            done?: number
+            total?: number
+          }
           setAnalyzeProgress({ done: d.done || 0, total: d.total || 0 })
-          store.addAnalyzeLog(`judge ${d.done}/${d.total}: ${d.title}`)
-        } else if (event.type === "result") {
+          store.addAnalyzeLog(`judge ${d.done || 0}/${d.total || 0}: ${d.title || "paper"}`)
+
+          if (d.query && d.title && d.judge) {
+            store.updateDailyResult((prev) => {
+              const sourceQueries = prev.report.queries || []
+              let matched = false
+              const nextQueries = sourceQueries.map((query) => {
+                const queryName = query.normalized_query || query.raw_query || ""
+                if (queryName !== d.query) {
+                  return query
+                }
+                const nextItems = (query.top_items || []).map((item) => {
+                  if (item.title === d.title) {
+                    matched = true
+                    return { ...item, judge: d.judge }
+                  }
+                  return item
+                })
+                return { ...query, top_items: nextItems }
+              })
+
+              if (!matched) {
+                const fallbackQueries = nextQueries.map((query) => {
+                  if (matched) {
+                    return query
+                  }
+                  const nextItems = (query.top_items || []).map((item) => {
+                    if (!matched && item.title === d.title) {
+                      matched = true
+                      return { ...item, judge: d.judge }
+                    }
+                    return item
+                  })
+                  return { ...query, top_items: nextItems }
+                })
+                return {
+                  ...prev,
+                  report: {
+                    ...prev.report,
+                    queries: fallbackQueries,
+                  },
+                }
+              }
+
+              return {
+                ...prev,
+                report: {
+                  ...prev.report,
+                  queries: nextQueries,
+                },
+              }
+            })
+          }
+          continue
+        }
+
+        if (event.type === "judge_done") {
+          const d = (event.data || {}) as DailyResult["report"]["judge"]
+          store.updateDailyResult((prev) => ({
+            ...prev,
+            report: {
+              ...prev.report,
+              judge: d || prev.report.judge,
+            },
+          }))
+          continue
+        }
+
+        if (event.type === "result") {
           const d = (event.data || {}) as { report?: DailyResult["report"]; markdown?: string }
           if (d.report) {
             store.updateDailyResult((prev) => ({
@@ -675,7 +880,7 @@ export default function TopicWorkflowDashboard() {
         </CardHeader>
         {dagOpen && (
           <CardContent className="pt-0">
-            <WorkflowDagView statuses={dagStatuses} queriesCount={queries.length} hitCount={searchResult?.summary?.total_query_hits ?? 0} uniqueCount={searchResult?.summary?.unique_items ?? 0} llmEnabled={enableLLM} judgeEnabled={enableJudge} />
+            <WorkflowDagView statuses={dagStatuses} queriesCount={queries.length} hitCount={searchResult?.summary?.total_query_hits ?? dailyResult?.report?.stats?.total_query_hits ?? 0} uniqueCount={searchResult?.summary?.unique_items ?? dailyResult?.report?.stats?.unique_items ?? 0} llmEnabled={enableLLM || hasLLMData} judgeEnabled={enableJudge || hasJudgeData} />
           </CardContent>
         )}
       </Card>
@@ -728,16 +933,16 @@ export default function TopicWorkflowDashboard() {
 
         {/* Insights */}
         <TabsContent value="insights" className="mt-4 space-y-4">
-          {dailyResult?.report?.llm_analysis?.daily_insight ? (
+          {hasInsightData ? (
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm">Daily Insight</CardTitle></CardHeader>
               <CardContent>
                 <div className="prose prose-sm max-w-none dark:prose-invert text-sm">
-                  <Markdown remarkPlugins={[remarkGfm]}>{dailyResult.report.llm_analysis.daily_insight}</Markdown>
+                  <Markdown remarkPlugins={[remarkGfm]}>{dailyResult?.report?.llm_analysis?.daily_insight || ""}</Markdown>
                 </div>
               </CardContent>
             </Card>
-          ) : isLoading ? (
+          ) : loadingAnalyze ? (
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm">Daily Insight (Generating...)</CardTitle></CardHeader>
               <CardContent className="space-y-2">
@@ -746,13 +951,12 @@ export default function TopicWorkflowDashboard() {
                 <div className="h-3 w-9/12 animate-pulse rounded bg-muted" />
               </CardContent>
             </Card>
-          ) : (
-            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Enable LLM Analysis and run DailyPaper to see insights.</div>
-          )}
-          {(dailyResult?.report?.llm_analysis?.query_trends || []).length > 0 ? (
+          ) : null}
+
+          {hasTrendData ? (
             <div className="space-y-3">
               <h3 className="text-sm font-semibold">Query Trend Analysis</h3>
-              {dailyResult!.report.llm_analysis!.query_trends!.map((trend, idx) => (
+              {(dailyResult?.report?.llm_analysis?.query_trends || []).map((trend, idx) => (
                 <Card key={`${trend.query}-${idx}`}>
                   <CardHeader className="pb-2"><CardTitle className="text-sm">{trend.query}</CardTitle></CardHeader>
                   <CardContent>
@@ -763,7 +967,7 @@ export default function TopicWorkflowDashboard() {
                 </Card>
               ))}
             </div>
-          ) : isLoading && enableLLM && useTrends ? (
+          ) : loadingAnalyze ? (
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm">Query Trend Analysis (Generating...)</CardTitle></CardHeader>
               <CardContent className="space-y-2">
@@ -773,6 +977,12 @@ export default function TopicWorkflowDashboard() {
               </CardContent>
             </Card>
           ) : null}
+
+          {!hasLLMContent && !loadingAnalyze && (
+            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+              Run DailyPaper with LLM Analysis enabled, or run Analyze.
+            </div>
+          )}
         </TabsContent>
 
         {/* Judge */}
@@ -801,7 +1011,7 @@ export default function TopicWorkflowDashboard() {
             {allPapers.filter((p) => (p.judge?.overall ?? 0) > 0).sort((a, b) => (b.judge?.overall ?? 0) - (a.judge?.overall ?? 0)).map((item, idx) => (
               <PaperCard key={`judge-${item.title}-${idx}`} item={item} query={(item as SearchItem & { _query?: string })._query} onOpenDetail={(p) => setSelectedPaper(p)} />
             ))}
-            {judgedPapersCount === 0 && (isLoading && enableJudge ? (
+            {!hasJudgeContent && (loadingAnalyze ? (
               Array.from({ length: 2 }).map((_, idx) => (
                 <div key={`judge-skeleton-${idx}`} className="rounded-lg border p-4">
                   <div className="h-4 w-3/4 animate-pulse rounded bg-muted" />
@@ -810,7 +1020,7 @@ export default function TopicWorkflowDashboard() {
                 </div>
               ))
             ) : (
-              <div className="col-span-2 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Enable LLM Judge and run Analyze to see judge results.</div>
+              <div className="col-span-2 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Run DailyPaper with Judge enabled, or run Analyze to see judge results.</div>
             ))}
           </div>
           {analyzeLog.length > 0 && (
