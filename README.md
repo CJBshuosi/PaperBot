@@ -321,7 +321,8 @@ DB 持久化（统一主数据模型 Paper/Scholar/Event/Run）、任务队列/�
 
 | 文档 | 说明 |
 |------|------|
-| [`docs/PLAN.md`](docs/PLAN.md) | 总体路线图与详细评估 |
+| [`docs/ROADMAP_TODO.md`](docs/ROADMAP_TODO.md) | 功能规划与迭代清单（对标 HF/AlphaXiv） |
+| [`docs/PLAN.md`](docs/PLAN.md) | 架构评估与重构计划 |
 | [`docs/PAPERSCOOL_WORKFLOW.md`](docs/PAPERSCOOL_WORKFLOW.md) | Topic Workflow 端到端流程与配置 |
 | [`docs/DEEPCODE_TODO.md`](docs/DEEPCODE_TODO.md) | Paper2Code 迭代清单 |
 | [`docs/memory.md`](docs/memory.md) | 记忆系统设计文档 |
