@@ -80,7 +80,6 @@ class LogFiles(metaclass=_LogFilesMeta):
 
     @classmethod
     def _load(cls) -> None:
-        """Load log file paths from config file."""
         if cls._loaded:
             return
 
