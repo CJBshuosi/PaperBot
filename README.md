@@ -9,9 +9,9 @@
 | 模块 | 说明 |
 |------|------|
 | **Topic Search** | 多主题聚合检索，支持 papers.cool + arXiv API + Hugging Face Daily Papers 三数据源，跨 query/branch 去重与评分排序，`min_score` 质量过滤 |
-| **DailyPaper** | 日报生成（Markdown/JSON），可选 LLM 增强（摘要/趋势/洞察/相关性），支持定时推送（Email/Slack/钉钉） |
-| **LLM-as-Judge** | 5 维评分（Relevance/Novelty/Rigor/Impact/Clarity）+ 推荐分级（must_read/worth_reading/skim/skip），Token Budget 控制，多轮校准 |
-| **Analyze SSE** | Judge + Trend 分析通过 SSE 实时流式推送，前端增量渲染（逐张 Judge 卡片 / 逐条 Trend 分析） |
+| **DailyPaper** | 日报生成（Markdown/JSON），SSE 实时流式推送全流程进度，可选 LLM 增强（摘要/趋势/洞察/相关性），Judge 评分后自动过滤低质论文，支持定时推送（Email/Slack/钉钉） |
+| **LLM-as-Judge** | 5 维评分（Relevance/Novelty/Rigor/Impact/Clarity）+ 推荐分级（must_read/worth_reading/skim/skip），Token Budget 控制，多轮校准，评分后自动过滤 skip/skim 论文 |
+| **Analyze SSE** | Judge + Trend 分析通过 SSE 实时流式推送，前端增量渲染（逐张 Judge 卡片 / 逐条 Trend 分析），完整 Judge 日志保留 |
 | **学者追踪** | 定期监测学者论文，多 Agent 协作（Research/Code/Quality/Reviewer），PIS 影响力评分（引用速度、趋势动量） |
 | **深度评审** | 模拟同行评审（初筛→深度批评→决策），输出 Summary/Strengths/Weaknesses/Novelty Score |
 | **Paper2Code** | 论文到代码骨架（Planning→Analysis→Generation→Verification），自愈调试，Docker/E2B 沙箱执行 |
@@ -81,6 +81,24 @@ Input Queries ──→  ├─── arXiv API (relevance sort)
                    ├── Save to disk / Push to channels
                    └── Web UI (DAG + Tabs: Papers / Insights / Judge)
 ```
+
+### DailyPaper SSE 流式管线
+
+当启用 LLM 分析或 Judge 评分时，`/daily` 端点返回 SSE 流式响应，前端实时显示每个阶段的进度：
+
+```
+Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save → Notify → Result
+  │          │               │                │            │
+  │          │               │                │            └─ 移除 skip/skim 论文
+  │          │               │                └─ 逐篇评分，实时推送 judge 事件
+  │          │               └─ 逐篇摘要 + 趋势分析 + 洞察
+  │          └─ 构建报告结构
+  └─ 多源检索 + 去重 + 评分
+```
+
+**Post-Judge 过滤**：Judge 评分完成后，自动移除推荐等级为 `skip` 和 `skim` 的论文，只保留 `must_read` 和 `worth_reading` 的论文。完整的 Judge 评分日志保留在 `report.filter.log` 中。
+
+**前端配置持久化**：所有功能开关（LLM/Judge/数据源/邮箱等）默认全部启用，保存在浏览器 localStorage 中，刷新页面不会丢失。
 
 ## 界面预览
 
@@ -166,17 +184,34 @@ LLM_REASONING_MODEL=...
 <details>
 <summary>每日推送配置（点击展开）</summary>
 
-```bash
-# 通知渠道
-PAPERBOT_NOTIFY_ENABLED=true
-PAPERBOT_NOTIFY_CHANNELS=email,slack,dingding
+DailyPaper 生成后可自动推送摘要到 Email/Slack/钉钉。有两种配置方式：
 
-# Email (SMTP)
-PAPERBOT_NOTIFY_SMTP_HOST=smtp.example.com
-PAPERBOT_NOTIFY_SMTP_USERNAME=...
-PAPERBOT_NOTIFY_SMTP_PASSWORD=...
-PAPERBOT_NOTIFY_EMAIL_FROM=bot@example.com
-PAPERBOT_NOTIFY_EMAIL_TO=you@example.com
+**方式一：Web UI 配置（推荐）**
+
+在 Topic Workflow 页面的 Settings 面板中：
+1. 勾选 "Email Notification"
+2. 填入收件邮箱地址（如 `you@example.com`）
+3. 运行 DailyPaper 时会自动在最后发送邮件
+
+> UI 中填写的邮箱会覆盖环境变量中的 `PAPERBOT_NOTIFY_EMAIL_TO`。
+> 所有配置项（LLM/Judge/数据源/邮箱等）会自动持久化到浏览器 localStorage，刷新页面不会丢失。
+
+**方式二：环境变量配置**
+
+```bash
+# 总开关
+PAPERBOT_NOTIFY_ENABLED=true          # 是否启用推送（必须为 true 才能发送）
+PAPERBOT_NOTIFY_CHANNELS=email,slack   # 启用的推送渠道（逗号分隔）
+
+# Email (SMTP) — 必须配置才能发送邮件
+PAPERBOT_NOTIFY_SMTP_HOST=smtp.qq.com          # SMTP 服务器地址
+PAPERBOT_NOTIFY_SMTP_PORT=587                  # SMTP 端口（587=STARTTLS, 465=SSL）
+PAPERBOT_NOTIFY_SMTP_USERNAME=your@qq.com      # SMTP 登录用户名
+PAPERBOT_NOTIFY_SMTP_PASSWORD=your-auth-code   # SMTP 密码或授权码
+PAPERBOT_NOTIFY_SMTP_USE_TLS=true              # 是否使用 STARTTLS（端口 587 时为 true）
+PAPERBOT_NOTIFY_SMTP_USE_SSL=false             # 是否使用 SSL（端口 465 时为 true）
+PAPERBOT_NOTIFY_EMAIL_FROM=your@qq.com         # 发件人地址
+PAPERBOT_NOTIFY_EMAIL_TO=recipient@example.com # 默认收件人（可被 UI 覆盖）
 
 # Slack
 PAPERBOT_NOTIFY_SLACK_WEBHOOK_URL=https://hooks.slack.com/...
@@ -185,13 +220,22 @@ PAPERBOT_NOTIFY_SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 PAPERBOT_NOTIFY_DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=...
 PAPERBOT_NOTIFY_DINGTALK_SECRET=SEC...
 
-# DailyPaper 定时任务
+# DailyPaper 定时任务（ARQ Worker）
 PAPERBOT_DAILYPAPER_ENABLED=true
 PAPERBOT_DAILYPAPER_CRON_HOUR=8
 PAPERBOT_DAILYPAPER_CRON_MINUTE=30
 PAPERBOT_DAILYPAPER_NOTIFY_ENABLED=true
 PAPERBOT_DAILYPAPER_NOTIFY_CHANNELS=email,slack
 ```
+
+**QQ 邮箱配置示例：**
+1. 登录 QQ 邮箱 → 设置 → 账户 → POP3/SMTP 服务 → 开启
+2. 生成授权码（不是 QQ 密码）
+3. 设置 `SMTP_HOST=smtp.qq.com`, `SMTP_PORT=587`, `SMTP_USE_TLS=true`
+
+**Gmail 配置示例：**
+1. Google 账号 → 安全性 → 两步验证 → 应用专用密码
+2. 设置 `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USE_TLS=true`
 
 </details>
 
@@ -229,7 +273,7 @@ arq paperbot.infrastructure.queue.arq_worker.WorkerSettings
 | `/api/review` | POST | 深度评审（SSE） |
 | `/api/chat` | POST | AI 对话（SSE） |
 | `/api/research/paperscool/search` | POST | 主题检索（多源聚合，支持 `min_score` 过滤） |
-| `/api/research/paperscool/daily` | POST | DailyPaper 日报（支持 `notify` 推送） |
+| `/api/research/paperscool/daily` | POST | DailyPaper 日报（LLM/Judge 启用时返回 SSE 流式，否则 JSON；支持 `notify` 推送） |
 | `/api/research/paperscool/analyze` | POST | Judge + Trend 流式分析（SSE） |
 | `/api/research/tracks` | GET/POST | 研究方向管理 |
 | `/api/research/memory/*` | GET/POST | 记忆系统（Inbox/审核/检索） |
