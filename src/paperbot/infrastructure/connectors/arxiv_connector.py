@@ -3,6 +3,9 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
+
+import requests
 
 from paperbot.application.collaboration.message_schema import make_event
 from paperbot.application.ports.event_log_port import EventLogPort
@@ -12,6 +15,8 @@ ARXIV_NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
 }
+
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 
 
 @dataclass
@@ -42,8 +47,33 @@ class ArxivConnector:
     """
     Minimal arXiv Atom feed connector.
 
-    Phase: fixtures-first for offline E2E/IT.
+    Supports both offline XML parsing (fixtures) and live HTTP search via the
+    arXiv public API (https://info.arxiv.org/help/api/basics.html).
     """
+
+    def __init__(self, *, timeout_s: float = 30.0):
+        self.timeout_s = timeout_s
+        self._headers = {"User-Agent": "PaperBot/2.0"}
+
+    def search(
+        self,
+        *,
+        query: str,
+        max_results: int = 50,
+        sort_by: str = "relevance",
+    ) -> List[ArxivRecord]:
+        """Search arXiv API and return parsed records."""
+        params = {
+            "search_query": f"all:{query}",
+            "start": 0,
+            "max_results": min(max_results, 200),
+            "sortBy": sort_by,
+            "sortOrder": "descending",
+        }
+        url = f"{ARXIV_API_URL}?{urlencode(params)}"
+        resp = requests.get(url, headers=self._headers, timeout=self.timeout_s)
+        resp.raise_for_status()
+        return self.parse_atom(resp.text)
 
     def parse_atom(self, xml_text: str) -> List[ArxivRecord]:
         root = ET.fromstring(xml_text)

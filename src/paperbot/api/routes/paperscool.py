@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from paperbot.api.streaming import StreamEvent, wrap_generator
+from paperbot.application.services.daily_push_service import DailyPushService
 from paperbot.application.services.llm_service import get_llm_service
 from paperbot.application.workflows.analysis.paper_judge import PaperJudge
 from paperbot.application.workflows.dailypaper import (
@@ -30,7 +31,8 @@ class PapersCoolSearchRequest(BaseModel):
     sources: List[str] = Field(default_factory=lambda: ["papers_cool"])
     branches: List[str] = Field(default_factory=lambda: ["arxiv", "venue"])
     top_k_per_query: int = Field(5, ge=1, le=50)
-    show_per_branch: int = Field(25, ge=1, le=100)
+    show_per_branch: int = Field(25, ge=1, le=200)
+    min_score: float = Field(0.0, ge=0.0, description="Drop papers scoring below this threshold")
 
 
 class PapersCoolSearchResponse(BaseModel):
@@ -47,7 +49,8 @@ class DailyPaperRequest(BaseModel):
     sources: List[str] = Field(default_factory=lambda: ["papers_cool"])
     branches: List[str] = Field(default_factory=lambda: ["arxiv", "venue"])
     top_k_per_query: int = Field(5, ge=1, le=50)
-    show_per_branch: int = Field(25, ge=1, le=100)
+    show_per_branch: int = Field(25, ge=1, le=200)
+    min_score: float = Field(0.0, ge=0.0, description="Drop papers scoring below this threshold")
     title: str = "DailyPaper Digest"
     top_n: int = Field(10, ge=1, le=50)
     formats: List[str] = Field(default_factory=lambda: ["both"])
@@ -59,6 +62,8 @@ class DailyPaperRequest(BaseModel):
     judge_runs: int = Field(1, ge=1, le=5)
     judge_max_items_per_query: int = Field(5, ge=1, le=20)
     judge_token_budget: int = Field(0, ge=0, le=2_000_000)
+    notify: bool = False
+    notify_channels: List[str] = Field(default_factory=list)
 
 
 class DailyPaperResponse(BaseModel):
@@ -66,12 +71,14 @@ class DailyPaperResponse(BaseModel):
     markdown: str
     markdown_path: Optional[str] = None
     json_path: Optional[str] = None
+    notify_result: Optional[Dict[str, Any]] = None
 
 
 class PapersCoolAnalyzeRequest(BaseModel):
     report: Dict[str, Any]
     run_judge: bool = False
     run_trends: bool = False
+    run_insight: bool = False
     judge_runs: int = Field(1, ge=1, le=5)
     judge_max_items_per_query: int = Field(5, ge=1, le=20)
     judge_token_budget: int = Field(0, ge=0, le=2_000_000)
@@ -91,6 +98,7 @@ def topic_search(req: PapersCoolSearchRequest):
         branches=req.branches,
         top_k_per_query=req.top_k_per_query,
         show_per_branch=req.show_per_branch,
+        min_score=req.min_score,
     )
     return PapersCoolSearchResponse(**result)
 
@@ -108,6 +116,7 @@ def generate_daily_report(req: DailyPaperRequest):
         branches=req.branches,
         top_k_per_query=req.top_k_per_query,
         show_per_branch=req.show_per_branch,
+        min_score=req.min_score,
     )
     report = build_daily_paper_report(search_result=search_result, title=req.title, top_n=req.top_n)
     if req.enable_llm_analysis:
@@ -126,6 +135,7 @@ def generate_daily_report(req: DailyPaperRequest):
 
     markdown_path = None
     json_path = None
+    notify_result: Optional[Dict[str, Any]] = None
     if req.save:
         reporter = DailyPaperReporter(output_dir=req.output_dir)
         artifacts = reporter.write(
@@ -137,11 +147,22 @@ def generate_daily_report(req: DailyPaperRequest):
         markdown_path = artifacts.markdown_path
         json_path = artifacts.json_path
 
+    if req.notify:
+        notify_service = DailyPushService.from_env()
+        notify_result = notify_service.push_dailypaper(
+            report=report,
+            markdown=markdown,
+            markdown_path=markdown_path,
+            json_path=json_path,
+            channels_override=req.notify_channels or None,
+        )
+
     return DailyPaperResponse(
         report=report,
         markdown=markdown,
         markdown_path=markdown_path,
         json_path=json_path,
+        notify_result=notify_result,
     )
 
 
@@ -149,19 +170,25 @@ async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
     report = copy.deepcopy(req.report)
     llm_service = get_llm_service()
 
-    if req.run_trends:
+    llm_block: Optional[Dict[str, Any]] = None
+    if req.run_trends or req.run_insight:
         llm_block = report.get("llm_analysis")
         if not isinstance(llm_block, dict):
             llm_block = {}
 
         features = list(llm_block.get("features") or [])
-        if "trends" not in features:
+        if req.run_trends and "trends" not in features:
             features.append("trends")
+        if req.run_insight and "insight" not in features:
+            features.append("insight")
 
         llm_block["enabled"] = True
         llm_block["features"] = features
         llm_block.setdefault("daily_insight", "")
-        llm_block["query_trends"] = []
+        if req.run_trends:
+            llm_block["query_trends"] = []
+
+    if req.run_trends and llm_block is not None:
 
         queries = list(report.get("queries") or [])
         trend_total = sum(1 for query in queries if query.get("top_items"))
@@ -194,6 +221,16 @@ async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
 
         report["llm_analysis"] = llm_block
         yield StreamEvent(type="trend_done", data={"count": trend_done})
+
+    if req.run_insight and llm_block is not None:
+        yield StreamEvent(
+            type="progress",
+            data={"phase": "insight", "message": "Generating daily insight"},
+        )
+        daily_insight = llm_service.generate_daily_insight(report)
+        llm_block["daily_insight"] = daily_insight
+        report["llm_analysis"] = llm_block
+        yield StreamEvent(type="insight", data={"analysis": daily_insight})
 
     if req.run_judge:
         judge = PaperJudge(llm_service=llm_service)
@@ -288,8 +325,11 @@ async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
 
 @router.post("/research/paperscool/analyze")
 async def analyze_daily_report(req: PapersCoolAnalyzeRequest):
-    if not req.run_judge and not req.run_trends:
-        raise HTTPException(status_code=400, detail="run_judge or run_trends must be true")
+    if not req.run_judge and not req.run_trends and not req.run_insight:
+        raise HTTPException(
+            status_code=400,
+            detail="run_judge or run_trends or run_insight must be true",
+        )
     if not isinstance(req.report, dict) or not req.report.get("queries"):
         raise HTTPException(status_code=400, detail="report with queries is required")
 

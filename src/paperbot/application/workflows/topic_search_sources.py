@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Protocol, Sequence
 
+from paperbot.infrastructure.connectors.arxiv_connector import ArxivConnector
 from paperbot.infrastructure.connectors.paperscool_connector import PapersCoolConnector
 
 
@@ -96,11 +97,49 @@ class PapersCoolTopicSource:
         return rows
 
 
+class ArxivTopicSource:
+    """arXiv public API as a TopicSearchSource."""
+
+    name = "arxiv_api"
+
+    def __init__(self, connector: Optional[ArxivConnector] = None):
+        self.connector = connector or ArxivConnector()
+
+    def search(
+        self,
+        *,
+        query: str,
+        branches: Sequence[str],
+        show_per_branch: int,
+    ) -> List[TopicSearchRecord]:
+        records = self.connector.search(query=query, max_results=show_per_branch)
+        return [
+            TopicSearchRecord(
+                source=self.name,
+                source_record_id=r.arxiv_id,
+                title=r.title,
+                url=r.abs_url,
+                source_branch="arxiv",
+                external_url=r.abs_url,
+                pdf_url=r.pdf_url,
+                authors=r.authors,
+                subject_or_venue="",
+                published_at=r.published,
+                snippet=r.summary[:500] if r.summary else "",
+                keywords=[],
+                pdf_stars=0,
+                kimi_stars=0,
+            )
+            for r in records
+        ]
+
+
 def build_default_topic_source_registry(
     connector: Optional[PapersCoolConnector] = None,
 ) -> TopicSearchSourceRegistry:
     registry = TopicSearchSourceRegistry()
     registry.register("papers_cool", lambda: PapersCoolTopicSource(connector=connector))
+    registry.register("arxiv_api", lambda: ArxivTopicSource())
     return registry
 
 

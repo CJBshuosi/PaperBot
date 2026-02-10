@@ -343,6 +343,7 @@ function ConfigSheetBody(props: {
   useArxiv: boolean; setUseArxiv: (v: boolean) => void
   useVenue: boolean; setUseVenue: (v: boolean) => void
   usePapersCool: boolean; setUsePapersCool: (v: boolean) => void
+  useArxivApi: boolean; setUseArxivApi: (v: boolean) => void
   enableLLM: boolean; setEnableLLM: (v: boolean) => void
   useSummary: boolean; setUseSummary: (v: boolean) => void
   useTrends: boolean; setUseTrends: (v: boolean) => void
@@ -357,7 +358,7 @@ function ConfigSheetBody(props: {
     queriesText, setQueriesText, topK, setTopK, topN, setTopN,
     showPerBranch, setShowPerBranch, saveDaily, setSaveDaily,
     outputDir, setOutputDir, useArxiv, setUseArxiv, useVenue, setUseVenue,
-    usePapersCool, setUsePapersCool, enableLLM, setEnableLLM,
+    usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, enableLLM, setEnableLLM,
     useSummary, setUseSummary, useTrends, setUseTrends,
     useInsight, setUseInsight, useRelevance, setUseRelevance,
     enableJudge, setEnableJudge, judgeRuns, setJudgeRuns,
@@ -375,6 +376,7 @@ function ConfigSheetBody(props: {
           <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sources &amp; Branches</Label>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-1.5 text-sm"><Checkbox checked={usePapersCool} onCheckedChange={(v) => setUsePapersCool(Boolean(v))} /> papers.cool</label>
+            <label className="flex items-center gap-1.5 text-sm"><Checkbox checked={useArxivApi} onCheckedChange={(v) => setUseArxivApi(Boolean(v))} /> arXiv API</label>
           </div>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-1.5 text-sm"><Checkbox checked={useArxiv} onCheckedChange={(v) => setUseArxiv(Boolean(v))} /> arxiv</label>
@@ -443,6 +445,7 @@ export default function TopicWorkflowDashboard() {
   const [useArxiv, setUseArxiv] = useState(true)
   const [useVenue, setUseVenue] = useState(true)
   const [usePapersCool, setUsePapersCool] = useState(true)
+  const [useArxivApi, setUseArxivApi] = useState(false)
   const persistedDailyResult = useWorkflowStore.getState().dailyResult
   const [enableLLM, setEnableLLM] = useState(
     () => Boolean(persistedDailyResult?.report?.llm_analysis?.enabled),
@@ -476,7 +479,7 @@ export default function TopicWorkflowDashboard() {
 
   const queries = useMemo(() => parseLines(queriesText), [queriesText])
   const branches = useMemo(() => [useArxiv ? "arxiv" : "", useVenue ? "venue" : ""].filter(Boolean), [useArxiv, useVenue])
-  const sources = useMemo(() => [usePapersCool ? "papers_cool" : ""].filter(Boolean), [usePapersCool])
+  const sources = useMemo(() => [usePapersCool ? "papers_cool" : "", useArxivApi ? "arxiv_api" : ""].filter(Boolean), [usePapersCool, useArxivApi])
   const llmFeatures = useMemo(
     () => [useSummary ? "summary" : "", useTrends ? "trends" : "", useInsight ? "insight" : "", useRelevance ? "relevance" : ""].filter(Boolean),
     [useInsight, useRelevance, useSummary, useTrends],
@@ -608,15 +611,22 @@ export default function TopicWorkflowDashboard() {
     if (!dailyResult?.report) { setError("Generate DailyPaper first."); return }
     const runJudge = Boolean(enableJudge)
     const runTrends = Boolean(enableLLM && useTrends)
-    if (!runJudge && !runTrends) { setError("Enable Judge or LLM trends before analyzing."); return }
+    const runInsight = Boolean(enableLLM && useInsight)
+    if (!runJudge && !runTrends && !runInsight) { setError("Enable Judge, LLM trends, or LLM insight before analyzing."); return }
 
     setLoadingAnalyze(true); setError(null); store.clearAnalyzeLog(); setAnalyzeProgress({ done: 0, total: 0 }); store.setPhase("reporting")
+    store.addAnalyzeLog(
+      `[start] run_judge=${runJudge} run_trends=${runTrends} run_insight=${runInsight} llm_enabled=${enableLLM} judge_enabled=${enableJudge}`,
+    )
+    if (enableLLM && !useTrends && !useInsight) {
+      store.addAnalyzeLog("[hint] Analyze stream currently supports trends and daily insight.")
+    }
 
     try {
       const res = await fetch("/api/research/paperscool/analyze", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          report: dailyResult.report, run_judge: runJudge, run_trends: runTrends,
+          report: dailyResult.report, run_judge: runJudge, run_trends: runTrends, run_insight: runInsight,
           judge_runs: judgeRuns, judge_max_items_per_query: judgeMaxItems,
           judge_token_budget: judgeTokenBudget, trend_max_items_per_query: 3,
         }),
@@ -643,7 +653,7 @@ export default function TopicWorkflowDashboard() {
           store.addAnalyzeLog(`trend ${d.done || 0}/${d.total || 0}: ${d.query || "query"}`)
           const trendQuery = d.query
           const trendAnalysis = d.analysis
-          if (trendQuery && trendAnalysis) {
+          if (trendQuery && typeof trendAnalysis === "string") {
             store.updateDailyResult((prev) => {
               const llmAnalysis = prev.report.llm_analysis || {
                 enabled: true,
@@ -669,6 +679,39 @@ export default function TopicWorkflowDashboard() {
                     enabled: true,
                     features: Array.from(features),
                     query_trends: trendList,
+                  },
+                },
+              }
+            })
+          }
+          continue
+        }
+
+        if (event.type === "insight") {
+          const d = (event.data || {}) as {
+            analysis?: string
+          }
+          const insight = d.analysis
+          store.addAnalyzeLog("insight generated")
+          if (typeof insight === "string") {
+            store.updateDailyResult((prev) => {
+              const llmAnalysis = prev.report.llm_analysis || {
+                enabled: true,
+                features: [],
+                daily_insight: "",
+                query_trends: [],
+              }
+              const features = new Set(llmAnalysis.features || [])
+              features.add("insight")
+              return {
+                ...prev,
+                report: {
+                  ...prev.report,
+                  llm_analysis: {
+                    ...llmAnalysis,
+                    enabled: true,
+                    features: Array.from(features),
+                    daily_insight: insight,
                   },
                 },
               }
@@ -763,19 +806,31 @@ export default function TopicWorkflowDashboard() {
               markdown: typeof d.markdown === "string" ? d.markdown : prev.markdown,
             }))
           }
+          continue
+        }
+
+        if (event.type === "error") {
+          const d = (event.data || {}) as { message?: string; detail?: string }
+          const msg = event.message || d.message || d.detail || "Unknown analyze stream error"
+          store.addAnalyzeLog(`[error] ${msg}`)
+          setError(`Analyze failed: ${msg}`)
+          store.setPhase("error")
+          break
         }
       }
-      store.setPhase("reported")
+      if (store.phase !== "error") {
+        store.setPhase("reported")
+      }
     } catch (err) { setError(String(err)); store.setPhase("error") } finally { setLoadingAnalyze(false) }
   }
 
   const isLoading = loadingSearch || loadingDaily || loadingAnalyze
   const canSearch = queries.length > 0 && branches.length > 0 && sources.length > 0
   const loadingLabel = loadingSearch
-    ? "Searching papers.cool sources..."
+    ? "Searching sources..."
     : loadingDaily
       ? "Generating DailyPaper report and enrichment..."
-      : "Running judge/trend enrichment..."
+      : "Running judge/trend/insight enrichment..."
   const loadingHint = loadingAnalyze && analyzeProgress.total > 0
     ? `${analyzeProgress.done}/${analyzeProgress.total} judged`
     : loadingDaily
@@ -825,7 +880,7 @@ export default function TopicWorkflowDashboard() {
                 queriesText, setQueriesText, topK, setTopK, topN, setTopN,
                 showPerBranch, setShowPerBranch, saveDaily, setSaveDaily,
                 outputDir, setOutputDir, useArxiv, setUseArxiv, useVenue, setUseVenue,
-                usePapersCool, setUsePapersCool, enableLLM, setEnableLLM,
+                usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, enableLLM, setEnableLLM,
                 useSummary, setUseSummary, useTrends, setUseTrends,
                 useInsight, setUseInsight, useRelevance, setUseRelevance,
                 enableJudge, setEnableJudge, judgeRuns, setJudgeRuns,
@@ -851,6 +906,21 @@ export default function TopicWorkflowDashboard() {
             </div>
             <Progress value={loadingAnalyze && analyzeProgress.total > 0 ? (analyzeProgress.done / analyzeProgress.total) * 100 : 35} />
             <p className="text-xs text-blue-800/80">任务执行中，结果会逐步填充，不会空白等待。</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {(loadingAnalyze || analyzeLog.length > 0) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Analyze Progress</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-24">
+              <div className="space-y-0.5 font-mono text-xs text-muted-foreground">
+                {analyzeLog.slice(-12).map((line, idx) => (<div key={`global-log-${idx}`}>{line}</div>))}
+              </div>
+            </ScrollArea>
           </CardContent>
         </Card>
       )}
@@ -960,9 +1030,13 @@ export default function TopicWorkflowDashboard() {
                 <Card key={`${trend.query}-${idx}`}>
                   <CardHeader className="pb-2"><CardTitle className="text-sm">{trend.query}</CardTitle></CardHeader>
                   <CardContent>
-                    <div className="prose prose-sm max-w-none dark:prose-invert text-sm">
-                      <Markdown remarkPlugins={[remarkGfm]}>{trend.analysis}</Markdown>
-                    </div>
+                    {(trend.analysis || "").trim() ? (
+                      <div className="prose prose-sm max-w-none dark:prose-invert text-sm">
+                        <Markdown remarkPlugins={[remarkGfm]}>{trend.analysis}</Markdown>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No trend content returned by model for this query.</p>
+                    )}
                   </CardContent>
                 </Card>
               ))}
@@ -980,7 +1054,9 @@ export default function TopicWorkflowDashboard() {
 
           {!hasLLMContent && !loadingAnalyze && (
             <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-              Run DailyPaper with LLM Analysis enabled, or run Analyze.
+              {dailyResult?.report?.llm_analysis?.enabled
+                ? "LLM enrichment ran but returned empty content. Check reasoning model route/API key and analyze log."
+                : "Run DailyPaper with LLM Analysis enabled, or run Analyze."}
             </div>
           )}
         </TabsContent>
@@ -1020,7 +1096,11 @@ export default function TopicWorkflowDashboard() {
                 </div>
               ))
             ) : (
-              <div className="col-span-2 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Run DailyPaper with Judge enabled, or run Analyze to see judge results.</div>
+              <div className="col-span-2 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                {dailyResult?.report?.judge?.enabled
+                  ? "Judge ran but no score was attached. Check candidate count/token budget and analyze log."
+                  : "Run DailyPaper with Judge enabled, or run Analyze to see judge results."}
+              </div>
             ))}
           </div>
           {analyzeLog.length > 0 && (

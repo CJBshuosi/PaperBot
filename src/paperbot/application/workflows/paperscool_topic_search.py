@@ -66,6 +66,7 @@ class PapersCoolTopicSearchWorkflow:
         sources: Sequence[str] = ("papers_cool",),
         top_k_per_query: int = 5,
         show_per_branch: int = 25,
+        min_score: float = 0.0,
     ) -> Dict[str, Any]:
         query_specs = self.normalize_queries(queries)
         source_names = dedupe_sources(sources)
@@ -107,6 +108,10 @@ class PapersCoolTopicSearchWorkflow:
                         self._index_item(item, by_url=by_url, by_title=by_title)
                     else:
                         self._merge_item(current, item)
+
+        # Quality filter: drop papers below minimum relevance score
+        if min_score > 0:
+            aggregated_items = [it for it in aggregated_items if it["score"] >= min_score]
 
         aggregated_items.sort(key=lambda it: it["score"], reverse=True)
 
