@@ -382,8 +382,10 @@ async def daily_papers_job(
         apply_judge_scores_to_report,
         build_daily_paper_report,
         enrich_daily_paper_report,
+        ingest_daily_report_to_registry,
         normalize_llm_features,
         normalize_output_formats,
+        persist_judge_scores_to_registry,
         render_daily_paper_markdown,
     )
     from paperbot.application.services.daily_push_service import DailyPushService
@@ -413,6 +415,18 @@ async def daily_papers_job(
             n_runs=max(1, int(judge_runs)),
             judge_token_budget=max(0, int(judge_token_budget)),
         )
+
+    try:
+        report["registry_ingest"] = ingest_daily_report_to_registry(report)
+    except Exception as exc:
+        report["registry_ingest"] = {"error": str(exc)}
+
+    if enable_judge:
+        try:
+            report["judge_registry_ingest"] = persist_judge_scores_to_registry(report)
+        except Exception as exc:
+            report["judge_registry_ingest"] = {"error": str(exc)}
+
     markdown = render_daily_paper_markdown(report)
 
     markdown_path = None

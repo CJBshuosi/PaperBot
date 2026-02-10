@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from collections import Counter
+from datetime import datetime, timezone
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -8,6 +12,7 @@ from pydantic import BaseModel, Field
 from paperbot.context_engine import ContextEngine, ContextEngineConfig
 from paperbot.context_engine.track_router import TrackRouter
 from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
+from paperbot.infrastructure.api_clients.semantic_scholar import SemanticScholarClient
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
 from paperbot.memory.eval.collector import MemoryMetricCollector
 from paperbot.memory.extractor import extract_memories
@@ -391,7 +396,8 @@ def bulk_moderate(req: BulkModerateRequest, background_tasks: BackgroundTasks):
     # A rejection of an auto-approved (confidence >= 0.60) item is a false positive
     if req.status == "rejected" and items_before:
         high_confidence_rejected = sum(
-            1 for item in items_before
+            1
+            for item in items_before
             if item.get("confidence", 0) >= 0.60 and item.get("status") == "approved"
         )
         if high_confidence_rejected > 0:
@@ -445,10 +451,15 @@ def bulk_move(req: BulkMoveRequest, background_tasks: BackgroundTasks):
 
 class MemoryFeedbackRequest(BaseModel):
     """Request to record feedback on retrieved memories."""
+
     user_id: str = "default"
     memory_ids: List[int] = Field(..., min_length=1, description="IDs of memories being rated")
-    helpful_ids: List[int] = Field(default_factory=list, description="IDs of memories that were helpful")
-    not_helpful_ids: List[int] = Field(default_factory=list, description="IDs of memories that were not helpful")
+    helpful_ids: List[int] = Field(
+        default_factory=list, description="IDs of memories that were helpful"
+    )
+    not_helpful_ids: List[int] = Field(
+        default_factory=list, description="IDs of memories that were not helpful"
+    )
     context_run_id: Optional[int] = None
     query: Optional[str] = None
 
@@ -666,6 +677,58 @@ def list_paper_feedback(
     return PaperFeedbackListResponse(user_id=user_id, track_id=track_id, items=items)
 
 
+class PaperReadingStatusRequest(BaseModel):
+    user_id: str = "default"
+    status: str = Field(..., min_length=1)  # unread/reading/read/archived
+    mark_saved: Optional[bool] = None
+    metadata: Dict[str, Any] = {}
+
+
+class PaperReadingStatusResponse(BaseModel):
+    status: Dict[str, Any]
+
+
+class SavedPapersResponse(BaseModel):
+    user_id: str
+    items: List[Dict[str, Any]]
+
+
+class PaperDetailResponse(BaseModel):
+    detail: Dict[str, Any]
+
+
+@router.post("/research/papers/{paper_id}/status", response_model=PaperReadingStatusResponse)
+def update_paper_status(paper_id: str, req: PaperReadingStatusRequest):
+    status = _research_store.set_paper_reading_status(
+        user_id=req.user_id,
+        paper_id=paper_id,
+        status=req.status,
+        metadata=req.metadata,
+        mark_saved=req.mark_saved,
+    )
+    if not status:
+        raise HTTPException(status_code=404, detail="Paper not found in registry")
+    return PaperReadingStatusResponse(status=status)
+
+
+@router.get("/research/papers/saved", response_model=SavedPapersResponse)
+def list_saved_papers(
+    user_id: str = "default",
+    sort_by: str = Query("saved_at"),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    items = _research_store.list_saved_papers(user_id=user_id, sort_by=sort_by, limit=limit)
+    return SavedPapersResponse(user_id=user_id, items=items)
+
+
+@router.get("/research/papers/{paper_id}", response_model=PaperDetailResponse)
+def get_paper_detail(paper_id: str, user_id: str = "default"):
+    detail = _research_store.get_paper_detail(paper_id=paper_id, user_id=user_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Paper not found in registry")
+    return PaperDetailResponse(detail=detail)
+
+
 class RouterSuggestRequest(BaseModel):
     user_id: str = "default"
     query: str = Field(..., min_length=1)
@@ -740,3 +803,384 @@ async def build_context(req: ContextRequest):
         return ContextResponse(context_pack=pack)
     finally:
         await engine.close()
+
+
+class ScholarNetworkRequest(BaseModel):
+    scholar_id: Optional[str] = None
+    scholar_name: Optional[str] = None
+    max_papers: int = Field(100, ge=1, le=500)
+    recent_years: int = Field(5, ge=0, le=30)
+    max_nodes: int = Field(40, ge=5, le=200)
+
+
+class ScholarNetworkResponse(BaseModel):
+    scholar: Dict[str, Any]
+    stats: Dict[str, Any]
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
+
+
+class ScholarTrendsRequest(BaseModel):
+    scholar_id: Optional[str] = None
+    scholar_name: Optional[str] = None
+    max_papers: int = Field(200, ge=1, le=1000)
+    year_window: int = Field(10, ge=3, le=30)
+
+
+class ScholarTrendsResponse(BaseModel):
+    scholar: Dict[str, Any]
+    stats: Dict[str, Any]
+    publication_velocity: List[Dict[str, Any]]
+    topic_distribution: List[Dict[str, Any]]
+    venue_distribution: List[Dict[str, Any]]
+    recent_papers: List[Dict[str, Any]]
+    trend_summary: Dict[str, Any]
+
+
+def _resolve_scholar_identity(
+    *, scholar_id: Optional[str], scholar_name: Optional[str]
+) -> Tuple[str, Optional[str]]:
+    if scholar_id and scholar_id.strip():
+        return scholar_id.strip(), None
+
+    if not scholar_name or not scholar_name.strip():
+        raise HTTPException(status_code=400, detail="scholar_id or scholar_name is required")
+
+    from paperbot.agents.scholar_tracking.scholar_profile_agent import ScholarProfileAgent
+
+    name_key = scholar_name.strip().lower()
+    try:
+        profile = ScholarProfileAgent()
+        for scholar in profile.list_tracked_scholars():
+            if (scholar.name or "").strip().lower() != name_key:
+                continue
+            if not scholar.semantic_scholar_id:
+                break
+            return scholar.semantic_scholar_id, scholar.name
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"failed to load scholar profile: {exc}"
+        ) from exc
+
+    raise HTTPException(
+        status_code=404,
+        detail="Scholar not found in subscriptions. Provide scholar_id directly or add scholar to subscriptions.",
+    )
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _extract_year_from_paper(paper: Dict[str, Any]) -> Optional[int]:
+    year = _safe_int(paper.get("year"), 0)
+    if year > 0:
+        return year
+
+    date_value = str(paper.get("publicationDate") or paper.get("publication_date") or "")
+    match = re.search(r"(20\d{2}|19\d{2})", date_value)
+    if match:
+        return _safe_int(match.group(1), 0) or None
+    return None
+
+
+def _unwrap_author_paper_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(row.get("paper"), dict):
+        return row["paper"]
+    return row
+
+
+def _trend_direction(values: List[float]) -> str:
+    if len(values) < 2:
+        return "flat"
+    pivot = max(1, len(values) // 2)
+    older = sum(values[:pivot]) / max(1, len(values[:pivot]))
+    recent = sum(values[pivot:]) / max(1, len(values[pivot:]))
+    if recent > older * 1.15:
+        return "up"
+    if recent < older * 0.85:
+        return "down"
+    return "flat"
+
+
+@router.post("/research/scholar/network", response_model=ScholarNetworkResponse)
+async def scholar_network(req: ScholarNetworkRequest):
+    scholar_id, resolved_name = _resolve_scholar_identity(
+        scholar_id=req.scholar_id,
+        scholar_name=req.scholar_name,
+    )
+
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY")
+    client = SemanticScholarClient(api_key=api_key)
+    try:
+        author = await client.get_author(
+            scholar_id,
+            fields=["name", "affiliations", "paperCount", "citationCount", "hIndex"],
+        )
+        paper_rows = await client.get_author_papers(
+            scholar_id,
+            limit=max(1, int(req.max_papers)),
+            fields=["title", "year", "citationCount", "authors", "url", "publicationDate"],
+        )
+    finally:
+        await client.close()
+
+    target_name = (author or {}).get("name") or resolved_name or req.scholar_name or scholar_id
+    target_key = str(scholar_id)
+    min_year: Optional[int] = None
+    if req.recent_years > 0:
+        min_year = datetime.now(timezone.utc).year - int(req.recent_years) + 1
+
+    collaborators: Dict[str, Dict[str, Any]] = {}
+    papers_used = 0
+
+    for raw_row in paper_rows:
+        paper = _unwrap_author_paper_row(raw_row)
+        year = _extract_year_from_paper(paper)
+        if min_year and year and year < min_year:
+            continue
+
+        parsed_authors: List[Tuple[str, str]] = []
+        has_target_author = False
+        for author_row in paper.get("authors") or []:
+            if isinstance(author_row, dict):
+                author_id = str(author_row.get("authorId") or "")
+                author_name = str(author_row.get("name") or "").strip()
+            else:
+                author_id = ""
+                author_name = str(author_row or "").strip()
+            if not author_name:
+                continue
+            parsed_authors.append((author_id, author_name))
+            if author_id and author_id == target_key:
+                has_target_author = True
+            elif not author_id and author_name.lower() == str(target_name).lower():
+                has_target_author = True
+
+        if not parsed_authors or not has_target_author:
+            continue
+
+        papers_used += 1
+        paper_title = str(paper.get("title") or "Untitled")
+        citation_count = _safe_int(paper.get("citationCount"), 0)
+
+        for author_id, author_name in parsed_authors:
+            if (author_id and author_id == target_key) or (
+                not author_id and author_name.lower() == str(target_name).lower()
+            ):
+                continue
+
+            node_id = f"author:{author_id}" if author_id else f"name:{author_name.lower()}"
+            item = collaborators.setdefault(
+                node_id,
+                {
+                    "id": node_id,
+                    "author_id": author_id or None,
+                    "name": author_name,
+                    "collab_papers": 0,
+                    "citation_sum": 0,
+                    "recent_year": year,
+                    "sample_titles": [],
+                },
+            )
+            item["collab_papers"] += 1
+            item["citation_sum"] += citation_count
+            if year and (not item.get("recent_year") or year > int(item.get("recent_year") or 0)):
+                item["recent_year"] = year
+            if len(item["sample_titles"]) < 3:
+                item["sample_titles"].append(paper_title)
+
+    ranked = sorted(
+        collaborators.values(),
+        key=lambda row: (int(row["collab_papers"]), int(row["citation_sum"])),
+        reverse=True,
+    )
+    ranked = ranked[: max(0, int(req.max_nodes) - 1)]
+
+    nodes = [
+        {
+            "id": f"author:{target_key}",
+            "author_id": target_key,
+            "name": target_name,
+            "type": "target",
+            "collab_papers": papers_used,
+            "citation_sum": _safe_int((author or {}).get("citationCount"), 0),
+        }
+    ]
+    nodes.extend(
+        [
+            {
+                "id": row["id"],
+                "author_id": row["author_id"],
+                "name": row["name"],
+                "type": "coauthor",
+                "collab_papers": row["collab_papers"],
+                "citation_sum": row["citation_sum"],
+                "recent_year": row.get("recent_year"),
+            }
+            for row in ranked
+        ]
+    )
+
+    edges = [
+        {
+            "source": f"author:{target_key}",
+            "target": row["id"],
+            "weight": row["collab_papers"],
+            "citation_sum": row["citation_sum"],
+            "sample_titles": row["sample_titles"],
+        }
+        for row in ranked
+    ]
+
+    scholar_payload = {
+        "scholar_id": target_key,
+        "name": target_name,
+        "affiliations": (author or {}).get("affiliations") or [],
+        "paper_count": _safe_int((author or {}).get("paperCount"), 0),
+        "citation_count": _safe_int((author or {}).get("citationCount"), 0),
+        "h_index": _safe_int((author or {}).get("hIndex"), 0),
+    }
+
+    return ScholarNetworkResponse(
+        scholar=scholar_payload,
+        stats={
+            "papers_fetched": len(paper_rows),
+            "papers_used": papers_used,
+            "coauthor_count": len(ranked),
+            "recent_years": int(req.recent_years),
+        },
+        nodes=nodes,
+        edges=edges,
+    )
+
+
+@router.post("/research/scholar/trends", response_model=ScholarTrendsResponse)
+async def scholar_trends(req: ScholarTrendsRequest):
+    scholar_id, resolved_name = _resolve_scholar_identity(
+        scholar_id=req.scholar_id,
+        scholar_name=req.scholar_name,
+    )
+
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY")
+    client = SemanticScholarClient(api_key=api_key)
+    try:
+        author = await client.get_author(
+            scholar_id,
+            fields=["name", "affiliations", "paperCount", "citationCount", "hIndex"],
+        )
+        paper_rows = await client.get_author_papers(
+            scholar_id,
+            limit=max(1, int(req.max_papers)),
+            fields=[
+                "title",
+                "year",
+                "citationCount",
+                "venue",
+                "fieldsOfStudy",
+                "publicationDate",
+                "url",
+            ],
+        )
+    finally:
+        await client.close()
+
+    current_year = datetime.now(timezone.utc).year
+    min_year = current_year - int(req.year_window) + 1
+
+    year_buckets: Dict[int, Dict[str, int]] = {}
+    topic_counter: Counter[str] = Counter()
+    venue_counter: Counter[str] = Counter()
+    recent_papers: List[Dict[str, Any]] = []
+
+    for raw_row in paper_rows:
+        paper = _unwrap_author_paper_row(raw_row)
+        year = _extract_year_from_paper(paper)
+        if year is None or year < min_year:
+            continue
+
+        citation_count = _safe_int(paper.get("citationCount"), 0)
+        bucket = year_buckets.setdefault(year, {"papers": 0, "citations": 0})
+        bucket["papers"] += 1
+        bucket["citations"] += citation_count
+
+        for topic in paper.get("fieldsOfStudy") or paper.get("fields_of_study") or []:
+            topic_name = str(topic).strip()
+            if topic_name:
+                topic_counter[topic_name] += 1
+
+        venue = str(
+            paper.get("venue")
+            or (
+                (paper.get("publicationVenue") or {}).get("name")
+                if isinstance(paper.get("publicationVenue"), dict)
+                else ""
+            )
+            or ""
+        ).strip()
+        if venue:
+            venue_counter[venue] += 1
+
+        recent_papers.append(
+            {
+                "title": paper.get("title") or "Untitled",
+                "year": year,
+                "citation_count": citation_count,
+                "venue": venue,
+                "url": paper.get("url") or "",
+            }
+        )
+
+    yearly = [
+        {
+            "year": year,
+            "papers": stats["papers"],
+            "citations": stats["citations"],
+        }
+        for year, stats in sorted(year_buckets.items())
+    ]
+
+    recent_papers.sort(
+        key=lambda row: (int(row.get("year") or 0), int(row.get("citation_count") or 0)),
+        reverse=True,
+    )
+
+    paper_series = [float(row["papers"]) for row in yearly]
+    citation_series = [float(row["citations"]) for row in yearly]
+
+    trend_summary = {
+        "publication_trend": _trend_direction(paper_series),
+        "citation_trend": _trend_direction(citation_series),
+        "active_years": len(yearly),
+        "window": int(req.year_window),
+    }
+
+    scholar_payload = {
+        "scholar_id": str(scholar_id),
+        "name": (author or {}).get("name") or resolved_name or req.scholar_name or str(scholar_id),
+        "affiliations": (author or {}).get("affiliations") or [],
+        "paper_count": _safe_int((author or {}).get("paperCount"), 0),
+        "citation_count": _safe_int((author or {}).get("citationCount"), 0),
+        "h_index": _safe_int((author or {}).get("hIndex"), 0),
+    }
+
+    return ScholarTrendsResponse(
+        scholar=scholar_payload,
+        stats={
+            "papers_fetched": len(paper_rows),
+            "papers_in_window": sum(item["papers"] for item in yearly),
+            "year_window": int(req.year_window),
+        },
+        publication_velocity=yearly,
+        topic_distribution=[
+            {"topic": topic, "count": count} for topic, count in topic_counter.most_common(15)
+        ],
+        venue_distribution=[
+            {"venue": venue, "count": count} for venue, count in venue_counter.most_common(15)
+        ],
+        recent_papers=recent_papers[:10],
+        trend_summary=trend_summary,
+    )

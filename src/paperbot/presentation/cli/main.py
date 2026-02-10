@@ -19,7 +19,9 @@ from paperbot.application.workflows.dailypaper import (
     apply_judge_scores_to_report,
     build_daily_paper_report,
     enrich_daily_paper_report,
+    ingest_daily_report_to_registry,
     normalize_llm_features,
+    persist_judge_scores_to_registry,
     normalize_output_formats,
     render_daily_paper_markdown,
 )
@@ -77,7 +79,7 @@ def create_parser() -> argparse.ArgumentParser:
         action="append",
         dest="sources",
         default=None,
-        help="数据源名称，可重复指定；默认 papers_cool",
+        help="数据源名称，可重复指定；默认 papers_cool（可选 arxiv_api / hf_daily）",
     )
     topic_search_parser.add_argument("--top-k", type=int, default=5, help="每个主题保留的结果数")
     topic_search_parser.add_argument(
@@ -101,7 +103,7 @@ def create_parser() -> argparse.ArgumentParser:
         action="append",
         dest="sources",
         default=None,
-        help="数据源名称，可重复指定；默认 papers_cool",
+        help="数据源名称，可重复指定；默认 papers_cool（可选 arxiv_api / hf_daily）",
     )
     daily_parser.add_argument(
         "--branch",
@@ -286,11 +288,12 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
     sources = parsed.sources or ["papers_cool"]
 
     workflow = _create_topic_search_workflow()
+    effective_top_k = max(1, int(parsed.top_k), int(parsed.top_n))
     search_result = workflow.run(
         queries=queries,
         sources=sources,
         branches=branches,
-        top_k_per_query=max(1, int(parsed.top_k)),
+        top_k_per_query=effective_top_k,
         show_per_branch=max(1, int(parsed.show)),
     )
 
@@ -315,6 +318,18 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
             n_runs=max(1, int(parsed.judge_runs)),
             judge_token_budget=max(0, int(parsed.judge_token_budget)),
         )
+
+    try:
+        report["registry_ingest"] = ingest_daily_report_to_registry(report)
+    except Exception as exc:
+        report["registry_ingest"] = {"error": str(exc)}
+
+    if judge_enabled:
+        try:
+            report["judge_registry_ingest"] = persist_judge_scores_to_registry(report)
+        except Exception as exc:
+            report["judge_registry_ingest"] = {"error": str(exc)}
+
     markdown = render_daily_paper_markdown(report)
 
     markdown_path = None

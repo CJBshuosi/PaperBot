@@ -4,21 +4,32 @@ export function apiBaseUrl() {
 
 export async function proxyJson(req: Request, upstreamUrl: string, method: string) {
   const body = method === "GET" ? undefined : await req.text()
-  const upstream = await fetch(upstreamUrl, {
-    method,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": req.headers.get("content-type") || "application/json",
-    },
-    body,
-  })
-  const text = await upstream.text()
-  return new Response(text, {
-    status: upstream.status,
-    headers: {
-      "Content-Type": upstream.headers.get("content-type") || "application/json",
-      "Cache-Control": "no-cache",
-    },
-  })
-}
 
+  try {
+    const upstream = await fetch(upstreamUrl, {
+      method,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": req.headers.get("content-type") || "application/json",
+      },
+      body,
+    })
+    const text = await upstream.text()
+    return new Response(text, {
+      status: upstream.status,
+      headers: {
+        "Content-Type": upstream.headers.get("content-type") || "application/json",
+        "Cache-Control": "no-cache",
+      },
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    return Response.json(
+      {
+        detail: `Upstream API unreachable: ${upstreamUrl}`,
+        error: detail,
+      },
+      { status: 502 },
+    )
+  }
+}
