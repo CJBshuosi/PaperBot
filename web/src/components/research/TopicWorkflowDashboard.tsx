@@ -9,12 +9,14 @@ import {
   ChevronRightIcon,
   FilterIcon,
   Loader2Icon,
+  PlusIcon,
   PlayIcon,
   SettingsIcon,
   SparklesIcon,
   StarIcon,
   Trash2Icon,
   TrendingUpIcon,
+  XIcon,
   ZapIcon,
 } from "lucide-react"
 
@@ -44,7 +46,6 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
 import { readSSE } from "@/lib/sse"
 import { useWorkflowStore } from "@/lib/stores/workflow-store"
 import type { DailyResult, WorkflowPhase } from "@/lib/stores/workflow-store"
@@ -83,10 +84,6 @@ type StepStatus = "pending" | "running" | "done" | "error" | "skipped"
 /* ── Helpers ──────────────────────────────────────────── */
 
 const DEFAULT_QUERIES = ["ICL压缩", "ICL隐式偏置", "KV Cache加速"]
-
-function parseLines(text: string): string[] {
-  return text.split("\n").map((l) => l.trim()).filter(Boolean)
-}
 
 const REC_COLORS: Record<string, string> = {
   must_read: "bg-green-100 text-green-800 border-green-300",
@@ -334,7 +331,7 @@ function PaperDetailDialog({ item, open, onClose }: { item: SearchItem | null; o
 /* ── Config Sheet ─────────────────────────────────────── */
 
 function ConfigSheetBody(props: {
-  queriesText: string; setQueriesText: (v: string) => void
+  queryItems: string[]; setQueryItems: (v: string[]) => void
   topK: number; setTopK: (v: number) => void
   topN: number; setTopN: (v: number) => void
   showPerBranch: number; setShowPerBranch: (v: number) => void
@@ -355,7 +352,7 @@ function ConfigSheetBody(props: {
   judgeTokenBudget: number; setJudgeTokenBudget: (v: number) => void
 }) {
   const {
-    queriesText, setQueriesText, topK, setTopK, topN, setTopN,
+    queryItems, setQueryItems, topK, setTopK, topN, setTopN,
     showPerBranch, setShowPerBranch, saveDaily, setSaveDaily,
     outputDir, setOutputDir, useArxiv, setUseArxiv, useVenue, setUseVenue,
     usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, enableLLM, setEnableLLM,
@@ -365,11 +362,41 @@ function ConfigSheetBody(props: {
     judgeMaxItems, setJudgeMaxItems, judgeTokenBudget, setJudgeTokenBudget,
   } = props
 
+  const updateQuery = (idx: number, value: string) => {
+    const next = [...queryItems]
+    next[idx] = value
+    setQueryItems(next)
+  }
+  const removeQuery = (idx: number) => {
+    if (queryItems.length <= 1) return
+    setQueryItems(queryItems.filter((_, i) => i !== idx))
+  }
+  const addQuery = () => setQueryItems([...queryItems, ""])
+
   return (
     <div className="space-y-5 pr-2">
       <section className="space-y-2">
           <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Topics</Label>
-          <Textarea value={queriesText} onChange={(e) => setQueriesText(e.target.value)} rows={5} className="text-sm" placeholder="One topic per line..." />
+          <div className="space-y-1.5">
+            {queryItems.map((q, idx) => (
+              <div key={idx} className="flex items-center gap-1.5">
+                <Input
+                  value={q}
+                  onChange={(e) => updateQuery(idx, e.target.value)}
+                  placeholder="Enter a topic..."
+                  className="h-8 text-sm"
+                />
+                {queryItems.length > 1 && (
+                  <Button variant="ghost" size="icon" className="size-8 shrink-0 text-muted-foreground hover:text-destructive" onClick={() => removeQuery(idx)}>
+                    <XIcon className="size-3.5" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+          <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={addQuery}>
+            <PlusIcon className="size-3.5" /> Add Topic
+          </Button>
         </section>
 
         <section className="space-y-2">
@@ -436,7 +463,7 @@ function ConfigSheetBody(props: {
 
 export default function TopicWorkflowDashboard() {
   /* Config state (local) */
-  const [queriesText, setQueriesText] = useState(DEFAULT_QUERIES.join("\n"))
+  const [queryItems, setQueryItems] = useState<string[]>([...DEFAULT_QUERIES])
   const [topK, setTopK] = useState(5)
   const [topN, setTopN] = useState(10)
   const [showPerBranch, setShowPerBranch] = useState(25)
@@ -477,7 +504,7 @@ export default function TopicWorkflowDashboard() {
   const [selectedPaper, setSelectedPaper] = useState<SearchItem | null>(null)
   const [sortBy, setSortBy] = useState<"score" | "judge">("score")
 
-  const queries = useMemo(() => parseLines(queriesText), [queriesText])
+  const queries = useMemo(() => queryItems.map((q) => q.trim()).filter(Boolean), [queryItems])
   const branches = useMemo(() => [useArxiv ? "arxiv" : "", useVenue ? "venue" : ""].filter(Boolean), [useArxiv, useVenue])
   const sources = useMemo(() => [usePapersCool ? "papers_cool" : "", useArxivApi ? "arxiv_api" : ""].filter(Boolean), [usePapersCool, useArxivApi])
   const llmFeatures = useMemo(
@@ -877,7 +904,7 @@ export default function TopicWorkflowDashboard() {
               </SheetHeader>
               <div className="flex-1 overflow-y-auto px-1 pb-6">
                 <ConfigSheetBody {...{
-                queriesText, setQueriesText, topK, setTopK, topN, setTopN,
+                queryItems, setQueryItems, topK, setTopK, topN, setTopN,
                 showPerBranch, setShowPerBranch, saveDaily, setSaveDaily,
                 outputDir, setOutputDir, useArxiv, setUseArxiv, useVenue, setUseVenue,
                 usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, enableLLM, setEnableLLM,

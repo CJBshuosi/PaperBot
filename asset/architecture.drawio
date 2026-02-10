@@ -1,0 +1,149 @@
+<mxfile host="app.diagrams.net" agent="PaperBot" version="26.0">
+  <diagram name="Architecture" id="arch">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="PaperBot Architecture" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="400" y="10" width="400" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ Clients Layer ═══ -->
+        <mxCell id="clients_group" value="Clients" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=13;verticalAlign=top;spacingTop=5;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="60" width="1100" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="web" value="Web Dashboard&#xa;(Next.js)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="80" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="cli" value="Terminal UI&#xa;(Ink / React)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="280" y="80" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="cron" value="ARQ Worker&#xa;(Cron Jobs)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="460" y="80" width="140" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="notify" value="Push Channels&#xa;(Email / Slack / DingTalk)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="640" y="80" width="170" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ API Gateway ═══ -->
+        <mxCell id="api" value="FastAPI Gateway (SSE Streaming)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="200" y="180" width="800" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows: Clients → API -->
+        <mxCell id="e1" edge="1" source="web" target="api" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" edge="1" source="cli" target="api" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" edge="1" source="cron" target="api" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" edge="1" source="notify" target="api" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- ═══ Application Layer ═══ -->
+        <mxCell id="app_group" value="Application Layer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=13;verticalAlign=top;spacingTop=5;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="250" width="1100" height="160" as="geometry" />
+        </mxCell>
+
+        <!-- Workflow row -->
+        <mxCell id="topic" value="Topic Search&#xa;Workflow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="70" y="280" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="daily" value="DailyPaper&#xa;Reporter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="210" y="280" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="scholar" value="Scholar&#xa;Pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="350" y="280" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="repro" value="Paper2Code&#xa;(ReproAgent)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="490" y="280" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="ctx" value="Context Engine&#xa;(Router + Memory)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="630" y="280" width="130" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="push" value="Push Service&#xa;(Notify)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="780" y="280" width="120" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows: API → workflows -->
+        <mxCell id="ea1" edge="1" source="api" target="topic" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea2" edge="1" source="api" target="daily" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea3" edge="1" source="api" target="scholar" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea4" edge="1" source="api" target="repro" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea5" edge="1" source="api" target="ctx" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ea6" edge="1" source="api" target="push" parent="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Analysis row -->
+        <mxCell id="judge" value="LLM-as-Judge&#xa;(5-dim scoring)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="70" y="350" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="trend" value="Trend&#xa;Analyzer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="210" y="350" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="summ" value="Paper&#xa;Summarizer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="350" y="350" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="review" value="ReviewerAgent&#xa;(DeepReview)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="490" y="350" width="120" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="verify" value="Verification&#xa;Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="630" y="350" width="130" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="code_agent" value="Code Analysis&#xa;Agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="780" y="350" width="120" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ Infrastructure Layer ═══ -->
+        <mxCell id="infra_group" value="Infrastructure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=13;verticalAlign=top;spacingTop=5;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="440" width="1100" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="llm" value="ModelRouter&#xa;(OpenAI / NIM / OR)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8585;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="70" y="465" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="db" value="SQLite / Alembic&#xa;(Event Log + Memory)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8585;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="240" y="465" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="queue" value="ARQ Task Queue&#xa;(Redis)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8585;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="410" y="465" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="sandbox" value="Sandbox&#xa;(Docker / E2B)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8585;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="580" y="465" width="150" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="fs" value="File System&#xa;(Reports / Cache)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8585;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="750" y="465" width="150" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ═══ External Data Sources ═══ -->
+        <mxCell id="ext_group" value="External Sources" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;fontSize=13;verticalAlign=top;spacingTop=5;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="550" width="1100" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="pcool" value="papers.cool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d0de;strokeColor=#996185;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="70" y="572" width="120" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="arxiv" value="arXiv API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d0de;strokeColor=#996185;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="210" y="572" width="120" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="Semantic Scholar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d0de;strokeColor=#996185;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="350" y="572" width="120" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="gh" value="GitHub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d0de;strokeColor=#996185;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="490" y="572" width="120" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="hf" value="HuggingFace" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d0de;strokeColor=#996185;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="630" y="572" width="120" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="or" value="OpenReview" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d0de;strokeColor=#996185;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="770" y="572" width="120" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows: workflows → infra -->
+        <mxCell id="ei1" edge="1" source="judge" target="llm" parent="1" style="dashed=1;strokeColor=#999999;"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ei2" edge="1" source="trend" target="llm" parent="1" style="dashed=1;strokeColor=#999999;"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Arrows: topic → sources -->
+        <mxCell id="es1" edge="1" source="topic" target="pcool" parent="1" style="dashed=1;strokeColor=#999999;"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="es2" edge="1" source="topic" target="arxiv" parent="1" style="dashed=1;strokeColor=#999999;"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="es3" edge="1" source="scholar" target="s2" parent="1" style="dashed=1;strokeColor=#999999;"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

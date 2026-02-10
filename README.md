@@ -9,13 +9,42 @@
 | 模块 | 说明 |
 |------|------|
 | **Topic Search** | 多主题聚合检索，支持 papers.cool + arXiv API 双数据源，跨 query/branch 去重与评分排序，`min_score` 质量过滤 |
-| **DailyPaper** | 日报生成（Markdown/JSON），可选 LLM 增强（摘要/趋势/洞察/相关性） |
+| **DailyPaper** | 日报生成（Markdown/JSON），可选 LLM 增强（摘要/趋势/洞察/相关性），支持定时推送（Email/Slack/钉钉） |
 | **LLM-as-Judge** | 5 维评分（Relevance/Novelty/Rigor/Impact/Clarity）+ 推荐分级，Token Budget 控制，SSE 流式推送 |
 | **Analyze SSE** | Judge + Trend 分析通过 SSE 实时流式推送，前端增量渲染 |
 | **学者追踪** | 定期监测学者论文，多 Agent 协作（Research/Code/Quality/Reviewer），PIS 影响力评分 |
 | **深度评审** | 模拟同行评审（初筛→批评→决策），输出结构化评审报告 |
 | **Paper2Code** | 论文到代码骨架生成（Planning→Analysis→Generation→Verification），支持 Docker/E2B 沙箱 |
 | **个性化研究** | Research Track 管理、记忆 Inbox、Context Engine 路由与推荐 |
+
+## 架构
+
+> 完整架构图（可编辑）：[`asset/architecture.drawio`](asset/architecture.drawio)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Clients:  Web (Next.js)  ·  CLI (Ink)  ·  ARQ Cron  ·  Push  │
+└────────────────────────────┬────────────────────────────────────┘
+                             ▼
+┌─────────────────── FastAPI Gateway (SSE) ───────────────────────┐
+│  /search  /daily  /analyze  /track  /review  /gen-code  /chat  │
+└────────────────────────────┬────────────────────────────────────┘
+                             ▼
+┌─ Application ──────────────────────────────────────────────────┐
+│  TopicSearch · DailyPaper · ScholarPipeline · Paper2Code       │
+│  LLM-as-Judge · TrendAnalyzer · Summarizer · ReviewerAgent     │
+│  ContextEngine · PushService                                   │
+└────────────────────────────┬───────────────────────────────────┘
+                             ▼
+┌─ Infrastructure ───────────────────────────────────────────────┐
+│  ModelRouter (OpenAI/NIM/OR)  ·  SQLite  ·  ARQ  ·  Docker/E2B│
+└────────────────────────────┬───────────────────────────────────┘
+                             ▼
+┌─ External Sources ─────────────────────────────────────────────┐
+│  papers.cool  ·  arXiv API  ·  Semantic Scholar  ·  GitHub     │
+│  HuggingFace  ·  OpenReview                                    │
+└────────────────────────────────────────────────────────────────┘
+```
 
 ## 界面预览
 
@@ -37,9 +66,17 @@
 
 ### Topic Workflow
 
-| DAG + 配置面板 | DailyPaper 报告 | 论文卡片 |
-|---------------|----------------|---------|
-| ![DAG](asset/ui/9-3.png) | ![Report](asset/ui/9-1.png) | ![Cards](asset/ui/9-2.png) |
+| DAG + 配置面板 | DailyPaper 报告 |
+|---------------|----------------|
+| ![DAG](asset/ui/9-3.png) | ![Report](asset/ui/9-1.png) |
+
+| 论文卡片 | Insights + Trends |
+|---------|-------------------|
+| ![Cards](asset/ui/9-2.png) | ![Insights](asset/ui/9-4.png) |
+
+| Judge 评分 |
+|------------|
+| ![Judge](asset/ui/9-5.png) |
 
 ## 快速开始
 
