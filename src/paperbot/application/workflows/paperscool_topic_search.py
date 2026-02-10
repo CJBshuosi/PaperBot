@@ -85,21 +85,34 @@ class PapersCoolTopicSearchWorkflow:
                     "top_titles": [],
                     "query_highlights": [],
                     "source_breakdown": {},
+                    "source_errors": [],
                 },
             }
 
         aggregated_items: List[Dict[str, Any]] = []
         by_url: Dict[str, Dict[str, Any]] = {}
         by_title: Dict[str, Dict[str, Any]] = {}
+        source_errors: List[Dict[str, str]] = []
 
         for spec in query_specs:
             for source_name in source_names:
                 source = self.source_registry.create(source_name)
-                records = source.search(
-                    query=spec.normalized_query,
-                    branches=branches,
-                    show_per_branch=show_per_branch,
-                )
+                try:
+                    records = source.search(
+                        query=spec.normalized_query,
+                        branches=branches,
+                        show_per_branch=show_per_branch,
+                    )
+                except Exception as exc:
+                    # Keep the workflow usable when one external source is throttled/down.
+                    source_errors.append(
+                        {
+                            "source": source_name,
+                            "query": spec.normalized_query,
+                            "error": str(exc),
+                        }
+                    )
+                    continue
                 for record in records:
                     item = self._build_item(record=record, query_spec=spec)
                     current = self._find_existing_item(item, by_url=by_url, by_title=by_title)
@@ -132,7 +145,11 @@ class PapersCoolTopicSearchWorkflow:
                 }
             )
 
-        summary = self._build_summary(query_views=query_views, aggregated_items=aggregated_items)
+        summary = self._build_summary(
+            query_views=query_views,
+            aggregated_items=aggregated_items,
+            source_errors=source_errors,
+        )
 
         return {
             "source": "papers.cool",
@@ -249,6 +266,7 @@ class PapersCoolTopicSearchWorkflow:
         *,
         query_views: Sequence[Dict[str, Any]],
         aggregated_items: Sequence[Dict[str, Any]],
+        source_errors: Sequence[Dict[str, str]],
     ) -> Dict[str, Any]:
         query_highlights: List[Dict[str, Any]] = []
         total_query_hits = 0
@@ -279,6 +297,7 @@ class PapersCoolTopicSearchWorkflow:
             "top_titles": top_titles,
             "query_highlights": query_highlights,
             "source_breakdown": source_breakdown,
+            "source_errors": list(source_errors),
         }
 
 

@@ -64,6 +64,36 @@ curl -X POST "http://localhost:8000/api/memory/context" \
 
 `GET /api/memory/list?user_id=jerry&limit=100`
 
+### 4) 编辑记忆条目
+
+`PATCH /api/memory/items/{item_id}`
+
+```bash
+curl -X PATCH "http://localhost:8000/api/memory/items/42" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"updated content","tags":["updated"]}'
+```
+
+### 5) 删除记忆条目
+
+`DELETE /api/memory/items/{item_id}`
+
+```bash
+curl -X DELETE "http://localhost:8000/api/memory/items/42?user_id=jerry"
+```
+
+### 6) 记忆指标概览
+
+`GET /api/memory/metrics`
+
+返回记忆模块整体指标（条目数、导入数等）。
+
+### 7) 指标历史
+
+`GET /api/memory/metrics/{metric_name}`
+
+返回指定指标的历史记录。
+
 ## Chat API 中启用记忆
 
 `POST /api/chat` body 增加：

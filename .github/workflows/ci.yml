@@ -2,14 +2,16 @@ name: ci
 
 on:
   push:
+    branches: [master]
   pull_request:
+    branches: [master]
 
 jobs:
   tests:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9"]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +19,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements-ci.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
 
       - name: Install deps (CI minimal)
         run: |
@@ -33,6 +43,15 @@ jobs:
             tests/unit/test_source_registry_modes.py \
             tests/unit/test_arq_worker_settings.py \
             tests/unit/test_jobs_routes_import.py \
+            tests/unit/test_dailypaper.py \
+            tests/unit/test_paper_judge.py \
+            tests/unit/test_topic_search_sources.py \
+            tests/unit/test_paperscool_topic_search.py \
+            tests/unit/test_memory_module.py \
+            tests/unit/test_memory_metric_collector.py \
+            tests/unit/test_llm_service.py \
+            tests/unit/test_di_container.py \
+            tests/unit/test_pipeline.py \
             tests/integration/test_eventlog_sqlalchemy.py \
             tests/integration/test_crawler_contract_parsers.py \
             tests/integration/test_arxiv_connector_fixture.py \

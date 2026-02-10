@@ -45,7 +45,7 @@ class TopicSearchSourceRegistry:
         self._factories[name.strip().lower()] = factory
 
     def create(self, name: str) -> TopicSearchSource:
-        key = name.strip().lower()
+        key = _normalize_source_name(name)
         if key not in self._factories:
             raise KeyError(f"Unknown topic search source: {name}")
         return self._factories[key]()
@@ -139,7 +139,10 @@ def build_default_topic_source_registry(
 ) -> TopicSearchSourceRegistry:
     registry = TopicSearchSourceRegistry()
     registry.register("papers_cool", lambda: PapersCoolTopicSource(connector=connector))
+    registry.register("paperscool", lambda: PapersCoolTopicSource(connector=connector))
     registry.register("arxiv_api", lambda: ArxivTopicSource())
+    registry.register("arxivapi", lambda: ArxivTopicSource())
+    registry.register("arxiv", lambda: ArxivTopicSource())
     return registry
 
 
@@ -147,9 +150,18 @@ def dedupe_sources(sources: Iterable[str]) -> List[str]:
     seen = set()
     out: List[str] = []
     for source in sources:
-        key = (source or "").strip().lower()
+        key = _normalize_source_name(source)
         if not key or key in seen:
             continue
         seen.add(key)
         out.append(key)
     return out
+
+
+def _normalize_source_name(name: str | None) -> str:
+    key = (name or "").strip().lower()
+    if key in {"paperscool", "papers.cool"}:
+        return "papers_cool"
+    if key in {"arxiv", "arxivapi", "arxiv-api"}:
+        return "arxiv_api"
+    return key

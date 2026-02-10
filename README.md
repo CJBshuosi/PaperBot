@@ -317,10 +317,6 @@ PaperBot/
 
 DB 持久化（统一主数据模型 Paper/Scholar/Event/Run）、任务队列/调度（幂等/重试/死信）、指标与告警（抓取成功率/LLM 失败率/成本）、长期记忆 MVP（Run/Episodic + Semantic Memory）。
 
-### Phase 3 — 平台化与企业级治理（P2/P3）
-
-Source Registry 与插件化（配置驱动注册）、MCP 工具互操作、多租户/权限/审计/配额、OpenTelemetry 可观测性、密钥管理与合规审计。
-
 ## 文档索引
 
 | 文档 | 说明 |

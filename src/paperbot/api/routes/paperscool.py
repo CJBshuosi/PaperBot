@@ -92,14 +92,17 @@ def topic_search(req: PapersCoolSearchRequest):
         raise HTTPException(status_code=400, detail="queries is required")
 
     workflow = PapersCoolTopicSearchWorkflow()
-    result = workflow.run(
-        queries=cleaned_queries,
-        sources=req.sources,
-        branches=req.branches,
-        top_k_per_query=req.top_k_per_query,
-        show_per_branch=req.show_per_branch,
-        min_score=req.min_score,
-    )
+    try:
+        result = workflow.run(
+            queries=cleaned_queries,
+            sources=req.sources,
+            branches=req.branches,
+            top_k_per_query=req.top_k_per_query,
+            show_per_branch=req.show_per_branch,
+            min_score=req.min_score,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"topic search failed: {exc}") from exc
     return PapersCoolSearchResponse(**result)
 
 
@@ -110,14 +113,17 @@ def generate_daily_report(req: DailyPaperRequest):
         raise HTTPException(status_code=400, detail="queries is required")
 
     workflow = PapersCoolTopicSearchWorkflow()
-    search_result = workflow.run(
-        queries=cleaned_queries,
-        sources=req.sources,
-        branches=req.branches,
-        top_k_per_query=req.top_k_per_query,
-        show_per_branch=req.show_per_branch,
-        min_score=req.min_score,
-    )
+    try:
+        search_result = workflow.run(
+            queries=cleaned_queries,
+            sources=req.sources,
+            branches=req.branches,
+            top_k_per_query=req.top_k_per_query,
+            show_per_branch=req.show_per_branch,
+            min_score=req.min_score,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"daily search failed: {exc}") from exc
     report = build_daily_paper_report(search_result=search_result, title=req.title, top_n=req.top_n)
     if req.enable_llm_analysis:
         report = enrich_daily_paper_report(

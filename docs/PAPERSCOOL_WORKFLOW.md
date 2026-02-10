@@ -140,11 +140,11 @@ registry.register("my_source", MySource)
 
 然后请求中传入：`"sources": ["my_source"]`。
 
-## 6. 爬取/收集架构图
+## 6. 架构图
 
-- Excalidraw：`docs/diagrams/crawling_pipeline_architecture.excalidraw`
+- 系统架构图（可编辑）：[Excalidraw](../asset/architecture.excalidraw) · [drawio](../asset/architecture.drawio)
 
-## 8. Scheduler 配置（DailyPaper）
+## 7. Scheduler 配置（DailyPaper）
 
 - `PAPERBOT_DAILYPAPER_ENABLED`：是否启用 daily cron（true/false）
 - `PAPERBOT_DAILYPAPER_CRON_HOUR` / `PAPERBOT_DAILYPAPER_CRON_MINUTE`
@@ -183,7 +183,7 @@ registry.register("my_source", MySource)
 - `daily-paper` API 新增 `notify` 与 `notify_channels` 参数，可手动触发一次推送。
 - ARQ 定时任务 `daily_papers_job` 在 `notify=true` 时会自动推送日报摘要。
 
-## 9. UI 设计说明
+## 8. UI 设计说明
 
 当前采用 **参数化面板 + XYFlow 只读 DAG**（`/workflows`）而非 n8n/coze 式自由拖拽，原因：
 
