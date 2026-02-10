@@ -41,6 +41,12 @@ output/reports/**/*.md
 !logs/.gitkeep
 BettaFish/
 
+# Personal research notes (not part of project)
+docs/research/
+
+# Reports output
+reports/
+
 # Node.js
 node_modules/
 cli/dist/

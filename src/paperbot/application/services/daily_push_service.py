@@ -159,7 +159,7 @@ class DailyPushService:
                 score = float(item.get("score") or 0)
                 url = item.get("url") or ""
                 if url:
-                    lines.append(f"{idx}. {title} (score={score:.4f})\\n   {url}")
+                    lines.append(f"{idx}. {title} (score={score:.4f})\n   {url}")
                 else:
                     lines.append(f"{idx}. {title} (score={score:.4f})")
             lines.append("")
