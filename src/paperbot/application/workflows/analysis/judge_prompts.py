@@ -6,8 +6,7 @@ from paperbot.application.workflows.analysis.judge_rubrics import JudgeRubric
 
 
 PAPER_JUDGE_SYSTEM = (
-    "You are an expert research paper evaluator. "
-    "Reason carefully and return strict JSON only."
+    "You are an expert research paper evaluator. " "Reason carefully and return strict JSON only."
 )
 
 
@@ -27,8 +26,12 @@ def build_paper_judge_user_prompt(*, query: str, paper: Dict[str, Any], rubric: 
         rubric_blocks.append("\n".join(lines))
 
     dims_json = ",\n    ".join(
-        [f'"{dim.key}": {{"score": <1-5>, "rationale": "<1-2 sentences>"}}' for dim in rubric.dimensions]
+        [
+            f'"{dim.key}": {{"score": <1-5>, "rationale": "<1-2 sentences>"}}'
+            for dim in rubric.dimensions
+        ]
     )
+    rubric_text = "\n\n".join(rubric_blocks)
 
     return (
         "Evaluate the following paper against the research query.\n\n"
@@ -41,7 +44,7 @@ def build_paper_judge_user_prompt(*, query: str, paper: Dict[str, Any], rubric: 
         f"- Keywords: {keywords}\n\n"
         "Use integer scores 1-5. Abstract length should not affect scoring.\n\n"
         "## Rubric\n"
-        f"{'\n\n'.join(rubric_blocks)}\n\n"
+        f"{rubric_text}\n\n"
         "## Output Format (strict JSON)\n"
         "{\n"
         f"    {dims_json},\n"
