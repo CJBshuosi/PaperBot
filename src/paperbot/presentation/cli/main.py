@@ -12,6 +12,8 @@ import json
 import sys
 from typing import Optional
 
+from dotenv import find_dotenv, load_dotenv
+
 from paperbot.application.workflows.dailypaper import (
     DailyPaperReporter,
     apply_judge_scores_to_report,
@@ -21,6 +23,10 @@ from paperbot.application.workflows.dailypaper import (
     normalize_output_formats,
     render_daily_paper_markdown,
 )
+from paperbot.application.services.daily_push_service import DailyPushService
+
+# Load local .env automatically for CLI workflows using LLM providers.
+load_dotenv(find_dotenv(usecwd=True), override=False)
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -141,6 +147,14 @@ def create_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Judge 的 token 预算上限（0 表示不限制）",
+    )
+    daily_parser.add_argument("--notify", action="store_true", help="生成后推送日报通知")
+    daily_parser.add_argument(
+        "--notify-channel",
+        action="append",
+        dest="notify_channels",
+        default=None,
+        help="推送渠道：email/slack/dingding（可重复指定）",
     )
 
     # version
@@ -305,6 +319,7 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
 
     markdown_path = None
     json_path = None
+    notify_result = None
     if parsed.save:
         reporter = DailyPaperReporter(output_dir=parsed.output_dir)
         artifacts = reporter.write(
@@ -316,12 +331,23 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
         markdown_path = artifacts.markdown_path
         json_path = artifacts.json_path
 
+    if parsed.notify:
+        notify_service = DailyPushService.from_env()
+        notify_result = notify_service.push_dailypaper(
+            report=report,
+            markdown=markdown,
+            markdown_path=markdown_path,
+            json_path=json_path,
+            channels_override=parsed.notify_channels,
+        )
+
     if parsed.json:
         payload = {
             "report": report,
             "markdown": markdown,
             "markdown_path": markdown_path,
             "json_path": json_path,
+            "notify": notify_result,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
@@ -341,6 +367,8 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
     if markdown_path or json_path:
         print(f"saved markdown: {markdown_path}")
         print(f"saved json: {json_path}")
+    if parsed.notify:
+        print(f"notify: {json.dumps(notify_result, ensure_ascii=False)}")
     print("\n" + markdown)
     return 0
 

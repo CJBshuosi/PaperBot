@@ -63,6 +63,13 @@ def _parse_csv_env(name: str, default: str) -> List[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 async def cron_track_subscriptions(ctx) -> Dict[str, Any]:
     """
     Cron entrypoint: enqueue tracking jobs for all subscribed scholars.
@@ -183,19 +190,14 @@ async def cron_daily_papers(ctx) -> Dict[str, Any]:
             "error": "redis not available",
         }
 
-    enable_llm_analysis = os.getenv("PAPERBOT_DAILYPAPER_ENABLE_LLM", "false").lower() in (
-        "1",
-        "true",
-        "yes",
-        "y",
-    )
+    enable_llm_analysis = _parse_bool_env("PAPERBOT_DAILYPAPER_ENABLE_LLM", False)
     llm_features = _parse_csv_env("PAPERBOT_DAILYPAPER_LLM_FEATURES", "summary")
-    enable_judge = os.getenv("PAPERBOT_DAILYPAPER_ENABLE_JUDGE", "false").lower() in (
-        "1",
-        "true",
-        "yes",
-        "y",
+    enable_judge = _parse_bool_env("PAPERBOT_DAILYPAPER_ENABLE_JUDGE", False)
+    notify_enabled = _parse_bool_env(
+        "PAPERBOT_DAILYPAPER_NOTIFY_ENABLED",
+        _parse_bool_env("PAPERBOT_NOTIFY_ENABLED", False),
     )
+    notify_channels = _parse_csv_env("PAPERBOT_DAILYPAPER_NOTIFY_CHANNELS", "")
     judge_runs = int(os.getenv("PAPERBOT_DAILYPAPER_JUDGE_RUNS", "1"))
     judge_max_items = int(os.getenv("PAPERBOT_DAILYPAPER_JUDGE_MAX_ITEMS", "5"))
     judge_token_budget = int(os.getenv("PAPERBOT_DAILYPAPER_JUDGE_TOKEN_BUDGET", "0"))
@@ -216,6 +218,8 @@ async def cron_daily_papers(ctx) -> Dict[str, Any]:
         judge_runs=judge_runs,
         judge_max_items_per_query=judge_max_items,
         judge_token_budget=judge_token_budget,
+        notify=notify_enabled,
+        notify_channels=notify_channels,
         save=True,
     )
     payload = {
@@ -331,6 +335,8 @@ async def daily_papers_job(
     judge_runs: int = 1,
     judge_max_items_per_query: int = 5,
     judge_token_budget: int = 0,
+    notify: bool = False,
+    notify_channels: Optional[List[str]] = None,
     save: bool = True,
 ) -> Dict[str, Any]:
     """ARQ job: generate DailyPaper report and bridge highlights into feed events."""
@@ -365,6 +371,8 @@ async def daily_papers_job(
                 "judge_runs": judge_runs,
                 "judge_max_items_per_query": judge_max_items_per_query,
                 "judge_token_budget": judge_token_budget,
+                "notify": notify,
+                "notify_channels": notify_channels or [],
             },
         )
     )
@@ -378,6 +386,7 @@ async def daily_papers_job(
         normalize_output_formats,
         render_daily_paper_markdown,
     )
+    from paperbot.application.services.daily_push_service import DailyPushService
     from paperbot.application.workflows.paperscool_topic_search import PapersCoolTopicSearchWorkflow
     from paperbot.workflows.feed import ScholarFeedService
 
@@ -419,6 +428,17 @@ async def daily_papers_job(
         markdown_path = artifacts.markdown_path
         json_path = artifacts.json_path
 
+    notify_result: Optional[Dict[str, Any]] = None
+    if notify:
+        notify_service = DailyPushService.from_env()
+        notify_result = notify_service.push_dailypaper(
+            report=report,
+            markdown=markdown,
+            markdown_path=markdown_path,
+            json_path=json_path,
+            channels_override=notify_channels,
+        )
+
     feed_service = ScholarFeedService()
     feed_service.process_daily_paper_report(report)
     feed_events = [event.to_dict() for event in feed_service.get_feed(limit=30)]
@@ -429,6 +449,7 @@ async def daily_papers_job(
         "markdown_path": markdown_path,
         "json_path": json_path,
         "feed_events": len(feed_events),
+        "notify": notify_result,
     }
     elog.append(
         make_event(
@@ -450,6 +471,7 @@ async def daily_papers_job(
         "report": report,
         "markdown_path": markdown_path,
         "json_path": json_path,
+        "notify": notify_result,
         "feed_events": feed_events,
     }
 

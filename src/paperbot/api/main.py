@@ -5,6 +5,7 @@ Supports Server-Sent Events (SSE) for streaming responses
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import find_dotenv, load_dotenv
 
 from .routes import (
     track,
@@ -23,6 +24,9 @@ from .routes import (
 from paperbot.infrastructure.event_log.logging_event_log import LoggingEventLog
 from paperbot.infrastructure.event_log.composite_event_log import CompositeEventLog
 from paperbot.infrastructure.event_log.sqlalchemy_event_log import SqlAlchemyEventLog
+
+# Load local .env automatically so model/router keys are available in API mode.
+load_dotenv(find_dotenv(usecwd=True), override=False)
 
 app = FastAPI(
     title="PaperBot API",
