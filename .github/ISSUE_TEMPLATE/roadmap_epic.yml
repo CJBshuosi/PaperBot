@@ -1,0 +1,78 @@
+name: Roadmap Epic
+about: Create a roadmap-level issue with clear scope, dependencies, and acceptance criteria.
+title: "[Roadmap] "
+labels:
+  - roadmap
+  - epic
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for roadmap items from `docs/ROADMAP_TODO.md`.
+        Keep scope concrete so it can be broken into child issues.
+
+  - type: input
+    id: phase
+    attributes:
+      label: Phase / Section
+      description: "Example: Phase 2.1, Phase 3.3, OpenClaw integration."
+      placeholder: "Phase 2.1 - Paper Detail Page"
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: Background
+      description: Why this epic matters.
+      placeholder: Business value, user pain, platform gap...
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: In Scope
+      description: Concrete deliverables.
+      placeholder: |
+        - API endpoint(s)
+        - DB model / migration
+        - UI component(s)
+        - Tests and docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of Scope
+      description: Explicitly list what this issue does not include.
+      placeholder: |
+        - Not including auth hardening
+        - Not including observability dashboard
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Related PRs/issues, blocking tasks, external constraints.
+      placeholder: |
+        - Depends on #123
+        - Requires migration 000X
+
+  - type: checkboxes
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      options:
+        - label: API/feature behavior is implemented and manually verified.
+        - label: Required migrations/schema changes are applied and validated.
+        - label: Unit/integration tests are added or updated.
+        - label: Docs/README/ROADMAP are updated.
+        - label: Backward compatibility and failure paths are handled.
+
+  - type: textarea
+    id: implementation_notes
+    attributes:
+      label: Implementation Notes
+      description: Optional technical details for assignee.

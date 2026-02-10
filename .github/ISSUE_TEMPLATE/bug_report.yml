@@ -1,0 +1,50 @@
+name: Bug Report
+about: Report a reproducible bug with expected behavior and logs.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      placeholder: Describe the actual behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: Describe expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stack trace
+      render: shell
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / branch
+      placeholder: "master@9e92584"
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "macOS 14, Python 3.11, Node 20"

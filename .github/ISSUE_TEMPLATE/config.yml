@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: PaperBot Discussion
+    url: https://github.com/jerry609/PaperBot/discussions
+    about: Ask questions or discuss ideas before opening large feature issues.
+  - name: Security Report
+    url: https://github.com/jerry609/PaperBot/security/advisories/new
+    about: Please report sensitive security issues privately.

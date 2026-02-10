@@ -1,0 +1,67 @@
+name: Feature Task
+about: Create an implementation task for backend/frontend/workflow work.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      placeholder: "Implement GET /api/research/papers/similar"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Backend API
+        - Workflow / Agent
+        - Data Model / Migration
+        - Frontend UI
+        - DevOps / CI
+        - Docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      placeholder: What user pain or system gap does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed Solution
+      placeholder: |
+        - Endpoint/model/component changes
+        - Data flow
+        - Error handling
+    validations:
+      required: true
+
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Task Checklist
+      placeholder: |
+        - [ ] Implement core logic
+        - [ ] Add/adjust tests
+        - [ ] Update docs
+
+  - type: textarea
+    id: test_plan
+    attributes:
+      label: Test Plan
+      placeholder: Unit/integration/manual verification steps.
+
+  - type: textarea
+    id: links
+    attributes:
+      label: Related Links
+      placeholder: ROADMAP section, PRs, docs, references.
