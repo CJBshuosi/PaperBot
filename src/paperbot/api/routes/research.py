@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from paperbot.context_engine import ContextEngine, ContextEngineConfig
 from paperbot.context_engine.track_router import TrackRouter
+from paperbot.utils.logging_config import Logger, LogFiles, set_trace_id
 from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.api_clients.semantic_scholar import SemanticScholarClient
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
@@ -624,18 +625,32 @@ class PaperFeedbackRequest(BaseModel):
     metadata: Dict[str, Any] = {}
     context_run_id: Optional[int] = None
     context_rank: Optional[int] = None
+    # Paper metadata (optional, used when saving to library)
+    paper_title: Optional[str] = None
+    paper_abstract: Optional[str] = None
+    paper_authors: Optional[List[str]] = None
+    paper_year: Optional[int] = None
+    paper_venue: Optional[str] = None
+    paper_citation_count: Optional[int] = None
+    paper_url: Optional[str] = None
 
 
 class PaperFeedbackResponse(BaseModel):
     feedback: Dict[str, Any]
+    library_paper_id: Optional[int] = None  # ID in papers table if saved
 
 
 @router.post("/research/papers/feedback", response_model=PaperFeedbackResponse)
 def add_paper_feedback(req: PaperFeedbackRequest):
+    set_trace_id()  # Initialize trace_id for this request
+    Logger.info(f"Received paper feedback request, action={req.action}", file=LogFiles.HARVEST)
+
     track_id = req.track_id
     if track_id is None:
+        Logger.info("No track specified, getting active track", file=LogFiles.HARVEST)
         active = _research_store.get_active_track(user_id=req.user_id)
         if not active:
+            Logger.error("No active track found", file=LogFiles.HARVEST)
             raise HTTPException(status_code=400, detail="track_id missing and no active track")
         track_id = int(active["id"])
 
@@ -645,17 +660,61 @@ def add_paper_feedback(req: PaperFeedbackRequest):
     if req.context_rank is not None:
         meta["context_rank"] = int(req.context_rank)
 
+    library_paper_id: Optional[int] = None
+    actual_paper_id = req.paper_id
+
+    # If action is "save" and we have paper metadata, insert into papers table
+    if req.action == "save" and req.paper_title:
+        Logger.info("Save action detected, inserting paper into papers table", file=LogFiles.HARVEST)
+        try:
+            from paperbot.domain.harvest import HarvestedPaper, HarvestSource
+            from paperbot.infrastructure.stores.paper_store import PaperStore
+
+            paper_store = PaperStore()
+            paper = HarvestedPaper(
+                title=req.paper_title,
+                source=HarvestSource.SEMANTIC_SCHOLAR,
+                abstract=req.paper_abstract or "",
+                authors=req.paper_authors or [],
+                semantic_scholar_id=req.paper_id,
+                year=req.paper_year,
+                venue=req.paper_venue,
+                citation_count=req.paper_citation_count or 0,
+                url=req.paper_url,
+            )
+            Logger.info("Calling paper store to upsert paper", file=LogFiles.HARVEST)
+            new_count, _ = paper_store.upsert_papers_batch([paper])
+
+            # Get the paper ID from database
+            from paperbot.infrastructure.stores.models import PaperModel
+            from sqlalchemy import select
+            with paper_store._provider.session() as session:
+                result = session.execute(
+                    select(PaperModel).where(
+                        PaperModel.semantic_scholar_id == req.paper_id
+                    )
+                ).scalar_one_or_none()
+                if result:
+                    library_paper_id = result.id
+                    actual_paper_id = str(result.id)  # Use integer ID for feedback
+                    Logger.info(f"Paper saved to library with id={library_paper_id}", file=LogFiles.HARVEST)
+        except Exception as e:
+            Logger.warning(f"Failed to save paper to library: {e}", file=LogFiles.HARVEST)
+
+    Logger.info("Recording paper feedback to research store", file=LogFiles.HARVEST)
     fb = _research_store.add_paper_feedback(
         user_id=req.user_id,
         track_id=track_id,
-        paper_id=req.paper_id,
+        paper_id=actual_paper_id,
         action=req.action,
         weight=req.weight,
         metadata=meta,
     )
     if not fb:
+        Logger.error("Failed to record feedback - track not found", file=LogFiles.HARVEST)
         raise HTTPException(status_code=404, detail="Track not found")
-    return PaperFeedbackResponse(feedback=fb)
+    Logger.info("Paper feedback recorded successfully", file=LogFiles.HARVEST)
+    return PaperFeedbackResponse(feedback=fb, library_paper_id=library_paper_id)
 
 
 class PaperFeedbackListResponse(BaseModel):
@@ -769,13 +828,19 @@ class ContextResponse(BaseModel):
 
 @router.post("/research/context", response_model=ContextResponse)
 async def build_context(req: ContextRequest):
+    set_trace_id()  # Initialize trace_id for this request
+    Logger.info("Received build context request", file=LogFiles.HARVEST)
+
     if req.activate_track_id is not None:
+        Logger.info("Activating research track", file=LogFiles.HARVEST)
         activated = _research_store.activate_track(
             user_id=req.user_id, track_id=req.activate_track_id
         )
         if not activated:
+            Logger.error("Research track not found", file=LogFiles.HARVEST)
             raise HTTPException(status_code=404, detail="Track not found")
 
+    Logger.info("Initializing context engine", file=LogFiles.HARVEST)
     engine = ContextEngine(
         research_store=_research_store,
         memory_store=_memory_store,
@@ -794,12 +859,15 @@ async def build_context(req: ContextRequest):
         ),
     )
     try:
+        Logger.info("Building context pack with paper recommendations", file=LogFiles.HARVEST)
         pack = await engine.build_context_pack(
             user_id=req.user_id,
             query=req.query,
             track_id=req.track_id,
             include_cross_track=req.include_cross_track,
         )
+        paper_count = len(pack.get("paper_recommendations", []))
+        Logger.info(f"Context pack built successfully, found {paper_count} papers", file=LogFiles.HARVEST)
         return ContextResponse(context_pack=pack)
     finally:
         await engine.close()

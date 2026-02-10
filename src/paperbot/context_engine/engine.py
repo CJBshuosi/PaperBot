@@ -12,6 +12,7 @@ from paperbot.context_engine.track_router import TrackRouter, TrackRouterConfig
 from paperbot.domain.paper import PaperMeta
 from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
+from paperbot.utils.logging_config import Logger, LogFiles
 
 _TOKEN_RX = re.compile(r"[a-zA-Z0-9_+.-]+")
 
@@ -502,6 +503,7 @@ class ContextEngine:
             "rebuttal": (0.50, 0.40, 0.10),
         }.get(stage, (0.55, 0.30, 0.15))
 
+        Logger.info(f"Paper search config: offline={self.config.offline}, paper_limit={self.config.paper_limit}", file=LogFiles.HARVEST)
         if not self.config.offline and self.config.paper_limit > 0:
             try:
                 searcher = self.paper_searcher
@@ -509,9 +511,12 @@ class ContextEngine:
                     from paperbot.utils.search import SemanticScholarSearch  # local import
 
                     searcher = SemanticScholarSearch()
+                    Logger.info("Initialized SemanticScholarSearch", file=LogFiles.HARVEST)
 
                 fetch_limit = max(30, int(self.config.paper_limit) * 3)
+                Logger.info(f"Searching papers with query='{merged_query}', limit={fetch_limit}", file=LogFiles.HARVEST)
                 resp = await asyncio.to_thread(searcher.search_papers, merged_query, fetch_limit)
+                Logger.info(f"Search returned {len(getattr(resp, 'papers', []) or [])} papers", file=LogFiles.HARVEST)
 
                 raw: List[Dict[str, Any]] = []
                 for p in getattr(resp, "papers", []) or []:
@@ -578,7 +583,10 @@ class ContextEngine:
                     policy=policy,
                     seed=f"{user_id}:{merged_query}:{stage}:{routed_track.get('id') if routed_track else ''}",
                 )
-            except Exception:
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                Logger.error(f"Error fetching papers: {e}\n{tb}", file=LogFiles.HARVEST)
                 papers = []
 
         routing = {

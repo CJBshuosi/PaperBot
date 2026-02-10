@@ -45,6 +45,7 @@ type MemoryItem = {
 type Paper = {
   paper_id: string
   title: string
+  abstract?: string
   year?: number
   venue?: string
   citation_count?: number
@@ -383,23 +384,34 @@ export default function ResearchDashboard() {
     }
   }
 
-  async function sendFeedback(paperId: string, action: string, rank?: number) {
+  async function sendFeedback(paperId: string, action: string, rank?: number, paper?: Paper) {
     setLoading(true)
     setError(null)
     try {
       const contextRunId = contextPack?.context_run_id ?? null
+      const body: Record<string, unknown> = {
+        user_id: userId,
+        track_id: activeTrackId,
+        paper_id: paperId,
+        action,
+        weight: 0.0,
+        context_run_id: contextRunId,
+        context_rank: typeof rank === "number" ? rank : undefined,
+        metadata: {},
+      }
+      // Include paper metadata for save action
+      if (action === "save" && paper) {
+        body.paper_title = paper.title
+        body.paper_abstract = paper.abstract || ""
+        body.paper_authors = paper.authors || []
+        body.paper_year = paper.year
+        body.paper_venue = paper.venue
+        body.paper_citation_count = paper.citation_count
+        body.paper_url = paper.url
+      }
       await fetchJson(`/api/research/papers/feedback`, {
         method: "POST",
-        body: JSON.stringify({
-          user_id: userId,
-          track_id: activeTrackId,
-          paper_id: paperId,
-          action,
-          weight: 0.0,
-          context_run_id: contextRunId,
-          context_rank: typeof rank === "number" ? rank : undefined,
-          metadata: {},
-        }),
+        body: JSON.stringify(body),
         headers: { "Content-Type": "application/json" },
       })
       await buildContext(false)
@@ -740,7 +752,7 @@ export default function ResearchDashboard() {
                                 >
                                   Like
                                 </Button>
-                                <Button size="sm" variant="outline" onClick={() => sendFeedback(p.paper_id, "save", idx)} disabled={loading}>
+                                <Button size="sm" variant="outline" onClick={() => sendFeedback(p.paper_id, "save", idx, p)} disabled={loading}>
                                   Save
                                 </Button>
                                 <Button

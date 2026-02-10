@@ -395,33 +395,25 @@ export async function fetchWikiConcepts(): Promise<WikiConcept[]> {
 }
 
 export async function fetchPapers(): Promise<Paper[]> {
-    return [
-        {
-            id: "attention-is-all-you-need",
-            title: "Attention Is All You Need",
-            venue: "NeurIPS 2017",
-            authors: "Vaswani et al.",
-            citations: "100k+",
-            status: "Reproduced",
-            tags: ["Transformer", "NLP"]
-        },
-        {
-            id: "bert-pretraining",
-            title: "BERT: Pre-training of Deep Bidirectional Transformers",
-            venue: "NAACL 2019",
-            authors: "Devlin et al.",
-            citations: "80k+",
-            status: "analyzing",
-            tags: ["NLP", "Language Model"]
-        },
-        {
-            id: "resnet-deep-residual",
-            title: "Deep Residual Learning for Image Recognition",
-            venue: "CVPR 2016",
-            authors: "He et al.",
-            citations: "150k+",
-            status: "pending",
-            tags: ["CV", "ResNet"]
+    try {
+        const res = await fetch(`${API_BASE_URL}/papers/library`)
+        if (!res.ok) {
+            console.error("Failed to fetch papers library:", res.status)
+            return []
         }
-    ]
+        const data = await res.json()
+        // Transform backend response to frontend Paper type
+        return (data.papers || []).map((item: { paper: Record<string, unknown>; action: string }) => ({
+            id: String(item.paper.id),
+            title: item.paper.title || "Untitled",
+            venue: item.paper.venue || "Unknown",
+            authors: Array.isArray(item.paper.authors) ? item.paper.authors.join(", ") : "Unknown",
+            citations: item.paper.citation_count ? `${item.paper.citation_count}` : "0",
+            status: item.action === "save" ? "Saved" : "pending",
+            tags: Array.isArray(item.paper.fields_of_study) ? item.paper.fields_of_study.slice(0, 3) : []
+        }))
+    } catch (e) {
+        console.error("Error fetching papers:", e)
+        return []
+    }
 }
