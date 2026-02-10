@@ -2,13 +2,13 @@
 
 论文检索、LLM 评审、学者追踪与 Paper2Code 的研究工作流工具链。
 
-**后端** Python + FastAPI（SSE 流式） · **前端** Next.js Web + Ink CLI · **数据源** papers.cool / arXiv API / Semantic Scholar
+**后端** Python + FastAPI（SSE 流式） · **前端** Next.js Web + Ink CLI · **数据源** papers.cool / arXiv API / Hugging Face Daily Papers / Semantic Scholar
 
 ## 核心功能
 
 | 模块 | 说明 |
 |------|------|
-| **Topic Search** | 多主题聚合检索，支持 papers.cool + arXiv API 双数据源，跨 query/branch 去重与评分排序，`min_score` 质量过滤 |
+| **Topic Search** | 多主题聚合检索，支持 papers.cool + arXiv API + Hugging Face Daily Papers 三数据源，跨 query/branch 去重与评分排序，`min_score` 质量过滤 |
 | **DailyPaper** | 日报生成（Markdown/JSON），可选 LLM 增强（摘要/趋势/洞察/相关性），支持定时推送（Email/Slack/钉钉） |
 | **LLM-as-Judge** | 5 维评分（Relevance/Novelty/Rigor/Impact/Clarity）+ 推荐分级（must_read/worth_reading/skim/skip），Token Budget 控制，多轮校准 |
 | **Analyze SSE** | Judge + Trend 分析通过 SSE 实时流式推送，前端增量渲染（逐张 Judge 卡片 / 逐条 Trend 分析） |
@@ -22,7 +22,7 @@
 
 | 模块 | 状态 | API | CLI | 说明 |
 |------|------|-----|-----|------|
-| Topic Search | ✅ 可用 | `/research/paperscool/search` | `topic-search` | 双数据源（papers.cool + arXiv API），评分/去重/min_score 过滤均已落地 |
+| Topic Search | ✅ 可用 | `/research/paperscool/search` | `topic-search` | 三数据源（papers.cool + arXiv API + HF Daily），评分/去重/min_score 过滤均已落地 |
 | DailyPaper | ✅ 可用 | `/research/paperscool/daily` | `daily-paper` | 报告生成 + LLM 增强 + Judge + 保存，完整可用 |
 | LLM-as-Judge | ✅ 可用 | `/research/paperscool/analyze` | `--with-judge` | 5 维评分 + 多轮校准 + 推荐分级 + Token Budget，SSE 增量推送 |
 | Analyze SSE | ✅ 可用 | `/research/paperscool/analyze` | — | Judge / Trend / Insight 三通道 SSE 流式，前端逐卡片渲染 |
@@ -61,8 +61,8 @@
 └────────────────────────────┬───────────────────────────────────┘
                              ▼
 ┌─ External Sources ─────────────────────────────────────────────┐
-│  papers.cool  ·  arXiv API  ·  Semantic Scholar  ·  GitHub     │
-│  HuggingFace  ·  OpenReview                                    │
+│  papers.cool  ·  arXiv API  ·  HF Daily Papers · Semantic Scholar│
+│  GitHub      ·  HuggingFace Hub · OpenReview                   │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -260,7 +260,7 @@ python main.py gen-code --title "..." --abstract "..." --output-dir ./output
 # 主题检索
 python -m paperbot.presentation.cli.main topic-search \
   -q "ICL压缩" -q "KV Cache加速" \
-  --source papers_cool --source arxiv_api --branch arxiv --branch venue
+  --source papers_cool --source arxiv_api --source hf_daily --branch arxiv --branch venue
 
 # DailyPaper（含 LLM + Judge + 推送）
 python -m paperbot.presentation.cli.main daily-paper \
@@ -282,7 +282,7 @@ PaperBot/
 │   │   ├── services/                  # 统一服务（LLM/Push/...）
 │   │   └── workflows/
 │   │       ├── paperscool_topic_search.py  # 主题检索（多源聚合 + min_score）
-│   │       ├── topic_search_sources.py     # 数据源注册（papers_cool / arxiv_api）
+│   │       ├── topic_search_sources.py     # 数据源注册（papers_cool / arxiv_api / hf_daily）
 │   │       ├── dailypaper.py               # 日报生成、LLM 增强、Judge 评分
 │   │       └── analysis/                   # Judge / Trend / Summarizer / Relevance
 │   ├── core/                          # 核心抽象（pipeline/errors/DI）
@@ -321,7 +321,7 @@ DB 持久化（统一主数据模型 Paper/Scholar/Event/Run）、任务队列/�
 
 | 文档 | 说明 |
 |------|------|
-| [`docs/ROADMAP_TODO.md`](docs/ROADMAP_TODO.md) | 功能规划与迭代清单（对标 HF/AlphaXiv） |
+| [`docs/ROADMAP_TODO.md`](docs/ROADMAP_TODO.md) | 功能规划与迭代清单（参考 HF/AlphaXiv） |
 | [`docs/PLAN.md`](docs/PLAN.md) | 架构评估与重构计划 |
 | [`docs/PAPERSCOOL_WORKFLOW.md`](docs/PAPERSCOOL_WORKFLOW.md) | Topic Workflow 端到端流程与配置 |
 | [`docs/DEEPCODE_TODO.md`](docs/DEEPCODE_TODO.md) | Paper2Code 迭代清单 |

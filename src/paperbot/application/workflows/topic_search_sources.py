@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Protocol, Sequence
 
 from paperbot.infrastructure.connectors.arxiv_connector import ArxivConnector
+from paperbot.infrastructure.connectors.hf_daily_papers_connector import HFDailyPapersConnector
 from paperbot.infrastructure.connectors.paperscool_connector import PapersCoolConnector
 
 
@@ -134,6 +135,53 @@ class ArxivTopicSource:
         ]
 
 
+class HFDailyTopicSource:
+    """Hugging Face Daily Papers as a TopicSearchSource."""
+
+    name = "hf_daily"
+
+    def __init__(self, connector: Optional[HFDailyPapersConnector] = None):
+        self.connector = connector or HFDailyPapersConnector()
+
+    def search(
+        self,
+        *,
+        query: str,
+        branches: Sequence[str],
+        show_per_branch: int,
+    ) -> List[TopicSearchRecord]:
+        normalized_branches = {(branch or "").strip().lower() for branch in branches}
+        if normalized_branches and "arxiv" not in normalized_branches:
+            return []
+
+        max_pages = max(1, min(10, (int(show_per_branch) + 99) // 100 + 2))
+        records = self.connector.search(
+            query=query,
+            max_results=show_per_branch,
+            page_size=100,
+            max_pages=max_pages,
+        )
+        return [
+            TopicSearchRecord(
+                source=self.name,
+                source_record_id=record.paper_id,
+                title=record.title,
+                url=record.paper_url,
+                source_branch="arxiv",
+                external_url=record.external_url,
+                pdf_url=record.pdf_url,
+                authors=record.authors,
+                subject_or_venue="Hugging Face Daily Papers",
+                published_at=record.submitted_on_daily_at or record.published_at,
+                snippet=record.summary[:500],
+                keywords=record.ai_keywords,
+                pdf_stars=record.upvotes,
+                kimi_stars=0,
+            )
+            for record in records
+        ]
+
+
 def build_default_topic_source_registry(
     connector: Optional[PapersCoolConnector] = None,
 ) -> TopicSearchSourceRegistry:
@@ -143,6 +191,10 @@ def build_default_topic_source_registry(
     registry.register("arxiv_api", lambda: ArxivTopicSource())
     registry.register("arxivapi", lambda: ArxivTopicSource())
     registry.register("arxiv", lambda: ArxivTopicSource())
+    registry.register("hf_daily", lambda: HFDailyTopicSource())
+    registry.register("huggingface_daily", lambda: HFDailyTopicSource())
+    registry.register("huggingface_papers", lambda: HFDailyTopicSource())
+    registry.register("hf", lambda: HFDailyTopicSource())
     return registry
 
 
@@ -164,4 +216,6 @@ def _normalize_source_name(name: str | None) -> str:
         return "papers_cool"
     if key in {"arxiv", "arxivapi", "arxiv-api"}:
         return "arxiv_api"
+    if key in {"hf", "hf_daily", "huggingface", "huggingface_daily", "huggingface_papers"}:
+        return "hf_daily"
     return key
