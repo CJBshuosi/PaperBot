@@ -41,6 +41,8 @@ type SavedPapersResponse = {
   items: SavedPaperItem[]
 }
 
+type UpdatingAction = "toggleRead" | "unsave"
+
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 const SORT_OPTIONS: Array<{ value: SavedPaperSort; label: string }> = [
   { value: "saved_at", label: "Saved Time" },
@@ -73,7 +75,7 @@ export default function SavedPapersList() {
   const [loading, setLoading] = useState<boolean>(true)
   const [refreshTick, setRefreshTick] = useState<number>(0)
   const [error, setError] = useState<string | null>(null)
-  const [updatingPaperId, setUpdatingPaperId] = useState<number | null>(null)
+  const [updatingAction, setUpdatingAction] = useState<{ paperId: number; action: UpdatingAction } | null>(null)
 
   const loadSavedPapers = useCallback(async () => {
     setLoading(true)
@@ -115,8 +117,13 @@ export default function SavedPapersList() {
   }, [items, page, pageSize, totalPages])
 
   const updateReadingStatus = useCallback(
-    async (paperId: number, status: ReadingStatus, markSaved: boolean | null = null) => {
-      setUpdatingPaperId(paperId)
+    async (
+      paperId: number,
+      status: ReadingStatus,
+      markSaved: boolean | null = null,
+      action: UpdatingAction,
+    ) => {
+      setUpdatingAction({ paperId, action })
       setError(null)
       try {
         const body: Record<string, unknown> = {
@@ -160,7 +167,7 @@ export default function SavedPapersList() {
         const detail = err instanceof Error ? err.message : String(err)
         setError(detail)
       } finally {
-        setUpdatingPaperId(null)
+        setUpdatingAction(null)
       }
     },
     [],
@@ -199,7 +206,10 @@ export default function SavedPapersList() {
               id="saved-page-size"
               className="h-9 rounded-md border bg-background px-2 text-sm"
               value={String(pageSize)}
-              onChange={(event) => setPageSize(Number(event.target.value || 20))}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value || 20))
+                setPage(1)
+              }}
             >
               {PAGE_SIZE_OPTIONS.map((size) => (
                 <option key={size} value={String(size)}>
@@ -245,7 +255,11 @@ export default function SavedPapersList() {
                   {pagedItems.map((item) => {
                     const paper = item.paper
                     const status = normalizeStatus(item.reading_status?.status)
-                    const updating = updatingPaperId === paper.id
+                    const togglingRead =
+                      updatingAction?.paperId === paper.id && updatingAction?.action === "toggleRead"
+                    const unsaving =
+                      updatingAction?.paperId === paper.id && updatingAction?.action === "unsave"
+                    const rowUpdating = togglingRead || unsaving
                     return (
                       <TableRow key={paper.id}>
                         <TableCell className="max-w-[520px]">
@@ -278,24 +292,25 @@ export default function SavedPapersList() {
                           <Button
                             size="sm"
                             variant="secondary"
-                            disabled={updating}
+                            disabled={rowUpdating}
                             onClick={() =>
                               updateReadingStatus(
                                 paper.id,
                                 status === "read" ? "reading" : "read",
                                 true,
+                                "toggleRead",
                               )
                             }
                           >
-                            {updating ? <Loader2 className="h-3 w-3 animate-spin" /> : status === "read" ? "Reading" : "Mark Read"}
+                            {togglingRead ? <Loader2 className="h-3 w-3 animate-spin" /> : status === "read" ? "Reading" : "Mark Read"}
                           </Button>
                           <Button
                             size="sm"
                             variant="ghost"
-                            disabled={updating}
-                            onClick={() => updateReadingStatus(paper.id, status, false)}
+                            disabled={rowUpdating}
+                            onClick={() => updateReadingStatus(paper.id, status, false, "unsave")}
                           >
-                            Unsave
+                            {unsaving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Unsave"}
                           </Button>
                         </TableCell>
                       </TableRow>
