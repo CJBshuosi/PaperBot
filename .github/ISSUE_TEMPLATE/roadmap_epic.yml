@@ -1,5 +1,5 @@
 name: Roadmap Epic
-about: Create a roadmap-level issue with clear scope, dependencies, and acceptance criteria.
+description: Create a roadmap-level issue with clear scope, dependencies, and acceptance criteria.
 title: "[Roadmap] "
 labels:
   - roadmap

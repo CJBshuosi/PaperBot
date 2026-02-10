@@ -1,5 +1,5 @@
 name: Feature Task
-about: Create an implementation task for backend/frontend/workflow work.
+description: Create an implementation task for backend/frontend/workflow work.
 title: "[Feature] "
 labels:
   - enhancement
