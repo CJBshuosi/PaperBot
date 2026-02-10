@@ -93,6 +93,7 @@ class DailyPushService:
         markdown_path: Optional[str] = None,
         json_path: Optional[str] = None,
         channels_override: Optional[List[str]] = None,
+        email_to_override: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         channels = channels_override or self.config.channels
         channels = [c.strip().lower() for c in channels if c and c.strip()]
@@ -102,6 +103,13 @@ class DailyPushService:
         if not channels:
             return {"sent": False, "reason": "no channels configured", "channels": channels}
 
+        # Allow UI-provided email recipients to override env config
+        original_email_to = self.config.email_to
+        if email_to_override:
+            cleaned = [e.strip() for e in email_to_override if (e or "").strip()]
+            if cleaned:
+                self.config.email_to = cleaned
+
         subject = self._build_subject(report)
         text = self._build_text(
             report, markdown=markdown, markdown_path=markdown_path, json_path=json_path
@@ -109,21 +117,24 @@ class DailyPushService:
 
         results: Dict[str, Any] = {"sent": False, "channels": channels, "results": {}}
         any_success = False
-        for channel in channels:
-            try:
-                if channel == "email":
-                    self._send_email(subject=subject, body=text)
-                elif channel == "slack":
-                    self._send_slack(subject=subject, body=text)
-                elif channel in {"dingtalk", "dingding"}:
-                    self._send_dingtalk(subject=subject, body=text)
-                else:
-                    raise ValueError(f"unsupported channel: {channel}")
-                results["results"][channel] = {"ok": True}
-                any_success = True
-            except Exception as exc:  # pragma: no cover - runtime specific
-                logger.warning("Daily push failed channel=%s err=%s", channel, exc)
-                results["results"][channel] = {"ok": False, "error": str(exc)}
+        try:
+            for channel in channels:
+                try:
+                    if channel == "email":
+                        self._send_email(subject=subject, body=text)
+                    elif channel == "slack":
+                        self._send_slack(subject=subject, body=text)
+                    elif channel in {"dingtalk", "dingding"}:
+                        self._send_dingtalk(subject=subject, body=text)
+                    else:
+                        raise ValueError(f"unsupported channel: {channel}")
+                    results["results"][channel] = {"ok": True}
+                    any_success = True
+                except Exception as exc:  # pragma: no cover - runtime specific
+                    logger.warning("Daily push failed channel=%s err=%s", channel, exc)
+                    results["results"][channel] = {"ok": False, "error": str(exc)}
+        finally:
+            self.config.email_to = original_email_to
 
         results["sent"] = any_success
         return results

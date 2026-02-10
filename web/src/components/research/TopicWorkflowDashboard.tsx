@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
@@ -9,6 +9,7 @@ import {
   ChevronRightIcon,
   FilterIcon,
   Loader2Icon,
+  MailIcon,
   PlusIcon,
   PlayIcon,
   SettingsIcon,
@@ -77,6 +78,20 @@ type SearchItem = {
   ai_summary?: string
   relevance?: { score?: number; reason?: string }
   judge?: JudgeResult
+}
+
+type RepoRow = {
+  title: string
+  query?: string
+  paper_url?: string
+  repo_url: string
+  github?: {
+    ok?: boolean
+    stars?: number
+    language?: string
+    updated_at?: string
+    error?: string
+  }
 }
 
 type StepStatus = "pending" | "running" | "done" | "error" | "skipped"
@@ -203,6 +218,96 @@ function buildDagStatuses(args: {
   }
 
   return statuses
+}
+
+/* ── Stream Progress ─────────────────────────────────── */
+
+type StreamPhase = "idle" | "search" | "build" | "llm" | "judge" | "filter" | "save" | "notify" | "done" | "error"
+
+const PHASE_LABELS: Record<StreamPhase, string> = {
+  idle: "Idle",
+  search: "Searching papers",
+  build: "Building report",
+  llm: "LLM enrichment",
+  judge: "Judge scoring",
+  filter: "Filtering papers",
+  save: "Saving",
+  notify: "Sending notifications",
+  done: "Done",
+  error: "Error",
+}
+
+const PHASE_ORDER: StreamPhase[] = ["search", "build", "llm", "judge", "filter", "save", "notify", "done"]
+
+function StreamProgressCard({
+  streamPhase,
+  streamLog,
+  streamProgress,
+  startTime,
+}: {
+  streamPhase: StreamPhase
+  streamLog: string[]
+  streamProgress: { done: number; total: number }
+  startTime: number | null
+}) {
+  const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0
+  const currentIdx = PHASE_ORDER.indexOf(streamPhase)
+  const pct = streamProgress.total > 0
+    ? Math.round((streamProgress.done / streamProgress.total) * 100)
+    : currentIdx >= 0
+      ? Math.round(((currentIdx + 0.5) / PHASE_ORDER.length) * 100)
+      : 0
+
+  return (
+    <Card className="border-blue-200 bg-blue-50/40">
+      <CardContent className="space-y-3 py-3">
+        <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center gap-2 font-medium text-blue-900">
+            <Loader2Icon className="size-4 animate-spin" />
+            {PHASE_LABELS[streamPhase] || streamPhase}
+          </div>
+          <div className="flex items-center gap-3 text-xs text-blue-700">
+            {streamProgress.total > 0 && (
+              <span>{streamProgress.done}/{streamProgress.total}</span>
+            )}
+            {elapsed > 0 && <span>{elapsed}s</span>}
+          </div>
+        </div>
+        <Progress value={pct} />
+        <div className="flex items-center gap-1.5">
+          {PHASE_ORDER.slice(0, -1).map((p) => {
+            const idx = PHASE_ORDER.indexOf(p)
+            const status = idx < currentIdx ? "done" : idx === currentIdx ? "active" : "pending"
+            return (
+              <div key={p} className="flex items-center gap-1">
+                <div
+                  className={`size-2 rounded-full ${
+                    status === "done"
+                      ? "bg-green-500"
+                      : status === "active"
+                        ? "bg-blue-500 animate-pulse"
+                        : "bg-slate-200"
+                  }`}
+                />
+                <span className={`text-[10px] ${status === "active" ? "font-medium text-blue-900" : "text-muted-foreground"}`}>
+                  {PHASE_LABELS[p]}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+        {streamLog.length > 0 && (
+          <ScrollArea className="h-32">
+            <div className="space-y-0.5 font-mono text-[11px] text-muted-foreground">
+              {streamLog.slice(-20).map((line, idx) => (
+                <div key={`sp-${idx}`}>{line}</div>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 /* ── Paper Card ───────────────────────────────────────── */
@@ -341,6 +446,7 @@ function ConfigSheetBody(props: {
   useVenue: boolean; setUseVenue: (v: boolean) => void
   usePapersCool: boolean; setUsePapersCool: (v: boolean) => void
   useArxivApi: boolean; setUseArxivApi: (v: boolean) => void
+  useHFDaily: boolean; setUseHFDaily: (v: boolean) => void
   enableLLM: boolean; setEnableLLM: (v: boolean) => void
   useSummary: boolean; setUseSummary: (v: boolean) => void
   useTrends: boolean; setUseTrends: (v: boolean) => void
@@ -350,16 +456,19 @@ function ConfigSheetBody(props: {
   judgeRuns: number; setJudgeRuns: (v: number) => void
   judgeMaxItems: number; setJudgeMaxItems: (v: number) => void
   judgeTokenBudget: number; setJudgeTokenBudget: (v: number) => void
+  notifyEmail: string; setNotifyEmail: (v: string) => void
+  notifyEnabled: boolean; setNotifyEnabled: (v: boolean) => void
 }) {
   const {
     queryItems, setQueryItems, topK, setTopK, topN, setTopN,
     showPerBranch, setShowPerBranch, saveDaily, setSaveDaily,
     outputDir, setOutputDir, useArxiv, setUseArxiv, useVenue, setUseVenue,
-    usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, enableLLM, setEnableLLM,
+    usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, useHFDaily, setUseHFDaily, enableLLM, setEnableLLM,
     useSummary, setUseSummary, useTrends, setUseTrends,
     useInsight, setUseInsight, useRelevance, setUseRelevance,
     enableJudge, setEnableJudge, judgeRuns, setJudgeRuns,
     judgeMaxItems, setJudgeMaxItems, judgeTokenBudget, setJudgeTokenBudget,
+    notifyEmail, setNotifyEmail, notifyEnabled, setNotifyEnabled,
   } = props
 
   const updateQuery = (idx: number, value: string) => {
@@ -404,6 +513,7 @@ function ConfigSheetBody(props: {
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-1.5 text-sm"><Checkbox checked={usePapersCool} onCheckedChange={(v) => setUsePapersCool(Boolean(v))} /> papers.cool</label>
             <label className="flex items-center gap-1.5 text-sm"><Checkbox checked={useArxivApi} onCheckedChange={(v) => setUseArxivApi(Boolean(v))} /> arXiv API</label>
+            <label className="flex items-center gap-1.5 text-sm"><Checkbox checked={useHFDaily} onCheckedChange={(v) => setUseHFDaily(Boolean(v))} /> HF Daily</label>
           </div>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-1.5 text-sm"><Checkbox checked={useArxiv} onCheckedChange={(v) => setUseArxiv(Boolean(v))} /> arxiv</label>
@@ -450,8 +560,34 @@ function ConfigSheetBody(props: {
           {enableJudge && (
             <div className="ml-6 grid grid-cols-3 gap-2">
               <div className="space-y-1"><Label className="text-xs">Runs</Label><Input type="number" min={1} max={5} value={judgeRuns} onChange={(e) => setJudgeRuns(Number(e.target.value || 1))} className="h-8 text-sm" /></div>
-              <div className="space-y-1"><Label className="text-xs">Max Items</Label><Input type="number" min={1} max={20} value={judgeMaxItems} onChange={(e) => setJudgeMaxItems(Number(e.target.value || 5))} className="h-8 text-sm" /></div>
+              <div className="space-y-1"><Label className="text-xs">Max Items</Label><Input type="number" min={1} value={judgeMaxItems} onChange={(e) => setJudgeMaxItems(Number(e.target.value || 20))} className="h-8 text-sm" /></div>
               <div className="space-y-1"><Label className="text-xs">Token Budget</Label><Input type="number" min={0} value={judgeTokenBudget} onChange={(e) => setJudgeTokenBudget(Number(e.target.value || 0))} className="h-8 text-sm" /></div>
+            </div>
+          )}
+        </section>
+
+        <Separator />
+
+        <section className="space-y-2">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <Checkbox checked={notifyEnabled} onCheckedChange={(v) => setNotifyEnabled(Boolean(v))} />
+            <MailIcon className="size-4" /> Email Notification
+          </label>
+          {notifyEnabled && (
+            <div className="ml-6 space-y-2">
+              <div className="space-y-1">
+                <Label className="text-xs">Email Address</Label>
+                <Input
+                  type="email"
+                  value={notifyEmail}
+                  onChange={(e) => setNotifyEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="h-8 text-sm"
+                />
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Requires PAPERBOT_NOTIFY_SMTP_* env vars on the backend. The email address here overrides PAPERBOT_NOTIFY_EMAIL_TO.
+              </p>
             </div>
           )}
         </section>
@@ -462,42 +598,73 @@ function ConfigSheetBody(props: {
 /* ── Main Dashboard ───────────────────────────────────── */
 
 export default function TopicWorkflowDashboard() {
-  /* Config state (local) */
+  /* Config state (local — queries only) */
   const [queryItems, setQueryItems] = useState<string[]>([...DEFAULT_QUERIES])
-  const [topK, setTopK] = useState(5)
-  const [topN, setTopN] = useState(10)
-  const [showPerBranch, setShowPerBranch] = useState(25)
-  const [saveDaily, setSaveDaily] = useState(false)
-  const [outputDir, setOutputDir] = useState("./reports/dailypaper")
-  const [useArxiv, setUseArxiv] = useState(true)
-  const [useVenue, setUseVenue] = useState(true)
-  const [usePapersCool, setUsePapersCool] = useState(true)
-  const [useArxivApi, setUseArxivApi] = useState(false)
-  const persistedDailyResult = useWorkflowStore.getState().dailyResult
-  const [enableLLM, setEnableLLM] = useState(
-    () => Boolean(persistedDailyResult?.report?.llm_analysis?.enabled),
-  )
-  const [useSummary, setUseSummary] = useState(true)
-  const [useTrends, setUseTrends] = useState(true)
-  const [useInsight, setUseInsight] = useState(true)
-  const [useRelevance, setUseRelevance] = useState(false)
-  const [enableJudge, setEnableJudge] = useState(
-    () => Boolean(persistedDailyResult?.report?.judge?.enabled),
-  )
-  const [judgeRuns, setJudgeRuns] = useState(1)
-  const [judgeMaxItems, setJudgeMaxItems] = useState(5)
-  const [judgeTokenBudget, setJudgeTokenBudget] = useState(0)
 
   /* Persisted state (zustand) */
   const store = useWorkflowStore()
-  const { searchResult, dailyResult, phase, analyzeLog } = store
+  const { searchResult, dailyResult, phase, analyzeLog, notifyEmail, notifyEnabled, config } = store
+  const uc = store.updateConfig
+
+  /* Derived config accessors — read from persisted store */
+  const topK = config.topK
+  const setTopK = (v: number) => uc({ topK: v })
+  const topN = config.topN
+  const setTopN = (v: number) => uc({ topN: v })
+  const showPerBranch = config.showPerBranch
+  const setShowPerBranch = (v: number) => uc({ showPerBranch: v })
+  const saveDaily = config.saveDaily
+  const setSaveDaily = (v: boolean) => uc({ saveDaily: v })
+  const outputDir = config.outputDir
+  const setOutputDir = (v: string) => uc({ outputDir: v })
+  const useArxiv = config.useArxiv
+  const setUseArxiv = (v: boolean) => uc({ useArxiv: v })
+  const useVenue = config.useVenue
+  const setUseVenue = (v: boolean) => uc({ useVenue: v })
+  const usePapersCool = config.usePapersCool
+  const setUsePapersCool = (v: boolean) => uc({ usePapersCool: v })
+  const useArxivApi = config.useArxivApi
+  const setUseArxivApi = (v: boolean) => uc({ useArxivApi: v })
+  const useHFDaily = config.useHFDaily
+  const setUseHFDaily = (v: boolean) => uc({ useHFDaily: v })
+  const enableLLM = config.enableLLM
+  const setEnableLLM = (v: boolean) => uc({ enableLLM: v })
+  const useSummary = config.useSummary
+  const setUseSummary = (v: boolean) => uc({ useSummary: v })
+  const useTrends = config.useTrends
+  const setUseTrends = (v: boolean) => uc({ useTrends: v })
+  const useInsight = config.useInsight
+  const setUseInsight = (v: boolean) => uc({ useInsight: v })
+  const useRelevance = config.useRelevance
+  const setUseRelevance = (v: boolean) => uc({ useRelevance: v })
+  const enableJudge = config.enableJudge
+  const setEnableJudge = (v: boolean) => uc({ enableJudge: v })
+  const judgeRuns = config.judgeRuns
+  const setJudgeRuns = (v: number) => uc({ judgeRuns: v })
+  const judgeMaxItems = config.judgeMaxItems
+  const setJudgeMaxItems = (v: number) => uc({ judgeMaxItems: v })
+  const judgeTokenBudget = config.judgeTokenBudget
+  const setJudgeTokenBudget = (v: number) => uc({ judgeTokenBudget: v })
 
   /* Transient loading state (not persisted) */
   const [loadingSearch, setLoadingSearch] = useState(false)
   const [loadingDaily, setLoadingDaily] = useState(false)
   const [loadingAnalyze, setLoadingAnalyze] = useState(false)
   const [analyzeProgress, setAnalyzeProgress] = useState({ done: 0, total: 0 })
+  const [loadingRepos, setLoadingRepos] = useState(false)
+  const [repoRows, setRepoRows] = useState<RepoRow[]>([])
+  const [repoError, setRepoError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  /* Stream progress state */
+  const [streamPhase, setStreamPhase] = useState<StreamPhase>("idle")
+  const [streamLog, setStreamLog] = useState<string[]>([])
+  const [streamProgress, setStreamProgress] = useState({ done: 0, total: 0 })
+  const streamStartRef = useRef<number | null>(null)
+
+  const addStreamLog = useCallback((line: string) => {
+    setStreamLog((prev) => [...prev.slice(-50), line])
+  }, [])
 
   /* UI state */
   const [dagOpen, setDagOpen] = useState(false)
@@ -506,7 +673,14 @@ export default function TopicWorkflowDashboard() {
 
   const queries = useMemo(() => queryItems.map((q) => q.trim()).filter(Boolean), [queryItems])
   const branches = useMemo(() => [useArxiv ? "arxiv" : "", useVenue ? "venue" : ""].filter(Boolean), [useArxiv, useVenue])
-  const sources = useMemo(() => [usePapersCool ? "papers_cool" : "", useArxivApi ? "arxiv_api" : ""].filter(Boolean), [usePapersCool, useArxivApi])
+  const sources = useMemo(
+    () => [
+      usePapersCool ? "papers_cool" : "",
+      useArxivApi ? "arxiv_api" : "",
+      useHFDaily ? "hf_daily" : "",
+    ].filter(Boolean),
+    [usePapersCool, useArxivApi, useHFDaily],
+  )
   const llmFeatures = useMemo(
     () => [useSummary ? "summary" : "", useTrends ? "trends" : "", useInsight ? "insight" : "", useRelevance ? "relevance" : ""].filter(Boolean),
     [useInsight, useRelevance, useSummary, useTrends],
@@ -541,6 +715,8 @@ export default function TopicWorkflowDashboard() {
       }),
     [phase, error, enableLLM, enableJudge, hasSearchData, hasReportData, hasLLMData, hasJudgeData, schedulerDone],
   )
+
+  const paperDataSource = dailyResult?.report?.queries ? "dailypaper" : searchResult?.items ? "search" : null
 
   const allPapers = useMemo(() => {
     const items: Array<SearchItem & { _query?: string }> = []
@@ -603,6 +779,7 @@ export default function TopicWorkflowDashboard() {
   /* Actions */
   async function runTopicSearch() {
     setLoadingSearch(true); setError(null); store.setPhase("searching")
+    store.setDailyResult(null); store.clearAnalyzeLog()
     try {
       const res = await fetch("/api/research/paperscool/search", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -615,23 +792,259 @@ export default function TopicWorkflowDashboard() {
     } catch (err) { setError(String(err)); store.setPhase("error") } finally { setLoadingSearch(false) }
   }
 
-  async function runDailyPaper() {
-    setLoadingDaily(true); setError(null); store.setPhase("reporting")
+  async function runDailyPaperStream() {
+    setLoadingDaily(true); setError(null); setRepoRows([]); setRepoError(null)
+    store.setPhase("reporting"); store.clearAnalyzeLog()
+    setStreamPhase("search"); setStreamLog([]); setStreamProgress({ done: 0, total: 0 })
+    streamStartRef.current = Date.now()
+
+    const requestBody = {
+      queries, sources, branches, top_k_per_query: topK, show_per_branch: showPerBranch, top_n: topN,
+      title: "DailyPaper Digest", formats: ["both"], save: saveDaily, output_dir: outputDir,
+      enable_llm_analysis: enableLLM, llm_features: llmFeatures,
+      enable_judge: enableJudge, judge_runs: judgeRuns,
+      judge_max_items_per_query: judgeMaxItems, judge_token_budget: judgeTokenBudget,
+      notify: notifyEnabled,
+      notify_channels: notifyEnabled ? ["email"] : [],
+      notify_email_to: notifyEnabled && notifyEmail.trim() ? [notifyEmail.trim()] : [],
+    }
+
+    let streamFailed = false
     try {
       const res = await fetch("/api/research/paperscool/daily", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          queries, sources, branches, top_k_per_query: topK, show_per_branch: showPerBranch, top_n: topN,
-          title: "DailyPaper Digest", formats: ["both"], save: saveDaily, output_dir: outputDir,
-          enable_llm_analysis: enableLLM, llm_features: llmFeatures,
-          enable_judge: enableJudge, judge_runs: judgeRuns,
-          judge_max_items_per_query: judgeMaxItems, judge_token_budget: judgeTokenBudget,
-        }),
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
+        body: JSON.stringify(requestBody),
       })
       if (!res.ok) throw new Error(await res.text())
-      store.setDailyResult(await res.json())
-      store.setPhase("reported")
-    } catch (err) { setError(String(err)); store.setPhase("error") } finally { setLoadingDaily(false) }
+
+      const contentType = res.headers.get("content-type") || ""
+
+      // JSON fallback (fast path — no LLM/Judge)
+      if (!contentType.includes("text/event-stream")) {
+        const data = await res.json()
+        store.setDailyResult(data)
+        store.setPhase("reported")
+        setStreamPhase("done")
+        return
+      }
+
+      // SSE streaming path
+      if (!res.body) throw new Error("No response body for SSE stream")
+
+      for await (const event of readSSE(res.body)) {
+        if (event.type === "progress") {
+          const d = (event.data || {}) as { phase?: string; message?: string; total?: number }
+          const p = (d.phase || "search") as StreamPhase
+          setStreamPhase(p)
+          addStreamLog(`[${p}] ${d.message || "running"}`)
+          if (d.total && d.total > 0) {
+            setStreamProgress({ done: 0, total: d.total })
+          }
+          continue
+        }
+
+        if (event.type === "search_done") {
+          const d = (event.data || {}) as { items_count?: number; unique_items?: number }
+          addStreamLog(`search done: ${d.unique_items || 0} unique papers`)
+          setStreamPhase("build")
+          continue
+        }
+
+        if (event.type === "report_built") {
+          const d = (event.data || {}) as { report?: DailyResult["report"]; queries_count?: number; global_top_count?: number }
+          addStreamLog(`report built: ${d.queries_count || 0} queries, ${d.global_top_count || 0} global top`)
+          if (d.report) {
+            store.setDailyResult({ report: d.report, markdown: "" })
+          }
+          continue
+        }
+
+        if (event.type === "llm_summary") {
+          const d = (event.data || {}) as { title?: string; query?: string; ai_summary?: string; done?: number; total?: number }
+          setStreamProgress({ done: d.done || 0, total: d.total || 0 })
+          addStreamLog(`summary ${d.done || 0}/${d.total || 0}: ${d.title || "paper"}`)
+          if (d.query && d.title && d.ai_summary) {
+            store.updateDailyResult((prev) => {
+              const nextQueries = (prev.report.queries || []).map((query) => {
+                const queryName = query.normalized_query || query.raw_query || ""
+                if (queryName !== d.query) return query
+                const nextItems = (query.top_items || []).map((item) => {
+                  if (item.title === d.title) return { ...item, ai_summary: d.ai_summary }
+                  return item
+                })
+                return { ...query, top_items: nextItems }
+              })
+              return { ...prev, report: { ...prev.report, queries: nextQueries } }
+            })
+          }
+          continue
+        }
+
+        if (event.type === "trend") {
+          const d = (event.data || {}) as { query?: string; analysis?: string; done?: number; total?: number }
+          addStreamLog(`trend ${d.done || 0}/${d.total || 0}: ${d.query || "query"}`)
+          if (d.query && typeof d.analysis === "string") {
+            store.updateDailyResult((prev) => {
+              const llmAnalysis = prev.report.llm_analysis || { enabled: true, features: [], daily_insight: "", query_trends: [] }
+              const features = new Set(llmAnalysis.features || [])
+              features.add("trends")
+              const trendList = [...(llmAnalysis.query_trends || [])]
+              const existingIndex = trendList.findIndex((item) => item.query === d.query)
+              if (existingIndex >= 0) {
+                trendList[existingIndex] = { query: d.query!, analysis: d.analysis! }
+              } else {
+                trendList.push({ query: d.query!, analysis: d.analysis! })
+              }
+              return {
+                ...prev,
+                report: {
+                  ...prev.report,
+                  llm_analysis: { ...llmAnalysis, enabled: true, features: Array.from(features), query_trends: trendList },
+                },
+              }
+            })
+          }
+          continue
+        }
+
+        if (event.type === "insight") {
+          const d = (event.data || {}) as { analysis?: string }
+          addStreamLog("insight generated")
+          if (typeof d.analysis === "string") {
+            store.updateDailyResult((prev) => {
+              const llmAnalysis = prev.report.llm_analysis || { enabled: true, features: [], daily_insight: "", query_trends: [] }
+              const features = new Set(llmAnalysis.features || [])
+              features.add("insight")
+              return {
+                ...prev,
+                report: {
+                  ...prev.report,
+                  llm_analysis: { ...llmAnalysis, enabled: true, features: Array.from(features), daily_insight: d.analysis! },
+                },
+              }
+            })
+          }
+          continue
+        }
+
+        if (event.type === "llm_done") {
+          const d = (event.data || {}) as { summaries_count?: number; trends_count?: number }
+          addStreamLog(`LLM done: ${d.summaries_count || 0} summaries, ${d.trends_count || 0} trends`)
+          setStreamPhase("judge")
+          continue
+        }
+
+        if (event.type === "judge") {
+          const d = (event.data || {}) as { query?: string; title?: string; judge?: SearchItem["judge"]; done?: number; total?: number }
+          setStreamProgress({ done: d.done || 0, total: d.total || 0 })
+          setStreamPhase("judge")
+          const rec = d.judge?.recommendation || "?"
+          const overall = d.judge?.overall != null ? Number(d.judge.overall).toFixed(2) : "?"
+          addStreamLog(`judge ${d.done || 0}/${d.total || 0}: [${rec} ${overall}] ${d.title || "paper"} (${d.query || ""})`)
+          if (d.query && d.title && d.judge) {
+            store.updateDailyResult((prev) => {
+              const sourceQueries = prev.report.queries || []
+              let matched = false
+              const nextQueries = sourceQueries.map((query) => {
+                const queryName = query.normalized_query || query.raw_query || ""
+                if (queryName !== d.query) return query
+                const nextItems = (query.top_items || []).map((item) => {
+                  if (item.title === d.title) { matched = true; return { ...item, judge: d.judge } }
+                  return item
+                })
+                return { ...query, top_items: nextItems }
+              })
+              if (!matched) {
+                const fallbackQueries = nextQueries.map((query) => {
+                  if (matched) return query
+                  const nextItems = (query.top_items || []).map((item) => {
+                    if (!matched && item.title === d.title) { matched = true; return { ...item, judge: d.judge } }
+                    return item
+                  })
+                  return { ...query, top_items: nextItems }
+                })
+                return { ...prev, report: { ...prev.report, queries: fallbackQueries } }
+              }
+              return { ...prev, report: { ...prev.report, queries: nextQueries } }
+            })
+          }
+          continue
+        }
+
+        if (event.type === "judge_done") {
+          const d = (event.data || {}) as DailyResult["report"]["judge"]
+          store.updateDailyResult((prev) => ({
+            ...prev,
+            report: { ...prev.report, judge: d || prev.report.judge },
+          }))
+          addStreamLog("judge scoring complete")
+          continue
+        }
+
+        if (event.type === "filter_done") {
+          const d = (event.data || {}) as {
+            total_before?: number
+            total_after?: number
+            removed_count?: number
+            log?: Array<{ query?: string; title?: string; recommendation?: string; overall?: number; action?: string }>
+          }
+          setStreamPhase("filter")
+          addStreamLog(`filter: ${d.total_before || 0} papers -> ${d.total_after || 0} kept, ${d.removed_count || 0} removed`)
+          if (d.log) {
+            for (const entry of d.log) {
+              addStreamLog(`  removed [${entry.recommendation || "?"}] ${entry.title || "?"} (${entry.query || ""})`)
+            }
+          }
+          // Update the store with filtered report — the next "result" event will have the final state
+          // but we can also re-fetch queries from the filter event if needed
+          continue
+        }
+
+        if (event.type === "result") {
+          const d = (event.data || {}) as {
+            report?: DailyResult["report"]
+            markdown?: string
+            markdown_path?: string | null
+            json_path?: string | null
+            notify_result?: Record<string, unknown> | null
+          }
+          if (d.report) {
+            store.setDailyResult({
+              report: d.report,
+              markdown: typeof d.markdown === "string" ? d.markdown : "",
+              markdown_path: d.markdown_path,
+              json_path: d.json_path,
+            })
+          }
+          setStreamPhase("done")
+          addStreamLog("stream complete")
+          continue
+        }
+
+        if (event.type === "error") {
+          const d = (event.data || {}) as { message?: string; detail?: string }
+          const msg = event.message || d.message || d.detail || "Unknown stream error"
+          addStreamLog(`[error] ${msg}`)
+          setError(`DailyPaper failed: ${msg}`)
+          streamFailed = true
+          setStreamPhase("error")
+          store.setPhase("error")
+          break
+        }
+      }
+      if (!streamFailed) {
+        store.setPhase("reported")
+      }
+    } catch (err) {
+      streamFailed = true
+      setError(String(err))
+      setStreamPhase("error")
+      store.setPhase("error")
+    } finally {
+      setLoadingDaily(false)
+      streamStartRef.current = null
+    }
   }
 
   async function runAnalyzeStream() {
@@ -642,6 +1055,8 @@ export default function TopicWorkflowDashboard() {
     if (!runJudge && !runTrends && !runInsight) { setError("Enable Judge, LLM trends, or LLM insight before analyzing."); return }
 
     setLoadingAnalyze(true); setError(null); store.clearAnalyzeLog(); setAnalyzeProgress({ done: 0, total: 0 }); store.setPhase("reporting")
+    setStreamPhase("idle"); setStreamLog([]); setStreamProgress({ done: 0, total: 0 })
+    streamStartRef.current = Date.now()
     store.addAnalyzeLog(
       `[start] run_judge=${runJudge} run_trends=${runTrends} run_insight=${runInsight} llm_enabled=${enableLLM} judge_enabled=${enableJudge}`,
     )
@@ -649,6 +1064,7 @@ export default function TopicWorkflowDashboard() {
       store.addAnalyzeLog("[hint] Analyze stream currently supports trends and daily insight.")
     }
 
+    let streamFailed = false
     try {
       const res = await fetch("/api/research/paperscool/analyze", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -841,30 +1257,62 @@ export default function TopicWorkflowDashboard() {
           const msg = event.message || d.message || d.detail || "Unknown analyze stream error"
           store.addAnalyzeLog(`[error] ${msg}`)
           setError(`Analyze failed: ${msg}`)
+          streamFailed = true
           store.setPhase("error")
           break
         }
       }
-      if (store.phase !== "error") {
+      if (!streamFailed) {
         store.setPhase("reported")
       }
-    } catch (err) { setError(String(err)); store.setPhase("error") } finally { setLoadingAnalyze(false) }
+    } catch (err) {
+      streamFailed = true
+      setError(String(err))
+      store.setPhase("error")
+    } finally {
+      setLoadingAnalyze(false)
+      streamStartRef.current = null
+    }
+  }
+
+  async function runRepoEnrichment() {
+    if (!dailyResult?.report) {
+      setRepoError("Generate DailyPaper first.")
+      return
+    }
+
+    setLoadingRepos(true)
+    setRepoError(null)
+    try {
+      const res = await fetch("/api/research/paperscool/repos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          report: dailyResult.report,
+          max_items: 500,
+          include_github_api: true,
+        }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const payload = await res.json() as { repos?: RepoRow[] }
+      setRepoRows(payload.repos || [])
+    } catch (err) {
+      setRepoError(String(err))
+    } finally {
+      setLoadingRepos(false)
+    }
   }
 
   const isLoading = loadingSearch || loadingDaily || loadingAnalyze
   const canSearch = queries.length > 0 && branches.length > 0 && sources.length > 0
   const loadingLabel = loadingSearch
     ? "Searching sources..."
-    : loadingDaily
-      ? "Generating DailyPaper report and enrichment..."
-      : "Running judge/trend/insight enrichment..."
+    : "Running judge/trend/insight enrichment..."
   const loadingHint = loadingAnalyze && analyzeProgress.total > 0
     ? `${analyzeProgress.done}/${analyzeProgress.total} judged`
-    : loadingDaily
-      ? "Fetching, ranking, and composing report"
-      : loadingSearch
-        ? "Multi-query retrieval in progress"
-        : "Waiting for LLM events"
+    : loadingSearch
+      ? "Multi-query retrieval in progress"
+      : "Waiting for LLM events"
 
   return (
     <div className="space-y-4">
@@ -883,7 +1331,7 @@ export default function TopicWorkflowDashboard() {
           <Button size="sm" disabled={isLoading || !canSearch} onClick={runTopicSearch}>
             {loadingSearch ? <Loader2Icon className="mr-1.5 size-4 animate-spin" /> : <PlayIcon className="mr-1.5 size-4" />} Search
           </Button>
-          <Button size="sm" variant="secondary" disabled={isLoading || !canSearch} onClick={runDailyPaper}>
+          <Button size="sm" variant="secondary" disabled={isLoading || !canSearch} onClick={runDailyPaperStream}>
             {loadingDaily ? <Loader2Icon className="mr-1.5 size-4 animate-spin" /> : <BookOpenIcon className="mr-1.5 size-4" />} DailyPaper
           </Button>
           <Button size="sm" variant="outline" disabled={isLoading || !dailyResult?.report} onClick={runAnalyzeStream}>
@@ -907,11 +1355,13 @@ export default function TopicWorkflowDashboard() {
                 queryItems, setQueryItems, topK, setTopK, topN, setTopN,
                 showPerBranch, setShowPerBranch, saveDaily, setSaveDaily,
                 outputDir, setOutputDir, useArxiv, setUseArxiv, useVenue, setUseVenue,
-                usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, enableLLM, setEnableLLM,
+                usePapersCool, setUsePapersCool, useArxivApi, setUseArxivApi, useHFDaily, setUseHFDaily, enableLLM, setEnableLLM,
                 useSummary, setUseSummary, useTrends, setUseTrends,
                 useInsight, setUseInsight, useRelevance, setUseRelevance,
                 enableJudge, setEnableJudge, judgeRuns, setJudgeRuns,
                 judgeMaxItems, setJudgeMaxItems, judgeTokenBudget, setJudgeTokenBudget,
+                notifyEmail, setNotifyEmail: store.setNotifyEmail,
+                notifyEnabled, setNotifyEnabled: store.setNotifyEnabled,
               }} />
               </div>
             </SheetContent>
@@ -921,7 +1371,18 @@ export default function TopicWorkflowDashboard() {
 
       {error && <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
 
-      {isLoading && (
+      {/* Stream progress card for DailyPaper SSE */}
+      {loadingDaily && streamPhase !== "idle" && (
+        <StreamProgressCard
+          streamPhase={streamPhase}
+          streamLog={streamLog}
+          streamProgress={streamProgress}
+          startTime={streamStartRef.current}
+        />
+      )}
+
+      {/* Generic loading card for search / analyze */}
+      {isLoading && !loadingDaily && !loadingAnalyze && (
         <Card className="border-blue-200 bg-blue-50/40">
           <CardContent className="space-y-2 py-3">
             <div className="flex items-center justify-between text-sm">
@@ -994,7 +1455,14 @@ export default function TopicWorkflowDashboard() {
         {/* Papers */}
         <TabsContent value="papers" className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">{allPapers.length} papers</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm text-muted-foreground">{allPapers.length} papers</p>
+              {paperDataSource && (
+                <Badge variant="outline" className="text-[10px]">
+                  {paperDataSource === "dailypaper" ? "DailyPaper" : "Search"}
+                </Badge>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <Label className="text-xs">Sort:</Label>
               <select className="h-7 rounded-md border bg-background px-2 text-xs" value={sortBy} onChange={(e) => setSortBy(e.target.value as "score" | "judge")}>
@@ -1022,7 +1490,7 @@ export default function TopicWorkflowDashboard() {
               ))
             ) : (
               <div className="col-span-2 rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-                Run a search or generate a DailyPaper to see papers here.
+                Run Search to find papers, then DailyPaper to rank and compose a report, then Analyze to run Judge/Trends.
               </div>
             )}
           </div>
@@ -1234,6 +1702,51 @@ export default function TopicWorkflowDashboard() {
                     </ScrollArea>
                   ) : (
                     <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">No global top papers yet.</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle className="text-sm">Repository Enrichment</CardTitle>
+                    <Button size="sm" variant="outline" disabled={loadingRepos || !dailyResult?.report} onClick={runRepoEnrichment}>
+                      {loadingRepos ? <Loader2Icon className="mr-1.5 size-4 animate-spin" /> : null}
+                      {loadingRepos ? "Enriching..." : "Find Repos"}
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {repoError && <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{repoError}</div>}
+                  {repoRows.length > 0 ? (
+                    <ScrollArea className="h-64 rounded-md border">
+                      <table className="w-full text-left text-xs">
+                        <thead className="sticky top-0 bg-muted/70 backdrop-blur">
+                          <tr>
+                            <th className="border-b px-3 py-2 font-medium">Title</th>
+                            <th className="border-b px-3 py-2 font-medium">Repository</th>
+                            <th className="border-b px-3 py-2 font-medium">Stars</th>
+                            <th className="border-b px-3 py-2 font-medium">Language</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {repoRows.map((row, idx) => (
+                            <tr key={`${row.repo_url}-${idx}`} className="odd:bg-muted/20">
+                              <td className="border-b px-3 py-2">
+                                {row.paper_url ? <a href={row.paper_url} target="_blank" rel="noreferrer" className="hover:underline text-primary">{row.title}</a> : row.title}
+                              </td>
+                              <td className="border-b px-3 py-2">
+                                <a href={row.repo_url} target="_blank" rel="noreferrer" className="hover:underline text-primary">{row.repo_url}</a>
+                              </td>
+                              <td className="border-b px-3 py-2 font-mono">{row.github?.stars ?? "-"}</td>
+                              <td className="border-b px-3 py-2 text-muted-foreground">{row.github?.language || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </ScrollArea>
+                  ) : (
+                    <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">Click "Find Repos" to enrich papers with code repositories.</div>
                   )}
                 </CardContent>
               </Card>

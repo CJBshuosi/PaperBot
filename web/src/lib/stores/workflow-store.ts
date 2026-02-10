@@ -88,6 +88,50 @@ export type DailyResult = {
 
 export type WorkflowPhase = "idle" | "searching" | "searched" | "reporting" | "reported" | "error"
 
+export type WorkflowConfig = {
+  enableLLM: boolean
+  enableJudge: boolean
+  useSummary: boolean
+  useTrends: boolean
+  useInsight: boolean
+  useRelevance: boolean
+  useArxiv: boolean
+  useVenue: boolean
+  usePapersCool: boolean
+  useArxivApi: boolean
+  useHFDaily: boolean
+  saveDaily: boolean
+  topK: number
+  topN: number
+  showPerBranch: number
+  judgeRuns: number
+  judgeMaxItems: number
+  judgeTokenBudget: number
+  outputDir: string
+}
+
+const DEFAULT_CONFIG: WorkflowConfig = {
+  enableLLM: true,
+  enableJudge: true,
+  useSummary: true,
+  useTrends: true,
+  useInsight: true,
+  useRelevance: true,
+  useArxiv: true,
+  useVenue: true,
+  usePapersCool: true,
+  useArxivApi: true,
+  useHFDaily: true,
+  saveDaily: true,
+  topK: 5,
+  topN: 10,
+  showPerBranch: 25,
+  judgeRuns: 1,
+  judgeMaxItems: 20,
+  judgeTokenBudget: 0,
+  outputDir: "./reports/dailypaper",
+}
+
 interface WorkflowState {
   /* Persisted results */
   searchResult: SearchResult | null
@@ -95,14 +139,20 @@ interface WorkflowState {
   phase: WorkflowPhase
   analyzeLog: string[]
   lastUpdated: string | null
+  notifyEmail: string
+  notifyEnabled: boolean
+  config: WorkflowConfig
 
   /* Actions */
   setSearchResult: (result: SearchResult) => void
-  setDailyResult: (result: DailyResult) => void
+  setDailyResult: (result: DailyResult | null) => void
   updateDailyResult: (updater: (prev: DailyResult) => DailyResult) => void
   setPhase: (phase: WorkflowPhase) => void
   addAnalyzeLog: (line: string) => void
   clearAnalyzeLog: () => void
+  setNotifyEmail: (email: string) => void
+  setNotifyEnabled: (enabled: boolean) => void
+  updateConfig: (patch: Partial<WorkflowConfig>) => void
   clearAll: () => void
 }
 
@@ -114,6 +164,9 @@ export const useWorkflowStore = create<WorkflowState>()(
       phase: "idle",
       analyzeLog: [],
       lastUpdated: null,
+      notifyEmail: "",
+      notifyEnabled: false,
+      config: { ...DEFAULT_CONFIG },
 
       setSearchResult: (result) =>
         set({ searchResult: result, lastUpdated: new Date().toISOString() }),
@@ -135,6 +188,13 @@ export const useWorkflowStore = create<WorkflowState>()(
 
       clearAnalyzeLog: () => set({ analyzeLog: [] }),
 
+      setNotifyEmail: (email) => set({ notifyEmail: email }),
+
+      setNotifyEnabled: (enabled) => set({ notifyEnabled: enabled }),
+
+      updateConfig: (patch) =>
+        set((s) => ({ config: { ...s.config, ...patch } })),
+
       clearAll: () =>
         set({
           searchResult: null,
@@ -152,6 +212,9 @@ export const useWorkflowStore = create<WorkflowState>()(
         phase: state.phase === "searching" || state.phase === "reporting" ? "idle" : state.phase,
         analyzeLog: state.analyzeLog.slice(-50),
         lastUpdated: state.lastUpdated,
+        notifyEmail: state.notifyEmail,
+        notifyEnabled: state.notifyEnabled,
+        config: state.config,
       }),
     },
   ),

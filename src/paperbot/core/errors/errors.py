@@ -26,17 +26,20 @@ class PaperBotError(Exception):
         return f"[{self.code}] {self.message}"
 
 
+@dataclass
 class LLMError(PaperBotError):
-    code = "LLM_ERROR"
+    code: str = "LLM_ERROR"
 
 
+@dataclass
 class APIError(PaperBotError):
-    code = "API_ERROR"
+    code: str = "API_ERROR"
 
 
+@dataclass
 class ValidationError(PaperBotError):
-    code = "VALIDATION_ERROR"
-    severity = ErrorSeverity.WARNING
+    severity: ErrorSeverity = ErrorSeverity.WARNING
+    code: str = "VALIDATION_ERROR"
 
 
 T = TypeVar("T")

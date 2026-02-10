@@ -110,22 +110,27 @@ def ensure_execution_result(raw: Union[ExecutionResult[TOutput], Dict[str, Any],
         return raw
 
     if isinstance(raw, dict):
-        # 兼容旧的 status 字段
-        success = raw.get("success")
-        if success is None:
-            status = raw.get("status")
-            success = status == "success" if status is not None else True
-        error = raw.get("error")
-        data = raw.get("data")
-        metadata = raw.get("metadata", {})
-        duration_ms = raw.get("duration_ms")
-        return ExecutionResult(
-            success=bool(success),
-            error=error,
-            data=data,
-            metadata=metadata if isinstance(metadata, dict) else {},
-            duration_ms=duration_ms,
-        )
+        # Only treat as a result dict if it has recognized result keys
+        result_keys = {"success", "status", "data", "error"}
+        if result_keys & raw.keys():
+            # 兼容旧的 status 字段
+            success = raw.get("success")
+            if success is None:
+                status = raw.get("status")
+                success = status == "success" if status is not None else True
+            error = raw.get("error")
+            data = raw.get("data")
+            metadata = raw.get("metadata", {})
+            duration_ms = raw.get("duration_ms")
+            return ExecutionResult(
+                success=bool(success),
+                error=error,
+                data=data,
+                metadata=metadata if isinstance(metadata, dict) else {},
+                duration_ms=duration_ms,
+            )
+        # No recognized keys — treat the entire dict as data
+        return ExecutionResult.ok(raw)  # type: ignore[arg-type]
 
     return ExecutionResult.ok(raw)  # type: ignore[arg-type]
 
