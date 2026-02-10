@@ -200,6 +200,134 @@
 
 ---
 
+## 多智能体系统现状与 OpenClaw 评估
+
+### 现有多智能体管线
+
+PaperBot 目前包含 **5 套多智能体系统**，覆盖学者追踪、Paper2Code、深度评审三大场景，以及底层协作框架。
+
+#### A. 学者追踪管线（ScholarWorkflowCoordinator）
+
+| 阶段 | Agent | 职责 |
+|------|-------|------|
+| 1 | ResearchAgent | 论文元数据、摘要、venue 分析 |
+| 2 | CodeAnalysisAgent | GitHub 仓库健康度评估 |
+| 3 | QualityAgent | 综合质量评估（结合 research + code） |
+| 4 | InfluenceCalculator | PIS 影响力评分（引用速度、趋势动量） |
+| 5 | ReportWriter | Markdown 报告生成 |
+
+**协调机制**：
+- `ScoreShareBus`：阶段间评分共享（pub/sub），后续阶段可读取前序评分
+- `FailFastEvaluator`：基于阈值的早期中断（低质量论文跳过深度分析）
+- `PipelineContext`：阶段间状态传递 dataclass
+- 文件：`core/workflow_coordinator.py` + `core/collaboration/score_bus.py` + `core/fail_fast.py`
+
+#### B. Paper2Code 管线（Orchestrator）
+
+| 阶段 | Agent | 职责 |
+|------|-------|------|
+| 1 | PlanningAgent | Blueprint 蒸馏 + 计划生成 |
+| 2 | CodingAgent | 代码生成（含 RAG + CodeMemory） |
+| 3 | VerificationAgent | 语法/导入/测试验证 |
+| 4 | DebuggingAgent | 错误修复（自愈调试循环） |
+
+**协调机制**：
+- `PipelineProgress`：阶段追踪 + 进度回调
+- Repair Loop：验证失败 → 调试修复 → 重新验证，最多 `max_repair_loops`（默认 3）次
+- 共享 `context` 字典：阶段间传递 plan/files/errors
+- `ParallelOrchestrator`：独立阶段并行执行扩展
+- 文件：`repro/orchestrator.py`
+
+#### C. 深度评审管线（ReviewerAgent）
+
+| 阶段 | 职责 |
+|------|------|
+| Preliminary Screening | 初筛：结构/完整性/基本质量 |
+| Deep Critique | 深度批评：方法论/实验/贡献 |
+| Final Decision | 最终决策：Accept/Reject + Novelty Score |
+
+**协调机制**：单 Agent 内部 3 阶段顺序执行，每阶段独立 LLM 调用。
+- 文件：`agents/review/agent.py`
+
+#### D. 协作框架层
+
+| 组件 | 职责 | 文件 |
+|------|------|------|
+| `AgentCoordinator` | Agent 注册、消息广播（pub/sub）、结果收集与合成 | `core/collaboration/coordinator.py` |
+| `ScoreShareBus` | 阶段间评分共享、阈值判断、加权聚合 | `core/collaboration/score_bus.py` |
+| `HostOrchestrator` | LLM 驱动的"主持人"，生成多 Agent 协作引导语 | `core/collaboration/host.py` |
+| `AgentMessage` / `MessageType` | 统一消息信封（insight/result/question/error） | `core/collaboration/messages.py` |
+| `BaseAgent` | Template Method 模式（validate→execute→post_process） | `agents/base.py` |
+
+#### E. 独立 Agent 清单
+
+| Agent | 用途 | 文件 |
+|-------|------|------|
+| SemanticScholarAgent | S2 API 论文/作者检索 | `agents/scholar_tracking/semantic_scholar_agent.py` |
+| ScholarProfileAgent | 学者画像构建 | `agents/scholar_tracking/scholar_profile_agent.py` |
+| PaperTrackerAgent | 论文动态追踪 | `agents/scholar_tracking/paper_tracker_agent.py` |
+| DeepResearchAgent | 深度研究分析 | `agents/scholar_tracking/deep_research_agent.py` |
+| ConferenceAgent | 顶会论文抓取 | `agents/conference/agent.py` |
+| OpenReviewAgent | OpenReview 数据获取 | `agents/openreview/agent.py` |
+| HuggingFaceAgent | HuggingFace Hub 数据获取 | `agents/huggingface/agent.py` |
+| DocumentationAgent | 文档生成 | `agents/documentation/agent.py` |
+| VerificationAgent | 声明验证 | `agents/verification/agent.py` |
+
+### OpenClaw 迁移评估
+
+**OpenClaw 核心定位**：个人 AI 助手框架（TypeScript/Node.js ≥22），通过 Gateway 控制面连接 WhatsApp/Telegram/Slack/Discord 等消息渠道，核心能力是消息路由 + Skills 插件系统 + 多渠道 Agent 路由。
+
+**PaperBot 多智能体 vs OpenClaw 对比**：
+
+| 维度 | PaperBot | OpenClaw |
+|------|----------|----------|
+| 语言 | Python（asyncio） | TypeScript（Node.js） |
+| Agent 协作模式 | 顺序管线 + 评分共享 + 修复循环 | 消息渠道路由 + 独立 Agent 会话隔离 |
+| Agent 间通信 | ScoreShareBus / AgentCoordinator（进程内 pub/sub） | Gateway WebSocket（跨进程，面向用户消息） |
+| 编排粒度 | 细粒度阶段控制（FailFast/ScoreThreshold） | 粗粒度渠道→Agent 路由 |
+| 扩展机制 | BaseAgent 子类化 + DI 容器 | Skills 插件 + MCP 工具 |
+| 典型用途 | 领域特定管线（论文分析/代码生成） | 通用对话助手 + 工具调用 |
+
+**结论：直接迁移不适合，但可作为接入层整合。**
+
+OpenClaw 的"多 Agent"是指将不同消息渠道路由到不同 Agent 实例，而非 PaperBot 所需的多 Agent 协作编排（管线化、评分共享、修复循环）。PaperBot 的 ScholarWorkflowCoordinator 和 Paper2Code Orchestrator 需要的是 **任务级编排**（类似 LangGraph / CrewAI），而非 OpenClaw 的 **渠道级路由**。
+
+### OpenClaw 整合方案（推荐）
+
+将 PaperBot 作为 OpenClaw 的 **Skill 插件**接入，用户可以在 WhatsApp/Telegram/Slack 等渠道直接与 PaperBot 交互：
+
+- [ ] 开发 OpenClaw Skill 包装层
+  - 将 PaperBot REST API 封装为 OpenClaw Skill
+  - 支持命令：`/search <query>`、`/daily`、`/judge <paper>`、`/track <scholar>`
+  - 文件：`openclaw-skill/` 目录（TypeScript，独立包）
+- [ ] Skill 调用 PaperBot API
+  - 通过 HTTP 调用 PaperBot FastAPI 后端（`/api/research/paperscool/search` 等）
+  - SSE 流式结果转换为 OpenClaw 消息分块输出
+- [ ] 推送渠道对接
+  - 复用 OpenClaw 的多渠道能力（WhatsApp/Telegram/Discord）替代 PaperBot 自有的 DailyPushService
+  - DailyPaper 结果通过 OpenClaw Gateway 推送到用户的首选渠道
+- [ ] OpenClaw Cron 集成
+  - 使用 OpenClaw 的 Cron 系统触发 PaperBot 定时任务（替代或补充 ARQ Worker）
+
+### 多智能体框架升级路线（替代方案）
+
+如果目标是增强 PaperBot 自身的多智能体能力，更合适的方向是引入 Python 原生的 Agent 编排框架：
+
+- [ ] 评估 LangGraph / CrewAI / AutoGen 作为编排层
+  - LangGraph：图状态机，适合 Scholar Pipeline 的条件分支 + FailFast
+  - CrewAI：角色化 Agent 协作，适合 Paper2Code 的规划→编码→验证流程
+  - AutoGen：多 Agent 对话，适合 HostOrchestrator 的讨论式协作
+- [ ] 统一 Agent 抽象层
+  - 现有 `BaseAgent`（Template Method）+ `repro.agents.BaseAgent`（两套独立实现）需统一
+  - 统一的 `AgentProtocol`：`run(context) -> AgentResult`
+  - 统一的 Tool/Capability 注册（替代分散的 `capabilities` list）
+- [ ] 可观测性增强
+  - 现有 Phase-0 EventLog 扩展为完整 OpenTelemetry trace
+  - 每个 Agent 调用自动生成 span（包含 LLM token usage、延迟、评分）
+  - 文件：`core/observability/` 目录
+
+---
+
 ## Phase 4 — 平台化能力（远期）
 
 > 以下功能视需求和资源情况推进，不急于落地。
@@ -246,6 +374,9 @@ Phase 3.2 (学者趋势) ── 独立，仅依赖 S2 客户端 + TrendAnalyzer�
 Phase 2.3 (富文本推送) ── 独立，仅依赖现有 DailyPushService
 Phase 3.3 (个性化推荐) ── 依赖 Paper Registry + Embedding
 Phase 3.6 (订阅管理) ── 依赖 Paper Registry + DailyPushService
+
+OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
+多智能体框架升级 ── 独立，影响 core/collaboration/* + agents/*
 ```
 
 ## 涉及文件索引
@@ -275,6 +406,10 @@ Phase 3.6 (订阅管理) ── 依赖 Paper Registry + DailyPushService
 | `web/src/components/research/SavedPapersList.tsx` | **新建** | 1.2 |
 | `web/src/components/research/ScholarNetworkGraph.tsx` | **新建** | 3.1 |
 | `web/src/components/research/ScholarTrendsChart.tsx` | **新建** | 3.2 |
+| `openclaw-skill/` | **新建** | OpenClaw Skill |
+| `src/paperbot/core/collaboration/coordinator.py` | 重构 | 多智能体升级 |
+| `src/paperbot/core/collaboration/score_bus.py` | 重构 | 多智能体升级 |
+| `src/paperbot/agents/base.py` | 重构 | 多智能体升级 |
 
 ---
 
@@ -290,6 +425,11 @@ Phase 3.6 (订阅管理) ── 依赖 Paper Registry + DailyPushService
 | DailyPushService | `application/services/daily_push_service.py` | 富文本推送 |
 | LLMService | `application/services/llm_service.py` | AI Chat with Paper |
 | XYFlow DAG | `web/src/components/research/TopicWorkflowDashboard.tsx` | 学者网络图 |
+| AgentCoordinator | `core/collaboration/coordinator.py` | 多智能体消息协调 |
+| ScoreShareBus | `core/collaboration/score_bus.py` | 管线阶段间评分共享 |
+| ScholarWorkflowCoordinator | `core/workflow_coordinator.py` | 5 阶段学者分析管线 |
+| Paper2Code Orchestrator | `repro/orchestrator.py` | 4 Agent 编排 + 修复循环 |
+| BaseAgent (Template Method) | `agents/base.py` | Agent 通用抽象 |
 
 ---
 
@@ -298,3 +438,4 @@ Phase 3.6 (订阅管理) ── 依赖 Paper Registry + DailyPushService
 > 每次完成请追加一行：日期 + 简述 + 关联文件
 
 - 2025-02-10: 创建 ROADMAP_TODO.md，完成对标分析与功能规划
+- 2025-02-10: 新增多智能体系统现状盘点（5 套管线 + 15 个 Agent）与 OpenClaw 迁移评估
