@@ -213,6 +213,7 @@
 
 > 参考仓库：<https://github.com/vercel-labs/agent-browser>
 > 目标：把"网页交互型"任务从静态 API 拉取升级为可观测、可回放的浏览器 Agent 流程。
+> 定位：**仅用于复杂/高交互采集与回归验证场景**，默认流程保持现有 API connector，不强制改造。
 
 ### 4.1 Source Capture Agent（网页采集增强）
 
