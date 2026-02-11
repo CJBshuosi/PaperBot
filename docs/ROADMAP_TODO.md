@@ -263,11 +263,11 @@
 
 ### 3.8.1 Agent 模块盘点（当前）
 
-- [ ] 盘点现有 Agent 入口与责任边界（形成清单）
+- [x] 盘点现有 Agent 入口与责任边界（形成清单）
   - API 直接调用：`analyze/review/track/research/gen_code`（5 个入口）
   - Agent 类：`src/paperbot/agents` 13 个业务 Agent（不含 Base），`src/paperbot/repro/agents` 4 个业务 Agent（不含 Base）
   - 输出文档：`docs/agent_inventory.md`
-- [ ] 标记哪些场景必须 Agent、哪些保持普通 service
+- [x] 标记哪些场景必须 Agent、哪些保持普通 service
   - 必须 Agent：复杂推理、长链路、多步工具调用
   - 非必须：纯 CRUD、低延迟同步 API、简单规则处理
 
@@ -625,3 +625,4 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 - 2026-02-11: 新增 Phase 4（Agent Browser 自动化）任务清单，覆盖采集、E2E、对标监测、安全与限流
 - 2026-02-11: 完成 Phase 1 收尾（PaperRepoModel + /papers/{paper_id}/repos + DailyPaper 异步 repo enrichment），并修复 harvest 基线下 paper store 兼容性
 - 2026-02-11: 新增 Phase 3.8 Agent Runtime 统一 TODO（契约/事件总线/迁移顺序），并明确 1 issue = 1 commit 规则
+- 2026-02-11: 完成 Issue #44（Agent inventory + 边界决策文档），新增 `docs/agent_inventory.md`
