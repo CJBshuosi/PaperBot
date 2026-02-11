@@ -290,7 +290,7 @@
 
 ### 3.8.4 迁移顺序（按风险从低到高）
 
-- [ ] Step 1：`analyze` + `review` 接入 `AgentRuntime`（低耦合）
+- [x] Step 1：`analyze` + `review` 接入 `AgentRuntime`（低耦合）
 - [ ] Step 2：`track` + `research` 接入 `AgentRuntime`（中耦合）
 - [ ] Step 3：`gen_code`（Paper2Code）迁移到统一 Runtime 适配层（高耦合）
 - [ ] Step 4：为每步补回归测试 + runbook 对账测试
@@ -628,3 +628,4 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 - 2026-02-11: 完成 Issue #44（Agent inventory + 边界决策文档），新增 `docs/agent_inventory.md`
 - 2026-02-11: 完成 Issue #45（AgentRuntime/SourceCollector 契约 + 兼容适配器 + contract tests）
 - 2026-02-11: 完成 Issue #46（SSE envelope 统一 + trace_id 贯穿 + 前端 normalize parser）
+- 2026-02-11: 完成 Issue #47（analyze/review 路由迁移到 AgentRuntime，保持 SSE 兼容）
