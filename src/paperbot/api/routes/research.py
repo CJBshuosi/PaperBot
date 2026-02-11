@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from paperbot.context_engine import ContextEngine, ContextEngineConfig
 from paperbot.context_engine.track_router import TrackRouter
@@ -78,6 +79,14 @@ class TrackCreateRequest(BaseModel):
     activate: bool = True
 
 
+class TrackUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128)
+    description: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    venues: Optional[List[str]] = None
+    methods: Optional[List[str]] = None
+
+
 class TrackResponse(BaseModel):
     track: Dict[str, Any]
 
@@ -121,6 +130,28 @@ def get_active_track(user_id: str = "default"):
     track = _research_store.get_active_track(user_id=user_id)
     if not track:
         raise HTTPException(status_code=404, detail="No active track for user")
+    return TrackResponse(track=track)
+
+
+@router.patch("/research/tracks/{track_id}", response_model=TrackResponse)
+def update_track(
+    track_id: int,
+    req: TrackUpdateRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = "default",
+):
+    update_data = req.model_dump(exclude_unset=True, exclude_none=True)
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    try:
+        track = _research_store.update_track(user_id=user_id, track_id=track_id, **update_data)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Track name already exists") from None
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    _schedule_embedding_precompute(background_tasks, user_id=user_id, track_ids=[track_id])
     return TrackResponse(track=track)
 
 

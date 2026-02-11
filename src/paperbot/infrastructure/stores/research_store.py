@@ -179,6 +179,48 @@ class SqlAlchemyResearchStore:
             session.refresh(row)
             return self._track_to_dict(row)
 
+    def update_track(
+        self,
+        *,
+        user_id: str,
+        track_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+        venues: Optional[List[str]] = None,
+        methods: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now = _utcnow()
+        with self._provider.session() as session:
+            row = session.execute(
+                select(ResearchTrackModel).where(
+                    ResearchTrackModel.user_id == user_id, ResearchTrackModel.id == track_id
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+
+            if name is not None:
+                row.name = name.strip()
+            if description is not None:
+                row.description = description.strip()
+            if keywords is not None:
+                row.keywords_json = _dump_list(keywords)
+            if venues is not None:
+                row.venues_json = _dump_list(venues)
+            if methods is not None:
+                row.methods_json = _dump_list(methods)
+
+            row.updated_at = now
+            session.add(row)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                raise
+            session.refresh(row)
+            return self._track_to_dict(row)
+
     def archive_track(self, *, user_id: str, track_id: int, archived: bool = True) -> bool:
         now = _utcnow()
         with self._provider.session() as session:
