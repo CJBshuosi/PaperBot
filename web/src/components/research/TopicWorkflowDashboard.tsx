@@ -458,6 +458,7 @@ function ConfigSheetBody(props: {
   judgeTokenBudget: number; setJudgeTokenBudget: (v: number) => void
   notifyEmail: string; setNotifyEmail: (v: string) => void
   notifyEnabled: boolean; setNotifyEnabled: (v: boolean) => void
+  resendEnabled: boolean; setResendEnabled: (v: boolean) => void
 }) {
   const {
     queryItems, setQueryItems, topK, setTopK, topN, setTopN,
@@ -469,6 +470,7 @@ function ConfigSheetBody(props: {
     enableJudge, setEnableJudge, judgeRuns, setJudgeRuns,
     judgeMaxItems, setJudgeMaxItems, judgeTokenBudget, setJudgeTokenBudget,
     notifyEmail, setNotifyEmail, notifyEnabled, setNotifyEnabled,
+    resendEnabled, setResendEnabled,
   } = props
 
   const updateQuery = (idx: number, value: string) => {
@@ -591,6 +593,84 @@ function ConfigSheetBody(props: {
             </div>
           )}
         </section>
+
+        <section className="space-y-2">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <Checkbox checked={resendEnabled} onCheckedChange={(v) => setResendEnabled(Boolean(v))} />
+            <MailIcon className="size-4" /> Newsletter (Resend)
+          </label>
+          {resendEnabled && (
+            <div className="ml-6 space-y-2">
+              <p className="text-[10px] text-muted-foreground">
+                Send digest to all newsletter subscribers via Resend API. Requires PAPERBOT_RESEND_API_KEY env var.
+              </p>
+              <NewsletterSubscribeWidget />
+            </div>
+          )}
+        </section>
+    </div>
+  )
+}
+
+/* ── Newsletter Subscribe Widget ─────────────────────── */
+
+function NewsletterSubscribeWidget() {
+  const [email, setEmail] = useState("")
+  const [status, setStatus] = useState<"idle" | "loading" | "ok" | "error">("idle")
+  const [message, setMessage] = useState("")
+  const [subCount, setSubCount] = useState<{ active: number; total: number } | null>(null)
+
+  const fetchCount = useCallback(async () => {
+    try {
+      const res = await fetch("/api/newsletter/subscribers")
+      if (res.ok) setSubCount(await res.json())
+    } catch { /* ignore */ }
+  }, [])
+
+  useState(() => { fetchCount() })
+
+  async function handleSubscribe() {
+    if (!email.trim()) return
+    setStatus("loading"); setMessage("")
+    try {
+      const res = await fetch("/api/newsletter/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setStatus("ok"); setMessage(data.message || "Subscribed!"); setEmail("")
+        fetchCount()
+      } else {
+        setStatus("error"); setMessage(data.detail || "Failed to subscribe")
+      }
+    } catch (err) {
+      setStatus("error"); setMessage(String(err))
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Input
+          type="email"
+          value={email}
+          onChange={(e) => { setEmail(e.target.value); setStatus("idle") }}
+          placeholder="subscriber@example.com"
+          className="h-8 text-sm"
+          onKeyDown={(e) => e.key === "Enter" && handleSubscribe()}
+        />
+        <Button size="sm" className="h-8 text-xs" onClick={handleSubscribe} disabled={status === "loading"}>
+          {status === "loading" ? <Loader2Icon className="size-3 animate-spin" /> : "Subscribe"}
+        </Button>
+      </div>
+      {message && (
+        <p className={`text-[10px] ${status === "ok" ? "text-green-600" : "text-destructive"}`}>{message}</p>
+      )}
+      {subCount && (
+        <p className="text-[10px] text-muted-foreground">{subCount.active} active subscriber{subCount.active !== 1 ? "s" : ""}</p>
+      )}
     </div>
   )
 }
@@ -604,6 +684,7 @@ export default function TopicWorkflowDashboard() {
   /* Persisted state (zustand) */
   const store = useWorkflowStore()
   const { searchResult, dailyResult, phase, analyzeLog, notifyEmail, notifyEnabled, config } = store
+  const resendEnabled = store.resendEnabled
   const uc = store.updateConfig
 
   /* Derived config accessors — read from persisted store */
@@ -804,8 +885,8 @@ export default function TopicWorkflowDashboard() {
       enable_llm_analysis: enableLLM, llm_features: llmFeatures,
       enable_judge: enableJudge, judge_runs: judgeRuns,
       judge_max_items_per_query: judgeMaxItems, judge_token_budget: judgeTokenBudget,
-      notify: notifyEnabled,
-      notify_channels: notifyEnabled ? ["email"] : [],
+      notify: notifyEnabled || resendEnabled,
+      notify_channels: [...(notifyEnabled ? ["email"] : []), ...(resendEnabled ? ["resend"] : [])],
       notify_email_to: notifyEnabled && notifyEmail.trim() ? [notifyEmail.trim()] : [],
     }
 
@@ -1362,6 +1443,7 @@ export default function TopicWorkflowDashboard() {
                 judgeMaxItems, setJudgeMaxItems, judgeTokenBudget, setJudgeTokenBudget,
                 notifyEmail, setNotifyEmail: store.setNotifyEmail,
                 notifyEnabled, setNotifyEnabled: store.setNotifyEnabled,
+                resendEnabled, setResendEnabled: store.setResendEnabled,
               }} />
               </div>
             </SheetContent>

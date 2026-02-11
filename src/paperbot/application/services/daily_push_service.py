@@ -8,6 +8,7 @@ import os
 import smtplib
 import time
 from dataclasses import dataclass, field
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Any, Dict, List, Optional
@@ -114,6 +115,7 @@ class DailyPushService:
         text = self._build_text(
             report, markdown=markdown, markdown_path=markdown_path, json_path=json_path
         )
+        html_body = self._build_html(report)
 
         results: Dict[str, Any] = {"sent": False, "channels": channels, "results": {}}
         any_success = False
@@ -121,11 +123,13 @@ class DailyPushService:
             for channel in channels:
                 try:
                     if channel == "email":
-                        self._send_email(subject=subject, body=text)
+                        self._send_email(subject=subject, body=text, html_body=html_body)
                     elif channel == "slack":
                         self._send_slack(subject=subject, body=text)
                     elif channel in {"dingtalk", "dingding"}:
                         self._send_dingtalk(subject=subject, body=text)
+                    elif channel == "resend":
+                        self._send_resend(report=report, markdown=markdown or text)
                     else:
                         raise ValueError(f"unsupported channel: {channel}")
                     results["results"][channel] = {"ok": True}
@@ -154,40 +158,26 @@ class DailyPushService:
         markdown_path: Optional[str],
         json_path: Optional[str],
     ) -> str:
-        stats = report.get("stats") or {}
-        lines: List[str] = []
-        lines.append(str(report.get("title") or "DailyPaper Digest"))
-        lines.append("Date: " + str(report.get("date") or "-"))
-        lines.append("Unique Items: " + str(stats.get("unique_items", 0)))
-        lines.append("Total Query Hits: " + str(stats.get("total_query_hits", 0)))
-        lines.append("")
+        from paperbot.application.services.email_template import build_digest_text
 
-        global_top = list(report.get("global_top") or [])[:5]
-        if global_top:
-            lines.append("Top 5 Papers:")
-            for idx, item in enumerate(global_top, start=1):
-                title = item.get("title") or "Untitled"
-                score = float(item.get("score") or 0)
-                url = item.get("url") or ""
-                if url:
-                    lines.append(f"{idx}. {title} (score={score:.4f})\n   {url}")
-                else:
-                    lines.append(f"{idx}. {title} (score={score:.4f})")
-            lines.append("")
+        text = build_digest_text(report)
 
+        extras: List[str] = []
         if markdown_path:
-            lines.append(f"Markdown: {markdown_path}")
+            extras.append(f"Markdown: {markdown_path}")
         if json_path:
-            lines.append(f"JSON: {json_path}")
+            extras.append(f"JSON: {json_path}")
+        if extras:
+            text += "\n" + "\n".join(extras)
 
-        if markdown and not markdown_path:
-            lines.append("")
-            lines.append("---")
-            lines.append(markdown[:3000])
+        return text
 
-        return "\n".join(lines).strip()
+    def _build_html(self, report: Dict[str, Any]) -> str:
+        from paperbot.application.services.email_template import build_digest_html
 
-    def _send_email(self, *, subject: str, body: str) -> None:
+        return build_digest_html(report)
+
+    def _send_email(self, *, subject: str, body: str, html_body: str = "") -> None:
         if not self.config.smtp_host:
             raise ValueError("PAPERBOT_NOTIFY_SMTP_HOST is required for email notifications")
         if not self.config.email_to:
@@ -197,10 +187,14 @@ class DailyPushService:
         if not from_addr:
             raise ValueError("PAPERBOT_NOTIFY_EMAIL_FROM or SMTP username is required")
 
-        msg = MIMEText(body, _subtype="plain", _charset="utf-8")
+        msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = formataddr(("PaperBot", from_addr))
         msg["To"] = ", ".join(self.config.email_to)
+
+        msg.attach(MIMEText(body, _subtype="plain", _charset="utf-8"))
+        if html_body:
+            msg.attach(MIMEText(html_body, _subtype="html", _charset="utf-8"))
 
         if self.config.smtp_use_ssl:
             server = smtplib.SMTP_SSL(
@@ -279,3 +273,27 @@ class DailyPushService:
         parsed = urlparse(webhook_url)
         sep = "&" if parsed.query else "?"
         return f"{webhook_url}{sep}timestamp={timestamp}&sign={sign_qs}"
+
+    def _send_resend(self, *, report: Dict[str, Any], markdown: str) -> None:
+        from paperbot.application.services.resend_service import ResendEmailService
+        from paperbot.infrastructure.stores.subscriber_store import SubscriberStore
+
+        resend = ResendEmailService.from_env()
+        if not resend:
+            raise ValueError("PAPERBOT_RESEND_API_KEY is required for resend channel")
+
+        store = SubscriberStore()
+        tokens = store.get_active_subscribers_with_tokens()
+        if not tokens:
+            logger.info("Resend: no active subscribers, skipping")
+            return
+
+        result = resend.send_digest(
+            to=list(tokens.keys()),
+            report=report,
+            markdown=markdown,
+            unsub_tokens=tokens,
+        )
+        ok_count = sum(1 for v in result.values() if v.get("ok"))
+        fail_count = len(result) - ok_count
+        logger.info("Resend digest sent: ok=%d fail=%d", ok_count, fail_count)

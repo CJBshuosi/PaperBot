@@ -634,6 +634,20 @@ class ResearchTrackEmbeddingModel(Base):
     track = relationship("ResearchTrackModel", back_populates="embeddings")
 
 
+class NewsletterSubscriberModel(Base):
+    """Email newsletter subscriber for DailyPaper digest delivery."""
+
+    __tablename__ = "newsletter_subscribers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    unsub_token: Mapped[str] = mapped_column(String(64), unique=True)
+    subscribed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    unsub_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class ResearchContextRunModel(Base):
     """
     One context build event (routing + recommendations), used for replay/eval.

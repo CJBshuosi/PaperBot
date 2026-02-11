@@ -141,6 +141,7 @@ interface WorkflowState {
   lastUpdated: string | null
   notifyEmail: string
   notifyEnabled: boolean
+  resendEnabled: boolean
   config: WorkflowConfig
 
   /* Actions */
@@ -152,6 +153,7 @@ interface WorkflowState {
   clearAnalyzeLog: () => void
   setNotifyEmail: (email: string) => void
   setNotifyEnabled: (enabled: boolean) => void
+  setResendEnabled: (enabled: boolean) => void
   updateConfig: (patch: Partial<WorkflowConfig>) => void
   clearAll: () => void
 }
@@ -166,6 +168,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       lastUpdated: null,
       notifyEmail: "",
       notifyEnabled: false,
+      resendEnabled: false,
       config: { ...DEFAULT_CONFIG },
 
       setSearchResult: (result) =>
@@ -192,6 +195,8 @@ export const useWorkflowStore = create<WorkflowState>()(
 
       setNotifyEnabled: (enabled) => set({ notifyEnabled: enabled }),
 
+      setResendEnabled: (enabled) => set({ resendEnabled: enabled }),
+
       updateConfig: (patch) =>
         set((s) => ({ config: { ...s.config, ...patch } })),
 
@@ -214,6 +219,7 @@ export const useWorkflowStore = create<WorkflowState>()(
         lastUpdated: state.lastUpdated,
         notifyEmail: state.notifyEmail,
         notifyEnabled: state.notifyEnabled,
+        resendEnabled: state.resendEnabled,
         config: state.config,
       }),
     },

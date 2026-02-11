@@ -13,6 +13,7 @@ from . import (
     memory,
     research,
     paperscool,
+    newsletter,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "memory",
     "research",
     "paperscool",
+    "newsletter",
 ]

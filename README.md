@@ -132,6 +132,10 @@ Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save
 |---------------|-----------------|
 | ![Judge Cards](asset/ui/9-4.png) | ![Judge Radar](asset/ui/9-5.png) |
 
+### Email 推送
+
+![Email Notification](asset/notify.png)
+
 ## 快速开始
 
 ### 1) 安装
