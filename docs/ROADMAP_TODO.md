@@ -256,6 +256,53 @@
   - 避免批量采集触发封禁，支持 source 级并发控制
 
 
+
+## Phase 3.8 — Agent Runtime 统一（接口契约）
+
+> 目标：把现有多套 Agent 调用方式收敛到统一契约，避免 API/Workflow 各写一套生命周期。
+
+### 3.8.1 Agent 模块盘点（当前）
+
+- [ ] 盘点现有 Agent 入口与责任边界（形成清单）
+  - API 直接调用：`analyze/review/track/research/gen_code`（5 个入口）
+  - Agent 类：`src/paperbot/agents` 13 个业务 Agent（不含 Base），`src/paperbot/repro/agents` 4 个业务 Agent（不含 Base）
+  - 输出文档：`docs/agent_inventory.md`
+- [ ] 标记哪些场景必须 Agent、哪些保持普通 service
+  - 必须 Agent：复杂推理、长链路、多步工具调用
+  - 非必须：纯 CRUD、低延迟同步 API、简单规则处理
+
+### 3.8.2 契约抽象（必须先做）
+
+- [ ] 定义统一 `AgentRuntime` 接口
+  - 生命周期：`input -> plan -> execute -> emit events -> finalize`
+  - 文件：`src/paperbot/core/abstractions/agent_runtime.py`
+- [ ] 定义统一 `AgentMessage` / `AgentResult` / `AgentError` schema
+  - 兼容当前 runbook/event_log 字段：`run_id`、`trace_id`、`stage`、`agent_name`
+- [ ] 定义 `SourceCollector` 接口（API Source / Browser Source 同契约）
+  - 文件：`src/paperbot/application/ports/source_collector.py`
+
+### 3.8.3 观测统一（SSE + 日志 + 事件）
+
+- [ ] 把 workflow SSE 事件映射到统一事件总线
+  - Search/DailyPaper/Analyze/Judge/Trend 都输出同一 event envelope
+- [ ] 打通 `trace_id` 贯穿：API -> workflow -> agent -> store/event_log
+- [ ] 前端统一消费事件协议（避免每个页面写一套 event parser）
+
+### 3.8.4 迁移顺序（按风险从低到高）
+
+- [ ] Step 1：`analyze` + `review` 接入 `AgentRuntime`（低耦合）
+- [ ] Step 2：`track` + `research` 接入 `AgentRuntime`（中耦合）
+- [ ] Step 3：`gen_code`（Paper2Code）迁移到统一 Runtime 适配层（高耦合）
+- [ ] Step 4：为每步补回归测试 + runbook 对账测试
+
+### 3.8.5 工程规则
+
+- [ ] 执行策略：**每个 issue 对应 1 个 commit**（禁止跨 issue 混提）
+- [ ] commit message 必须包含 issue 编号（如 `feat: xxx (#41)`）
+
+---
+
+
 ## 多智能体系统现状与 OpenClaw 评估
 
 ### 现有多智能体管线
@@ -577,3 +624,4 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 - 2026-02-11: 对齐远端 `origin/master` 的 Harvest 基线，保留旧实现到 `backup/feat-dailypaper-sse-stream-pre-harvest-20260211`
 - 2026-02-11: 新增 Phase 4（Agent Browser 自动化）任务清单，覆盖采集、E2E、对标监测、安全与限流
 - 2026-02-11: 完成 Phase 1 收尾（PaperRepoModel + /papers/{paper_id}/repos + DailyPaper 异步 repo enrichment），并修复 harvest 基线下 paper store 兼容性
+- 2026-02-11: 新增 Phase 3.8 Agent Runtime 统一 TODO（契约/事件总线/迁移顺序），并明确 1 issue = 1 commit 规则

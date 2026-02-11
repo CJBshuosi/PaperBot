@@ -2,6 +2,11 @@
 
 This file splits unfinished items in `docs/ROADMAP_TODO.md` into issue-ready cards for GitHub Projects.
 
+## Delivery Rule
+
+- One issue -> one commit (`1 issue = 1 commit`)
+- Commit message include issue id, e.g. `feat: agent runtime contract (#41)`
+
 ## Suggested Labels
 
 - `roadmap`
@@ -353,4 +358,61 @@ Custom fields:
 - Acceptance:
   - No plaintext secrets in repo/runtime logs
   - Browser automation runs are traceable and throttled
+
+## Issue 21 - Agent Inventory and Boundary Map
+
+- Title: `[Chore] Build agent inventory and responsibility boundary map`
+- Labels: `roadmap`, `phase-3`, `architecture`, `priority-p1`
+- Source TODO:
+  - `盘点现有 Agent 入口与责任边界`
+  - `标记必须 Agent vs 普通 service`
+- Scope:
+  - Inventory all agent entrypoints (routes/workflows)
+  - Document MUST-use-agent vs service-only decision rules
+  - Output `docs/agent_inventory.md`
+- Acceptance:
+  - Every current agent entry has owner, input/output, SLA and fallback
+
+## Issue 22 - AgentRuntime Contract and SourceCollector Port
+
+- Title: `[Feature] Introduce unified AgentRuntime and SourceCollector contracts`
+- Labels: `roadmap`, `phase-3`, `backend`, `architecture`, `priority-p1`
+- Source TODO:
+  - `定义 AgentRuntime 接口`
+  - `定义 AgentMessage/AgentResult/AgentError schema`
+  - `定义 SourceCollector 接口`
+- Scope:
+  - Add `core/abstractions/agent_runtime.py`
+  - Add `application/ports/source_collector.py`
+  - Add compatibility adapters for current agent classes
+- Acceptance:
+  - Existing agent flows compile and run through adapter layer
+
+## Issue 23 - Unified Event Envelope for SSE + Trace Pipeline
+
+- Title: `[Feature] Unify SSE/event-log envelope across workflows and agents`
+- Labels: `roadmap`, `phase-3`, `backend`, `frontend`, `observability`, `priority-p1`
+- Source TODO:
+  - `SSE 事件统一`
+  - `trace_id 全链路贯穿`
+  - `前端统一 event parser`
+- Scope:
+  - Define shared event envelope schema
+  - Map workflow events to the schema
+  - Add frontend parser utility and migrate key pages
+- Acceptance:
+  - One parser handles Search/Daily/Analyze streams consistently
+
+## Issue 24 - AgentRuntime Migration Wave 1 (Analyze/Review)
+
+- Title: `[Refactor] Migrate analyze/review routes to AgentRuntime`
+- Labels: `roadmap`, `phase-3`, `backend`, `priority-p1`
+- Source TODO:
+  - `Step 1: analyze + review`
+- Scope:
+  - Route-level migration for `analyze` and `review`
+  - Keep API contract backward-compatible
+  - Add regression tests for lifecycle events
+- Acceptance:
+  - No behavior regressions in analyze/review, with unified runtime events
 
