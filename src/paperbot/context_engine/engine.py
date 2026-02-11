@@ -503,7 +503,11 @@ class ContextEngine:
             "rebuttal": (0.50, 0.40, 0.10),
         }.get(stage, (0.55, 0.30, 0.15))
 
-        Logger.info(f"Paper search config: offline={self.config.offline}, paper_limit={self.config.paper_limit}", file=LogFiles.HARVEST)
+        Logger.info(
+            f"Paper search config: offline={self.config.offline}, "
+            f"paper_limit={self.config.paper_limit}",
+            file=LogFiles.HARVEST,
+        )
         if not self.config.offline and self.config.paper_limit > 0:
             try:
                 searcher = self.paper_searcher
@@ -514,9 +518,13 @@ class ContextEngine:
                     Logger.info("Initialized SemanticScholarSearch", file=LogFiles.HARVEST)
 
                 fetch_limit = max(30, int(self.config.paper_limit) * 3)
-                Logger.info(f"Searching papers with query='{merged_query}', limit={fetch_limit}", file=LogFiles.HARVEST)
+                Logger.info(
+                    f"Searching papers with query='{merged_query}', limit={fetch_limit}",
+                    file=LogFiles.HARVEST,
+                )
                 resp = await asyncio.to_thread(searcher.search_papers, merged_query, fetch_limit)
-                Logger.info(f"Search returned {len(getattr(resp, 'papers', []) or [])} papers", file=LogFiles.HARVEST)
+                papers_count = len(getattr(resp, "papers", []) or [])
+                Logger.info(f"Search returned {papers_count} papers", file=LogFiles.HARVEST)
 
                 raw: List[Dict[str, Any]] = []
                 for p in getattr(resp, "papers", []) or []:

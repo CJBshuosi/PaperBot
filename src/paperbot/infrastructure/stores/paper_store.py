@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import Integer, cast, func, or_, select
+from sqlalchemy import Integer, String, cast, func, or_, select
 
 from paperbot.utils.logging_config import Logger, LogFiles
 from paperbot.domain.harvest import HarvestedPaper, HarvestSource
@@ -522,6 +522,15 @@ class PaperStore:
         Returns:
             Tuple of (papers, total_count)
         """
+        # Whitelist of allowed sort columns for security
+        allowed_sort_columns = {
+            "citation_count": PaperModel.citation_count,
+            "year": PaperModel.year,
+            "created_at": PaperModel.created_at,
+            "updated_at": PaperModel.updated_at,
+            "title": PaperModel.title,
+        }
+
         with self._provider.session() as session:
             stmt = select(PaperModel).where(PaperModel.deleted_at.is_(None))
 
@@ -535,14 +544,21 @@ class PaperStore:
                     )
                 )
 
-            # Year filters
-            if year_from:
+            # Keyword filter (search in keywords_json)
+            if keywords:
+                keyword_conditions = [
+                    PaperModel.keywords_json.ilike(f"%{kw}%") for kw in keywords
+                ]
+                stmt = stmt.where(or_(*keyword_conditions))
+
+            # Year filters (use explicit None check to allow year_from=0 if needed)
+            if year_from is not None:
                 stmt = stmt.where(PaperModel.year >= year_from)
-            if year_to:
+            if year_to is not None:
                 stmt = stmt.where(PaperModel.year <= year_to)
 
-            # Citation filter
-            if min_citations:
+            # Citation filter (use explicit None check to allow min_citations=0)
+            if min_citations is not None:
                 stmt = stmt.where(PaperModel.citation_count >= min_citations)
 
             # Venue filter
@@ -558,8 +574,8 @@ class PaperStore:
             count_stmt = select(func.count()).select_from(stmt.subquery())
             total_count = session.execute(count_stmt).scalar() or 0
 
-            # Sort
-            sort_col = getattr(PaperModel, sort_by, PaperModel.citation_count)
+            # Sort (use whitelist for security)
+            sort_col = allowed_sort_columns.get(sort_by, PaperModel.citation_count)
             if sort_order.lower() == "desc":
                 stmt = stmt.order_by(sort_col.desc())
             else:
@@ -580,6 +596,31 @@ class PaperStore:
                     PaperModel.id == paper_id,
                     PaperModel.deleted_at.is_(None),
                 )
+            ).scalar_one_or_none()
+
+    def get_paper_by_source_id(
+        self, source: HarvestSource, source_id: str
+    ) -> Optional[PaperModel]:
+        """
+        Get a paper by its source-specific ID.
+
+        Args:
+            source: The harvest source (ARXIV, SEMANTIC_SCHOLAR, OPENALEX)
+            source_id: The ID from that source
+
+        Returns:
+            PaperModel if found, None otherwise
+        """
+        with self._provider.session() as session:
+            if source == HarvestSource.ARXIV:
+                condition = PaperModel.arxiv_id == source_id
+            elif source == HarvestSource.OPENALEX:
+                condition = PaperModel.openalex_id == source_id
+            else:  # Default to SEMANTIC_SCHOLAR
+                condition = PaperModel.semantic_scholar_id == source_id
+
+            return session.execute(
+                select(PaperModel).where(condition, PaperModel.deleted_at.is_(None))
             ).scalar_one_or_none()
 
     def get_user_library(
@@ -610,13 +651,19 @@ class PaperStore:
 
             Logger.info("Executing database query to join papers with feedback", file=LogFiles.HARVEST)
             # First, get all matching paper-feedback pairs
+            # Join on external IDs (semantic_scholar_id, arxiv_id, openalex_id)
+            # This avoids CAST errors on PostgreSQL for non-numeric paper_ids
+            # Also check library_paper_id from metadata if available
             base_stmt = (
                 select(PaperModel, PaperFeedbackModel)
                 .join(
                     PaperFeedbackModel,
                     or_(
-                        PaperModel.id == cast(PaperFeedbackModel.paper_id, Integer),
                         PaperModel.semantic_scholar_id == PaperFeedbackModel.paper_id,
+                        PaperModel.arxiv_id == PaperFeedbackModel.paper_id,
+                        PaperModel.openalex_id == PaperFeedbackModel.paper_id,
+                        # For backwards compatibility with numeric IDs stored as strings
+                        cast(PaperModel.id, String) == PaperFeedbackModel.paper_id,
                     ),
                 )
                 .where(

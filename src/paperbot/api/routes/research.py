@@ -25,6 +25,7 @@ _research_store = SqlAlchemyResearchStore()
 _memory_store = SqlAlchemyMemoryStore()
 _track_router = TrackRouter(research_store=_research_store, memory_store=_memory_store)
 _metric_collector: Optional[MemoryMetricCollector] = None
+_paper_store: Optional["PaperStore"] = None
 
 
 def _get_metric_collector() -> MemoryMetricCollector:
@@ -33,6 +34,16 @@ def _get_metric_collector() -> MemoryMetricCollector:
     if _metric_collector is None:
         _metric_collector = MemoryMetricCollector()
     return _metric_collector
+
+
+def _get_paper_store() -> "PaperStore":
+    """Lazy initialization of paper store."""
+    from paperbot.infrastructure.stores.paper_store import PaperStore
+
+    global _paper_store
+    if _paper_store is None:
+        _paper_store = PaperStore()
+    return _paper_store
 
 
 def _schedule_embedding_precompute(
@@ -633,6 +644,7 @@ class PaperFeedbackRequest(BaseModel):
     paper_venue: Optional[str] = None
     paper_citation_count: Optional[int] = None
     paper_url: Optional[str] = None
+    paper_source: Optional[str] = None  # arxiv, semantic_scholar, openalex
 
 
 class PaperFeedbackResponse(BaseModel):
@@ -661,22 +673,32 @@ def add_paper_feedback(req: PaperFeedbackRequest):
         meta["context_rank"] = int(req.context_rank)
 
     library_paper_id: Optional[int] = None
-    actual_paper_id = req.paper_id
 
     # If action is "save" and we have paper metadata, insert into papers table
     if req.action == "save" and req.paper_title:
         Logger.info("Save action detected, inserting paper into papers table", file=LogFiles.HARVEST)
         try:
             from paperbot.domain.harvest import HarvestedPaper, HarvestSource
-            from paperbot.infrastructure.stores.paper_store import PaperStore
 
-            paper_store = PaperStore()
+            paper_store = _get_paper_store()
+
+            # Determine source from request or default to semantic_scholar
+            source_str = (req.paper_source or "semantic_scholar").lower()
+            source_map = {
+                "arxiv": HarvestSource.ARXIV,
+                "semantic_scholar": HarvestSource.SEMANTIC_SCHOLAR,
+                "openalex": HarvestSource.OPENALEX,
+            }
+            source = source_map.get(source_str, HarvestSource.SEMANTIC_SCHOLAR)
+
             paper = HarvestedPaper(
                 title=req.paper_title,
-                source=HarvestSource.SEMANTIC_SCHOLAR,
+                source=source,
                 abstract=req.paper_abstract or "",
                 authors=req.paper_authors or [],
-                semantic_scholar_id=req.paper_id,
+                semantic_scholar_id=req.paper_id if source == HarvestSource.SEMANTIC_SCHOLAR else None,
+                arxiv_id=req.paper_id if source == HarvestSource.ARXIV else None,
+                openalex_id=req.paper_id if source == HarvestSource.OPENALEX else None,
                 year=req.paper_year,
                 venue=req.paper_venue,
                 citation_count=req.paper_citation_count or 0,
@@ -685,19 +707,13 @@ def add_paper_feedback(req: PaperFeedbackRequest):
             Logger.info("Calling paper store to upsert paper", file=LogFiles.HARVEST)
             new_count, _ = paper_store.upsert_papers_batch([paper])
 
-            # Get the paper ID from database
-            from paperbot.infrastructure.stores.models import PaperModel
-            from sqlalchemy import select
-            with paper_store._provider.session() as session:
-                result = session.execute(
-                    select(PaperModel).where(
-                        PaperModel.semantic_scholar_id == req.paper_id
-                    )
-                ).scalar_one_or_none()
-                if result:
-                    library_paper_id = result.id
-                    actual_paper_id = str(result.id)  # Use integer ID for feedback
-                    Logger.info(f"Paper saved to library with id={library_paper_id}", file=LogFiles.HARVEST)
+            # Get the paper ID from database using store method
+            result = paper_store.get_paper_by_source_id(source, req.paper_id)
+            if result:
+                library_paper_id = result.id
+                # Store library_paper_id in metadata for joins, keep paper_id as external ID
+                meta["library_paper_id"] = library_paper_id
+                Logger.info(f"Paper saved to library with id={library_paper_id}", file=LogFiles.HARVEST)
         except Exception as e:
             Logger.warning(f"Failed to save paper to library: {e}", file=LogFiles.HARVEST)
 
@@ -705,7 +721,7 @@ def add_paper_feedback(req: PaperFeedbackRequest):
     fb = _research_store.add_paper_feedback(
         user_id=req.user_id,
         track_id=track_id,
-        paper_id=actual_paper_id,
+        paper_id=req.paper_id,  # Always use external ID for consistency
         action=req.action,
         weight=req.weight,
         metadata=meta,

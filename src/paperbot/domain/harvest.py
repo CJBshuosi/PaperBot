@@ -89,7 +89,11 @@ class HarvestedPaper:
         """Create instance from dictionary."""
         source = data.get("source", "")
         if isinstance(source, str):
-            source = HarvestSource(source)
+            try:
+                source = HarvestSource(source)
+            except ValueError:
+                # Fallback for empty or invalid source strings
+                source = HarvestSource.SEMANTIC_SCHOLAR
         return cls(
             title=data.get("title", ""),
             source=source,

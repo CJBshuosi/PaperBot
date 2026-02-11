@@ -30,9 +30,13 @@ class ArxivHarvester:
 
     ARXIV_API_URL = "https://export.arxiv.org/api/query"
     REQUEST_INTERVAL = 3.0  # seconds between requests
+    DEFAULT_TIMEOUT_SECONDS = 30
 
-    def __init__(self, connector: Optional[ArxivConnector] = None):
+    def __init__(
+        self, connector: Optional[ArxivConnector] = None, timeout_seconds: int = 30
+    ):
         self.connector = connector or ArxivConnector()
+        self.timeout_seconds = timeout_seconds
         self._session: Optional[aiohttp.ClientSession] = None
         self._last_request_time: float = 0
 
@@ -42,7 +46,8 @@ class ArxivHarvester:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+            self._session = aiohttp.ClientSession(timeout=timeout)
         return self._session
 
     async def _rate_limit(self) -> None:

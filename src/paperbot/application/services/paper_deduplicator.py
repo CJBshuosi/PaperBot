@@ -67,7 +67,7 @@ class PaperDeduplicator:
 
             if existing_idx is not None:
                 # Merge metadata into existing paper
-                self._merge_paper(unique_papers[existing_idx], paper)
+                self._merge_paper(unique_papers[existing_idx], paper, existing_idx)
                 duplicates_count += 1
             else:
                 # Add new paper
@@ -128,9 +128,16 @@ class PaperDeduplicator:
         title_hash = paper.compute_title_hash()
         self._title_hash_index[title_hash] = idx
 
-    def _merge_paper(self, existing: HarvestedPaper, new: HarvestedPaper) -> None:
+    def _merge_paper(
+        self, existing: HarvestedPaper, new: HarvestedPaper, existing_idx: int
+    ) -> None:
         """
         Merge metadata from new paper into existing.
+
+        Args:
+            existing: The existing paper to merge into
+            new: The new paper with potentially additional metadata
+            existing_idx: The index of the existing paper (used for updating indexes)
 
         Strategy:
         - Fill in missing identifiers
@@ -138,19 +145,19 @@ class PaperDeduplicator:
         - Prefer higher citation counts
         - Merge lists (keywords, fields of study)
         """
-        # Fill in missing identifiers
+        # Fill in missing identifiers (use existing_idx directly, not _find_index)
         if not existing.doi and new.doi:
             existing.doi = new.doi
-            self._doi_index[new.doi.lower().strip()] = self._find_index(existing)
+            self._doi_index[new.doi.lower().strip()] = existing_idx
         if not existing.arxiv_id and new.arxiv_id:
             existing.arxiv_id = new.arxiv_id
-            self._arxiv_index[new.arxiv_id.lower().strip()] = self._find_index(existing)
+            self._arxiv_index[new.arxiv_id.lower().strip()] = existing_idx
         if not existing.semantic_scholar_id and new.semantic_scholar_id:
             existing.semantic_scholar_id = new.semantic_scholar_id
-            self._s2_index[new.semantic_scholar_id.lower().strip()] = self._find_index(existing)
+            self._s2_index[new.semantic_scholar_id.lower().strip()] = existing_idx
         if not existing.openalex_id and new.openalex_id:
             existing.openalex_id = new.openalex_id
-            self._openalex_index[new.openalex_id.lower().strip()] = self._find_index(existing)
+            self._openalex_index[new.openalex_id.lower().strip()] = existing_idx
 
         # Prefer longer abstract
         if len(new.abstract) > len(existing.abstract):

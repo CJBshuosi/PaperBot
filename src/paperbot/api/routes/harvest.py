@@ -31,6 +31,7 @@ router = APIRouter()
 
 # Lazy-initialized stores
 _paper_store: Optional[PaperStore] = None
+_research_store: Optional["SqlAlchemyResearchStore"] = None
 
 
 def _get_paper_store() -> PaperStore:
@@ -41,6 +42,16 @@ def _get_paper_store() -> PaperStore:
     return _paper_store
 
 
+def _get_research_store() -> "SqlAlchemyResearchStore":
+    """Lazy initialization of research store."""
+    from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
+
+    global _research_store
+    if _research_store is None:
+        _research_store = SqlAlchemyResearchStore()
+    return _research_store
+
+
 # ============================================================================
 # Harvest Endpoints
 # ============================================================================
@@ -49,7 +60,7 @@ def _get_paper_store() -> PaperStore:
 class HarvestRequest(BaseModel):
     """Request body for harvest endpoint."""
 
-    keywords: List[str] = Field(..., min_items=1, description="Search keywords")
+    keywords: List[str] = Field(..., min_length=1, description="Search keywords")
     venues: Optional[List[str]] = Field(None, description="Filter to specific venues")
     year_from: Optional[int] = Field(None, ge=1900, le=2100, description="Start year")
     year_to: Optional[int] = Field(None, ge=1900, le=2100, description="End year")
@@ -150,6 +161,9 @@ class HarvestRunListResponse(BaseModel):
     runs: List[HarvestRunResponse]
 
 
+# TODO(auth): This endpoint lists all harvest runs without user-based filtering.
+# Intentional for MVP single-user setup. For multi-user production, add user_id
+# filtering so users only see their own harvest runs.
 @router.get("/harvest/runs", response_model=HarvestRunListResponse)
 def list_harvest_runs(
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -320,6 +334,9 @@ class LibraryResponse(BaseModel):
     offset: int
 
 
+# TODO(auth): user_id is accepted from client without authentication.
+# This is intentional for the MVP single-user setup. For multi-user production,
+# user_id should come from an authenticated session or JWT token.
 @router.get("/papers/library", response_model=LibraryResponse)
 def get_user_library(
     user_id: str = Query("default", description="User ID"),
@@ -383,6 +400,7 @@ def get_paper(paper_id: int):
 class SavePaperRequest(BaseModel):
     """Request to save paper to library."""
 
+    # TODO(auth): user_id from client without auth - intentional for MVP single-user setup
     user_id: str = Field("default", description="User ID")
     track_id: Optional[int] = Field(None, description="Associated track ID")
 
@@ -394,8 +412,6 @@ def save_paper_to_library(paper_id: int, request: SavePaperRequest):
 
     Uses paper_feedback table with action='save'.
     """
-    from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
-
     # Verify paper exists
     store = _get_paper_store()
     paper = store.get_paper_by_id(paper_id)
@@ -403,7 +419,7 @@ def save_paper_to_library(paper_id: int, request: SavePaperRequest):
         raise HTTPException(status_code=404, detail="Paper not found")
 
     # Use research store to record feedback
-    research_store = SqlAlchemyResearchStore()
+    research_store = _get_research_store()
     feedback = research_store.record_paper_feedback(
         user_id=request.user_id,
         paper_id=str(paper_id),
@@ -414,6 +430,9 @@ def save_paper_to_library(paper_id: int, request: SavePaperRequest):
     return {"success": True, "feedback": feedback}
 
 
+# TODO(auth): user_id accepted from query string without authentication.
+# Intentional for MVP single-user setup. For multi-user production, user_id
+# should come from authenticated session/JWT, not query parameters.
 @router.delete("/papers/{paper_id}/save")
 def remove_paper_from_library(
     paper_id: int,
