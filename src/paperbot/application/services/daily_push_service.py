@@ -104,12 +104,12 @@ class DailyPushService:
         if not channels:
             return {"sent": False, "reason": "no channels configured", "channels": channels}
 
-        # Allow UI-provided email recipients to override env config
-        original_email_to = self.config.email_to
+        # Determine effective email recipients (local var, no shared state mutation)
+        effective_email_to = self.config.email_to
         if email_to_override:
             cleaned = [e.strip() for e in email_to_override if (e or "").strip()]
             if cleaned:
-                self.config.email_to = cleaned
+                effective_email_to = cleaned
 
         subject = self._build_subject(report)
         text = self._build_text(
@@ -119,26 +119,26 @@ class DailyPushService:
 
         results: Dict[str, Any] = {"sent": False, "channels": channels, "results": {}}
         any_success = False
-        try:
-            for channel in channels:
-                try:
-                    if channel == "email":
-                        self._send_email(subject=subject, body=text, html_body=html_body)
-                    elif channel == "slack":
-                        self._send_slack(subject=subject, body=text)
-                    elif channel in {"dingtalk", "dingding"}:
-                        self._send_dingtalk(subject=subject, body=text)
-                    elif channel == "resend":
-                        self._send_resend(report=report, markdown=markdown or text)
-                    else:
-                        raise ValueError(f"unsupported channel: {channel}")
-                    results["results"][channel] = {"ok": True}
-                    any_success = True
-                except Exception as exc:  # pragma: no cover - runtime specific
-                    logger.warning("Daily push failed channel=%s err=%s", channel, exc)
-                    results["results"][channel] = {"ok": False, "error": str(exc)}
-        finally:
-            self.config.email_to = original_email_to
+        for channel in channels:
+            try:
+                if channel == "email":
+                    self._send_email(
+                        subject=subject, body=text, html_body=html_body,
+                        recipients=effective_email_to,
+                    )
+                elif channel == "slack":
+                    self._send_slack(subject=subject, body=text)
+                elif channel in {"dingtalk", "dingding"}:
+                    self._send_dingtalk(subject=subject, body=text)
+                elif channel == "resend":
+                    self._send_resend(report=report, markdown=markdown or text)
+                else:
+                    raise ValueError(f"unsupported channel: {channel}")
+                results["results"][channel] = {"ok": True}
+                any_success = True
+            except Exception as exc:  # pragma: no cover - runtime specific
+                logger.warning("Daily push failed channel=%s err=%s", channel, exc)
+                results["results"][channel] = {"ok": False, "error": str(exc)}
 
         results["sent"] = any_success
         return results
@@ -177,10 +177,14 @@ class DailyPushService:
 
         return build_digest_html(report)
 
-    def _send_email(self, *, subject: str, body: str, html_body: str = "") -> None:
+    def _send_email(
+        self, *, subject: str, body: str, html_body: str = "",
+        recipients: Optional[List[str]] = None,
+    ) -> None:
         if not self.config.smtp_host:
             raise ValueError("PAPERBOT_NOTIFY_SMTP_HOST is required for email notifications")
-        if not self.config.email_to:
+        email_to = recipients or self.config.email_to
+        if not email_to:
             raise ValueError("PAPERBOT_NOTIFY_EMAIL_TO is required for email notifications")
 
         from_addr = self.config.email_from or self.config.smtp_username
@@ -190,7 +194,7 @@ class DailyPushService:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = formataddr(("PaperBot", from_addr))
-        msg["To"] = ", ".join(self.config.email_to)
+        msg["To"] = ", ".join(email_to)
 
         msg.attach(MIMEText(body, _subtype="plain", _charset="utf-8"))
         if html_body:
@@ -216,7 +220,7 @@ class DailyPushService:
                 server.ehlo()
             if self.config.smtp_username:
                 server.login(self.config.smtp_username, self.config.smtp_password)
-            server.sendmail(from_addr, self.config.email_to, msg.as_string())
+            server.sendmail(from_addr, email_to, msg.as_string())
 
     def _send_slack(self, *, subject: str, body: str) -> None:
         url = self.config.slack_webhook_url

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
@@ -222,13 +222,14 @@ function buildDagStatuses(args: {
 
 /* ── Stream Progress ─────────────────────────────────── */
 
-type StreamPhase = "idle" | "search" | "build" | "llm" | "judge" | "filter" | "save" | "notify" | "done" | "error"
+type StreamPhase = "idle" | "search" | "build" | "llm" | "insight" | "judge" | "filter" | "save" | "notify" | "done" | "error"
 
 const PHASE_LABELS: Record<StreamPhase, string> = {
   idle: "Idle",
   search: "Searching papers",
   build: "Building report",
   llm: "LLM enrichment",
+  insight: "Generating insights",
   judge: "Judge scoring",
   filter: "Filtering papers",
   save: "Saving",
@@ -237,7 +238,7 @@ const PHASE_LABELS: Record<StreamPhase, string> = {
   error: "Error",
 }
 
-const PHASE_ORDER: StreamPhase[] = ["search", "build", "llm", "judge", "filter", "save", "notify", "done"]
+const PHASE_ORDER: StreamPhase[] = ["search", "build", "llm", "insight", "judge", "filter", "save", "notify", "done"]
 
 function StreamProgressCard({
   streamPhase,
@@ -562,7 +563,7 @@ function ConfigSheetBody(props: {
           {enableJudge && (
             <div className="ml-6 grid grid-cols-3 gap-2">
               <div className="space-y-1"><Label className="text-xs">Runs</Label><Input type="number" min={1} max={5} value={judgeRuns} onChange={(e) => setJudgeRuns(Number(e.target.value || 1))} className="h-8 text-sm" /></div>
-              <div className="space-y-1"><Label className="text-xs">Max Items</Label><Input type="number" min={1} value={judgeMaxItems} onChange={(e) => setJudgeMaxItems(Number(e.target.value || 20))} className="h-8 text-sm" /></div>
+              <div className="space-y-1"><Label className="text-xs">Max Items</Label><Input type="number" min={1} max={200} value={judgeMaxItems} onChange={(e) => setJudgeMaxItems(Number(e.target.value || 20))} className="h-8 text-sm" /></div>
               <div className="space-y-1"><Label className="text-xs">Token Budget</Label><Input type="number" min={0} value={judgeTokenBudget} onChange={(e) => setJudgeTokenBudget(Number(e.target.value || 0))} className="h-8 text-sm" /></div>
             </div>
           )}
@@ -627,7 +628,7 @@ function NewsletterSubscribeWidget() {
     } catch { /* ignore */ }
   }, [])
 
-  useState(() => { fetchCount() })
+  useEffect(() => { fetchCount() }, [fetchCount])
 
   async function handleSubscribe() {
     if (!email.trim()) return

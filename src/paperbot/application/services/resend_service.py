@@ -71,6 +71,10 @@ class ResendEmailService:
 
         for email_addr in to:
             token = unsub_tokens.get(email_addr, "")
+            if not token:
+                logger.warning("Resend: no unsub token for subscriber, skipping")
+                results[email_addr] = {"ok": False, "error": "missing_unsub_token"}
+                continue
             unsub_link = f"{self.unsub_base_url}/api/newsletter/unsubscribe/{token}"
             html_body = self._render_html(report, markdown, unsub_link)
             text = self._render_text(report, markdown, unsub_link)
@@ -80,7 +84,8 @@ class ResendEmailService:
                 )
                 results[email_addr] = {"ok": True, "id": r.get("id")}
             except Exception as e:
-                logger.warning("Resend failed for %s: %s", email_addr, e)
+                masked = email_addr[:2] + "***" + email_addr[email_addr.index("@"):] if "@" in email_addr else "***"
+                logger.warning("Resend failed for %s: %s", masked, e)
                 results[email_addr] = {"ok": False, "error": str(e)}
         return results
 

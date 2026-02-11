@@ -33,6 +33,33 @@ from paperbot.utils.text_processing import extract_github_url
 
 router = APIRouter()
 
+_ALLOWED_REPORT_BASE = os.path.abspath("./reports")
+
+
+def _sanitize_output_dir(raw: str) -> str:
+    """Prevent path traversal — resolve and ensure output stays under ./reports/."""
+    resolved = os.path.abspath(raw)
+    if not resolved.startswith(_ALLOWED_REPORT_BASE):
+        return os.path.join(_ALLOWED_REPORT_BASE, "dailypaper")
+    return resolved
+
+
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+
+
+def _validate_email_list(emails: List[str]) -> List[str]:
+    """Validate and sanitize email list — reject header injection attempts."""
+    cleaned: List[str] = []
+    for e in emails:
+        addr = (e or "").strip()
+        if not addr:
+            continue
+        if "\n" in addr or "\r" in addr:
+            continue
+        if _EMAIL_RE.match(addr):
+            cleaned.append(addr)
+    return cleaned
+
 
 class PapersCoolSearchRequest(BaseModel):
     queries: List[str] = Field(default_factory=list)
@@ -63,7 +90,7 @@ class DailyPaperRequest(BaseModel):
     top_n: int = Field(10, ge=1, le=200)
     formats: List[str] = Field(default_factory=lambda: ["both"])
     save: bool = False
-    output_dir: str = "./reports/dailypaper"
+    output_dir: str = Field("./reports/dailypaper", description="Relative path under project root for saving reports")
     enable_llm_analysis: bool = False
     llm_features: List[str] = Field(default_factory=lambda: ["summary"])
     enable_judge: bool = False
@@ -273,11 +300,11 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             },
         )
 
+        queries = list(report.get("queries") or [])
         for idx, row in enumerate(selected, start=1):
             query_index = int(row.get("query_index") or 0)
             item_index = int(row.get("item_index") or 0)
 
-            queries = list(report.get("queries") or [])
             if query_index >= len(queries):
                 continue
 
@@ -421,7 +448,7 @@ async def _dailypaper_stream(req: DailyPaperRequest):
     json_path = None
     notify_result: Optional[Dict[str, Any]] = None
     if req.save:
-        reporter = DailyPaperReporter(output_dir=req.output_dir)
+        reporter = DailyPaperReporter(output_dir=_sanitize_output_dir(req.output_dir))
         artifacts = reporter.write(
             report=report,
             markdown=markdown,
@@ -440,7 +467,7 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             markdown_path=markdown_path,
             json_path=json_path,
             channels_override=req.notify_channels or None,
-            email_to_override=req.notify_email_to or None,
+            email_to_override=_validate_email_list(req.notify_email_to) or None,
         )
 
     yield StreamEvent(
@@ -502,7 +529,7 @@ def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
     json_path = None
     notify_result: Optional[Dict[str, Any]] = None
     if req.save:
-        reporter = DailyPaperReporter(output_dir=req.output_dir)
+        reporter = DailyPaperReporter(output_dir=_sanitize_output_dir(req.output_dir))
         artifacts = reporter.write(
             report=report,
             markdown=markdown,
@@ -520,7 +547,7 @@ def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
             markdown_path=markdown_path,
             json_path=json_path,
             channels_override=req.notify_channels or None,
-            email_to_override=req.notify_email_to or None,
+            email_to_override=_validate_email_list(req.notify_email_to) or None,
         )
 
     return DailyPaperResponse(
@@ -555,7 +582,8 @@ def _normalize_github_repo_url(raw_url: str | None) -> Optional[str]:
         return None
 
     owner, repo = match.group(1), match.group(2)
-    repo = repo.removesuffix(".git")
+    if repo.endswith(".git"):
+        repo = repo[:-4]
     return f"https://github.com/{owner}/{repo}"
 
 
@@ -808,11 +836,11 @@ async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
             },
         )
 
+        queries = list(report.get("queries") or [])
         for idx, row in enumerate(selected, start=1):
             query_index = int(row.get("query_index") or 0)
             item_index = int(row.get("item_index") or 0)
 
-            queries = list(report.get("queries") or [])
             if query_index >= len(queries):
                 continue
 

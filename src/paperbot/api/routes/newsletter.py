@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
@@ -11,9 +12,13 @@ from paperbot.infrastructure.stores.subscriber_store import SubscriberStore
 
 router = APIRouter()
 
-_subscriber_store = SubscriberStore()
-
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+
+
+@lru_cache(maxsize=1)
+def _get_subscriber_store() -> SubscriberStore:
+    """Lazy-init subscriber store on first use, not at import time."""
+    return SubscriberStore()
 
 
 class SubscribeRequest(BaseModel):
@@ -32,7 +37,7 @@ def subscribe(req: SubscribeRequest):
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Invalid email format")
 
-    result = _subscriber_store.add_subscriber(email)
+    result = _get_subscriber_store().add_subscriber(email)
     return SubscribeResponse(
         ok=True,
         email=result["email"],
@@ -45,7 +50,7 @@ def unsubscribe(token: str):
     if not token or len(token) > 64:
         raise HTTPException(status_code=400, detail="Invalid token")
 
-    ok = _subscriber_store.remove_subscriber(token)
+    ok = _get_subscriber_store().remove_subscriber(token)
     if not ok:
         raise HTTPException(status_code=404, detail="Token not found")
 
@@ -66,5 +71,5 @@ class SubscriberCountResponse(BaseModel):
 
 @router.get("/newsletter/subscribers", response_model=SubscriberCountResponse)
 def list_subscribers():
-    counts = _subscriber_store.get_subscriber_count()
+    counts = _get_subscriber_store().get_subscriber_count()
     return SubscriberCountResponse(**counts)
