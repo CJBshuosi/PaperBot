@@ -22,8 +22,10 @@ interface CreateTrackModalProps {
     name: string
     description: string
     keywords: string[]
-  }) => Promise<void>
+  }) => Promise<boolean>
   isLoading?: boolean
+  error?: string | null
+  onClearError?: () => void
 }
 
 export function CreateTrackModal({
@@ -31,6 +33,8 @@ export function CreateTrackModal({
   onOpenChange,
   onCreateTrack,
   isLoading = false,
+  error = null,
+  onClearError,
 }: CreateTrackModalProps) {
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
@@ -45,16 +49,18 @@ export function CreateTrackModal({
       .map((s) => s.trim())
       .filter(Boolean)
 
-    await onCreateTrack({
+    const created = await onCreateTrack({
       name: trimmedName,
       description: description.trim(),
       keywords: keywordList,
     })
 
-    // Reset form
-    setName("")
-    setDescription("")
-    setKeywords("")
+    if (created) {
+      // Reset form
+      setName("")
+      setDescription("")
+      setKeywords("")
+    }
   }
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -63,6 +69,7 @@ export function CreateTrackModal({
       setName("")
       setDescription("")
       setKeywords("")
+      onClearError?.()
     }
     onOpenChange(newOpen)
   }
@@ -79,12 +86,20 @@ export function CreateTrackModal({
         </DialogHeader>
 
         <div className="space-y-4 py-4">
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="track-name">Name</Label>
             <Input
               id="track-name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                if (error) onClearError?.()
+                setName(e.target.value)
+              }}
               placeholder="e.g., RAG Systems, LLM Security"
               disabled={isLoading}
             />
@@ -95,7 +110,10 @@ export function CreateTrackModal({
             <Textarea
               id="track-description"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => {
+                if (error) onClearError?.()
+                setDescription(e.target.value)
+              }}
               placeholder="Describe what this track is about..."
               rows={3}
               disabled={isLoading}
@@ -107,7 +125,10 @@ export function CreateTrackModal({
             <Input
               id="track-keywords"
               value={keywords}
-              onChange={(e) => setKeywords(e.target.value)}
+              onChange={(e) => {
+                if (error) onClearError?.()
+                setKeywords(e.target.value)
+              }}
               placeholder="retrieval, augmented generation, reranking"
               disabled={isLoading}
             />

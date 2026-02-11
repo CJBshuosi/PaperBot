@@ -104,6 +104,7 @@ export function SearchBox({
               size="icon"
               className="h-9 w-9 sm:h-8 sm:w-8 rounded-lg"
               onClick={handleSubmit}
+              aria-label={isSearching ? "Searching" : "Search"}
               disabled={disabled || isSearching || !query.trim()}
             >
               {isSearching ? (
