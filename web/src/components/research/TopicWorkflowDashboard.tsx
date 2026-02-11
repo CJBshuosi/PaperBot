@@ -240,6 +240,17 @@ const PHASE_LABELS: Record<StreamPhase, string> = {
 
 const PHASE_ORDER: StreamPhase[] = ["search", "build", "llm", "insight", "judge", "filter", "save", "notify", "done"]
 
+function useElapsed(startTime: number | null) {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!startTime) { setElapsed(0); return }
+    setElapsed(Math.round((Date.now() - startTime) / 1000))
+    const id = setInterval(() => setElapsed(Math.round((Date.now() - startTime) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [startTime])
+  return elapsed
+}
+
 function StreamProgressCard({
   streamPhase,
   streamLog,
@@ -251,7 +262,7 @@ function StreamProgressCard({
   streamProgress: { done: number; total: number }
   startTime: number | null
 }) {
-  const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : 0
+  const elapsed = useElapsed(startTime)
   const currentIdx = PHASE_ORDER.indexOf(streamPhase)
   const pct = streamProgress.total > 0
     ? Math.round((streamProgress.done / streamProgress.total) * 100)
@@ -301,7 +312,7 @@ function StreamProgressCard({
           <ScrollArea className="h-32">
             <div className="space-y-0.5 font-mono text-[11px] text-muted-foreground">
               {streamLog.slice(-20).map((line, idx) => (
-                <div key={`sp-${idx}`}>{line}</div>
+                <div key={`sp-${streamLog.length - 20 + idx}`}>{line}</div>
               ))}
             </div>
           </ScrollArea>
@@ -743,6 +754,7 @@ export default function TopicWorkflowDashboard() {
   const [streamLog, setStreamLog] = useState<string[]>([])
   const [streamProgress, setStreamProgress] = useState({ done: 0, total: 0 })
   const streamStartRef = useRef<number | null>(null)
+  const streamAbortRef = useRef<AbortController | null>(null)
 
   const addStreamLog = useCallback((line: string) => {
     setStreamLog((prev) => [...prev.slice(-50), line])
@@ -875,6 +887,9 @@ export default function TopicWorkflowDashboard() {
   }
 
   async function runDailyPaperStream() {
+    streamAbortRef.current?.abort()
+    const controller = new AbortController()
+    streamAbortRef.current = controller
     setLoadingDaily(true); setError(null); setRepoRows([]); setRepoError(null)
     store.setPhase("reporting"); store.clearAnalyzeLog()
     setStreamPhase("search"); setStreamLog([]); setStreamProgress({ done: 0, total: 0 })
@@ -897,6 +912,7 @@ export default function TopicWorkflowDashboard() {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
         body: JSON.stringify(requestBody),
+        signal: controller.signal,
       })
       if (!res.ok) throw new Error(await res.text())
 
@@ -1129,6 +1145,7 @@ export default function TopicWorkflowDashboard() {
     } finally {
       setLoadingDaily(false)
       streamStartRef.current = null
+      streamAbortRef.current = null
     }
   }
 
@@ -1139,6 +1156,9 @@ export default function TopicWorkflowDashboard() {
     const runInsight = Boolean(enableLLM && useInsight)
     if (!runJudge && !runTrends && !runInsight) { setError("Enable Judge, LLM trends, or LLM insight before analyzing."); return }
 
+    streamAbortRef.current?.abort()
+    const controller = new AbortController()
+    streamAbortRef.current = controller
     setLoadingAnalyze(true); setError(null); store.clearAnalyzeLog(); setAnalyzeProgress({ done: 0, total: 0 }); store.setPhase("reporting")
     setStreamPhase("idle"); setStreamLog([]); setStreamProgress({ done: 0, total: 0 })
     streamStartRef.current = Date.now()
@@ -1158,6 +1178,7 @@ export default function TopicWorkflowDashboard() {
           judge_runs: judgeRuns, judge_max_items_per_query: judgeMaxItems,
           judge_token_budget: judgeTokenBudget, trend_max_items_per_query: 3,
         }),
+        signal: controller.signal,
       })
       if (!res.ok || !res.body) throw new Error(await res.text())
 
@@ -1357,6 +1378,7 @@ export default function TopicWorkflowDashboard() {
     } finally {
       setLoadingAnalyze(false)
       streamStartRef.current = null
+      streamAbortRef.current = null
     }
   }
 
