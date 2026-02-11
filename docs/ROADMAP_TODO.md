@@ -208,6 +208,53 @@
 
 ---
 
+
+## Phase 3.7 — Agent Browser 自动化能力（基于 vercel-labs/agent-browser）
+
+> 参考仓库：<https://github.com/vercel-labs/agent-browser>
+> 目标：把"网页交互型"任务从静态 API 拉取升级为可观测、可回放的浏览器 Agent 流程。
+
+### 4.1 Source Capture Agent（网页采集增强）
+
+- [ ] 新增 Browser Source Runner：支持登录后抓取（HF Papers、arXiv、OpenReview）
+  - 输入：source 配置、cookies/session、抓取策略
+  - 输出：结构化 paper candidates + 抓取轨迹（screenshots + step logs）
+- [ ] 新增反爬/失败回退链路
+  - 失败后自动 fallback 到现有 API connector（papers.cool / arXiv API）
+  - 记录 fallback 原因到 run metadata
+- [ ] 新增 DOM 语义抽取模板
+  - 把标题/作者/摘要/链接抽取规则模板化，支持 source 版本升级时快速修复
+
+### 4.2 Workflow UX Agent（前端交互与 E2E 验证）
+
+- [ ] 为 Search → DailyPaper → Analyze 流程增加 browser-driven E2E 回归
+  - 覆盖 SSE 增量渲染（Judge/Trend/Insight）和 DAG 状态恢复
+- [ ] 自动录制关键节点截图与性能指标
+  - 首屏可见时间、分析阶段空白时长、首条增量结果时间（TTFR）
+- [ ] 将 E2E 结果接入 CI artifacts
+  - 每次 PR 自动上传步骤日志和失败页面快照
+
+### 4.3 Community/Platform Agent（平台对标能力）
+
+- [ ] 新增 HF/AlphaXiv 对标监测 Agent
+  - 周期性抓取公开页面能力矩阵（发现/排序/交互/推送）
+  - 生成差距报告写入 `docs/benchmark/`（markdown）
+- [ ] 新增 Daily push 预览 Agent
+  - 自动打开邮件/Slack/钉钉渲染预览页面并截图
+  - 验证 BestBlogs 风格模板在多端一致性
+- [ ] 新增 Browser Extension smoke test
+  - 校验 arXiv 页面注入按钮、详情弹层、跳转链路
+
+### 4.4 运维与安全
+
+- [ ] 新增 Browser session 密钥管理
+  - cookies/token 通过环境变量或密钥服务注入，禁止明文入库
+- [ ] 新增 Agent 审计日志
+  - 记录访问域名、操作步骤、耗时、失败原因（可用于问题追踪）
+- [ ] 新增速率限制与并发隔离策略
+  - 避免批量采集触发封禁，支持 source 级并发控制
+
+
 ## 多智能体系统现状与 OpenClaw 评估
 
 ### 现有多智能体管线
@@ -526,3 +573,5 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 
 - 2025-02-10: 创建 ROADMAP_TODO.md，完成对标分析与功能规划
 - 2025-02-10: 新增多智能体系统现状盘点（5 套管线 + 15 个 Agent）与 OpenClaw 迁移评估
+- 2026-02-11: 对齐远端 `origin/master` 的 Harvest 基线，保留旧实现到 `backup/feat-dailypaper-sse-stream-pre-harvest-20260211`
+- 2026-02-11: 新增 Phase 4（Agent Browser 自动化）任务清单，覆盖采集、E2E、对标监测、安全与限流

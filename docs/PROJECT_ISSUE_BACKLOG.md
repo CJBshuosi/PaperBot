@@ -265,3 +265,92 @@ Custom fields:
 - `Priority` (P0/P1/P2)
 - `Area` (Backend/Frontend/Data/Workflow)
 - `Size` (S/M/L/XL)
+
+
+## Issue 15 - Agent Browser Source Runner
+
+- Title: `[Feature] Add agent-browser source runner with fallback connectors`
+- Labels: `roadmap`, `phase-4`, `backend`, `integration`, `priority-p1`
+- Source TODO:
+  - `新增 Browser Source Runner`
+  - `失败后 fallback 到 API connector`
+  - `DOM 抽取模板化`
+- Scope:
+  - Integrate `vercel-labs/agent-browser` as optional source collector
+  - Support structured extraction for HF Papers / arXiv / OpenReview
+  - Persist capture traces (steps/screenshots) for debugging
+- Acceptance:
+  - Browser collector can produce normalized paper candidates
+  - Fallback path is observable and does not block workflow
+
+## Issue 16 - Browser-Driven Workflow E2E in CI
+
+- Title: `[Feature] Add browser-agent E2E for workflow streaming UX`
+- Labels: `roadmap`, `phase-4`, `frontend`, `infra`, `priority-p1`
+- Source TODO:
+  - `SSE 增量渲染 E2E`
+  - `关键截图和性能指标`
+  - `CI artifacts`
+- Scope:
+  - Run end-to-end test for Search → DailyPaper → Analyze
+  - Assert DAG restore, non-blank loading state, incremental judge/trend render
+  - Upload run traces and screenshots in CI
+- Acceptance:
+  - Failing UX regressions are detectable in CI
+  - Artifacts are attached for triage
+
+## Issue 17 - Platform Benchmark Monitor Agent
+
+- Title: `[Feature] Add benchmark monitor agent for HF/AlphaXiv parity tracking`
+- Labels: `roadmap`, `phase-4`, `product`, `automation`, `priority-p2`
+- Source TODO:
+  - `对标监测 Agent`
+  - `能力差距报告 docs/benchmark/`
+- Scope:
+  - Periodically crawl public product pages and extract capability signals
+  - Generate versioned markdown reports under `docs/benchmark/`
+- Acceptance:
+  - Weekly benchmark report updates automatically
+  - Capability diff is auditable over time
+
+## Issue 18 - Push Preview Validation Agent
+
+- Title: `[Feature] Add browser-agent push preview validation`
+- Labels: `roadmap`, `phase-4`, `backend`, `qa`, `priority-p2`
+- Source TODO:
+  - `邮件/Slack/钉钉渲染预览`
+  - `多端一致性截图`
+- Scope:
+  - Open rendered previews via browser agent and capture screenshots
+  - Check mandatory sections and formatting constraints
+- Acceptance:
+  - Template breakages are detected before daily dispatch
+
+## Issue 19 - Browser Extension Smoke Automation
+
+- Title: `[Feature] Add browser extension smoke tests on arXiv pages`
+- Labels: `roadmap`, `phase-4`, `frontend`, `qa`, `priority-p2`
+- Source TODO:
+  - `Browser Extension smoke test`
+- Scope:
+  - Validate content script injection and action flows on arXiv paper pages
+  - Cover CTA button, detail sheet, and API roundtrip
+- Acceptance:
+  - Core extension flow is tested in CI/nightly
+
+## Issue 20 - Browser Agent Security & Rate Control
+
+- Title: `[Feature] Harden browser-agent secrets, auditing, and rate control`
+- Labels: `roadmap`, `phase-4`, `security`, `infra`, `priority-p1`
+- Source TODO:
+  - `session 密钥管理`
+  - `Agent 审计日志`
+  - `速率限制/并发隔离`
+- Scope:
+  - Implement secure secret injection for browser sessions
+  - Add auditable logs for domain/action/latency/error
+  - Add source-level concurrency and throttling policies
+- Acceptance:
+  - No plaintext secrets in repo/runtime logs
+  - Browser automation runs are traceable and throttled
+
