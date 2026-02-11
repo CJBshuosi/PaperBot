@@ -54,13 +54,15 @@ async def review_paper_stream(request: ReviewRequest):
             type="result",
             data={
                 "title": request.title,
-                "summary": result.summary if hasattr(result, 'summary') else "",
-                "keyContributions": result.contributions if hasattr(result, 'contributions') else [],
+                "summary": result.summary if hasattr(result, "summary") else "",
+                "keyContributions": (
+                    result.contributions if hasattr(result, "contributions") else []
+                ),
                 "methodology": "",
-                "strengths": result.strengths if hasattr(result, 'strengths') else [],
-                "weaknesses": result.weaknesses if hasattr(result, 'weaknesses') else [],
-                "noveltyScore": result.novelty_score if hasattr(result, 'novelty_score') else None,
-                "recommendation": result.decision if hasattr(result, 'decision') else None,
+                "strengths": result.strengths if hasattr(result, "strengths") else [],
+                "weaknesses": result.weaknesses if hasattr(result, "weaknesses") else [],
+                "noveltyScore": result.novelty_score if hasattr(result, "novelty_score") else None,
+                "recommendation": result.decision if hasattr(result, "decision") else None,
             },
         )
 
@@ -76,7 +78,7 @@ async def review_paper(request: ReviewRequest):
     Returns Server-Sent Events with review updates.
     """
     return StreamingResponse(
-        wrap_generator(review_paper_stream(request)),
+        wrap_generator(review_paper_stream(request), workflow="review"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

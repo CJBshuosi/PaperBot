@@ -2,10 +2,11 @@
 Paper Analysis API Route
 """
 
+from typing import Optional
+
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
 
 from ..streaming import StreamEvent, wrap_generator
 
@@ -51,11 +52,13 @@ async def analyze_paper_stream(request: AnalyzeRequest):
             type="result",
             data={
                 "title": request.title,
-                "summary": result.summary if hasattr(result, 'summary') else "Analysis complete",
-                "keyContributions": result.key_contributions if hasattr(result, 'key_contributions') else [],
-                "methodology": result.methodology if hasattr(result, 'methodology') else "",
-                "strengths": result.strengths if hasattr(result, 'strengths') else [],
-                "weaknesses": result.weaknesses if hasattr(result, 'weaknesses') else [],
+                "summary": result.summary if hasattr(result, "summary") else "Analysis complete",
+                "keyContributions": (
+                    result.key_contributions if hasattr(result, "key_contributions") else []
+                ),
+                "methodology": result.methodology if hasattr(result, "methodology") else "",
+                "strengths": result.strengths if hasattr(result, "strengths") else [],
+                "weaknesses": result.weaknesses if hasattr(result, "weaknesses") else [],
             },
         )
 
@@ -71,7 +74,7 @@ async def analyze_paper(request: AnalyzeRequest):
     Returns Server-Sent Events with analysis updates.
     """
     return StreamingResponse(
-        wrap_generator(analyze_paper_stream(request)),
+        wrap_generator(analyze_paper_stream(request), workflow="analyze"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

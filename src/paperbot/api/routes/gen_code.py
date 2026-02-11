@@ -184,7 +184,10 @@ async def generate_code(request: GenCodeRequest, http_request: Request):
     trace_id = new_trace_id()
     return StreamingResponse(
         wrap_generator(
-            gen_code_stream(request, event_log=event_log, run_id=run_id, trace_id=trace_id)
+            gen_code_stream(request, event_log=event_log, run_id=run_id, trace_id=trace_id),
+            workflow="gen_code",
+            run_id=run_id,
+            trace_id=trace_id,
         ),
         media_type="text/event-stream",
         headers={

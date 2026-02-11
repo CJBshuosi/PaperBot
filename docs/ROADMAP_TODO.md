@@ -283,10 +283,10 @@
 
 ### 3.8.3 观测统一（SSE + 日志 + 事件）
 
-- [ ] 把 workflow SSE 事件映射到统一事件总线
+- [x] 把 workflow SSE 事件映射到统一事件总线
   - Search/DailyPaper/Analyze/Judge/Trend 都输出同一 event envelope
-- [ ] 打通 `trace_id` 贯穿：API -> workflow -> agent -> store/event_log
-- [ ] 前端统一消费事件协议（避免每个页面写一套 event parser）
+- [x] 打通 `trace_id` 贯穿：API -> workflow -> agent -> store/event_log
+- [x] 前端统一消费事件协议（避免每个页面写一套 event parser）
 
 ### 3.8.4 迁移顺序（按风险从低到高）
 
@@ -627,3 +627,4 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 - 2026-02-11: 新增 Phase 3.8 Agent Runtime 统一 TODO（契约/事件总线/迁移顺序），并明确 1 issue = 1 commit 规则
 - 2026-02-11: 完成 Issue #44（Agent inventory + 边界决策文档），新增 `docs/agent_inventory.md`
 - 2026-02-11: 完成 Issue #45（AgentRuntime/SourceCollector 契约 + 兼容适配器 + contract tests）
+- 2026-02-11: 完成 Issue #46（SSE envelope 统一 + trace_id 贯穿 + 前端 normalize parser）

@@ -514,7 +514,7 @@ async def generate_daily_report(req: DailyPaperRequest):
 
     # SSE streaming path for long-running operations
     return StreamingResponse(
-        wrap_generator(_dailypaper_stream(req)),
+        wrap_generator(_dailypaper_stream(req), workflow="paperscool_daily"),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -1006,7 +1006,7 @@ async def analyze_daily_report(req: PapersCoolAnalyzeRequest):
         raise HTTPException(status_code=400, detail="report with queries is required")
 
     return StreamingResponse(
-        wrap_generator(_paperscool_analyze_stream(req)),
+        wrap_generator(_paperscool_analyze_stream(req), workflow="paperscool_analyze"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
