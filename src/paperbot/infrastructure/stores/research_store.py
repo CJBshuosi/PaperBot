@@ -9,6 +9,11 @@ from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
+
+from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
+
+from paperbot.utils.logging_config import Logger, LogFiles
+
 from paperbot.infrastructure.stores.models import (
     Base,
     PaperFeedbackModel,
@@ -329,6 +334,7 @@ class SqlAlchemyResearchStore:
         weight: float = 0.0,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
+        Logger.info("Recording paper feedback", file=LogFiles.HARVEST)
         now = _utcnow()
         metadata = dict(metadata or {})
         with self._provider.session() as session:
@@ -338,14 +344,16 @@ class SqlAlchemyResearchStore:
                 )
             ).scalar_one_or_none()
             if track is None:
+                Logger.error("Track not found", file=LogFiles.HARVEST)
                 return None
+
 
             resolved_paper_ref_id = self._resolve_paper_ref_id(
                 session=session,
                 paper_id=(paper_id or "").strip(),
                 metadata=metadata,
             )
-
+            Logger.info("Creating new feedback record", file=LogFiles.HARVEST)
             row = PaperFeedbackModel(
                 user_id=user_id,
                 track_id=track_id,
@@ -373,6 +381,7 @@ class SqlAlchemyResearchStore:
             session.add(track)
             session.commit()
             session.refresh(row)
+            Logger.info("Feedback record created successfully", file=LogFiles.HARVEST)
             return self._feedback_to_dict(row)
 
     def list_paper_feedback(

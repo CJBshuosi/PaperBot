@@ -19,13 +19,18 @@ type SavedPaperItem = {
     id: number
     title: string
     authors?: string[]
+    primary_source?: string
     source?: string
     venue?: string
     url?: string
     external_url?: string
     published_at?: string | null
+    publication_date?: string | null
+    citation_count?: number
   }
   saved_at?: string | null
+  track_id?: number | null
+  action?: string
   reading_status?: {
     status?: string
     updated_at?: string | null
@@ -37,8 +42,10 @@ type SavedPaperItem = {
 }
 
 type SavedPapersResponse = {
-  user_id: string
-  items: SavedPaperItem[]
+  papers: SavedPaperItem[]
+  total: number
+  limit: number
+  offset: number
 }
 
 type UpdatingAction = "toggleRead" | "unsave"
@@ -83,15 +90,21 @@ export default function SavedPapersList() {
     try {
       const qs = new URLSearchParams({
         sort_by: sortBy,
+        sort_order: "desc",
         limit: "500",
         user_id: "default",
       })
-      const res = await fetch(`/api/research/papers/saved?${qs.toString()}`)
+      const res = await fetch(`/api/papers/library?${qs.toString()}`)
       if (!res.ok) {
-        throw new Error(await res.text())
+        const errorText = await res.text()
+        // Avoid showing raw HTML in error messages
+        if (errorText.startsWith("<!DOCTYPE") || errorText.startsWith("<html")) {
+          throw new Error(`Server error: ${res.status} ${res.statusText}`)
+        }
+        throw new Error(errorText)
       }
       const payload = (await res.json()) as SavedPapersResponse
-      setItems(payload.items || [])
+      setItems(payload.papers || [])
       setPage(1)
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
@@ -116,38 +129,56 @@ export default function SavedPapersList() {
     return items.slice(start, start + pageSize)
   }, [items, page, pageSize, totalPages])
 
-  const updateReadingStatus = useCallback(
-    async (
-      paperId: number,
-      status: ReadingStatus,
-      markSaved: boolean | null = null,
-      action: UpdatingAction,
-    ) => {
-      setUpdatingAction({ paperId, action })
-      setError(null)
-      try {
-        const body: Record<string, unknown> = {
-          user_id: "default",
-          status,
-          metadata: {},
-        }
-        if (markSaved !== null) {
-          body.mark_saved = markSaved
-        }
+  const unsavePaper = useCallback(async (paperId: number) => {
+    setUpdatingAction({ paperId, action: "unsave" })
+    setError(null)
+    try {
+      const res = await fetch(`/api/papers/${paperId}/save?user_id=default`, {
+        method: "DELETE",
+      })
 
-        const res = await fetch(`/api/research/papers/${paperId}/status`, {
+      if (!res.ok) {
+        const errorText = await res.text()
+        if (errorText.startsWith("<!DOCTYPE") || errorText.startsWith("<html")) {
+          throw new Error(`Server error: ${res.status} ${res.statusText}`)
+        }
+        throw new Error(errorText)
+      }
+
+      setItems((prev) => prev.filter((row) => row.paper.id !== paperId))
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setError(detail)
+    } finally {
+      setUpdatingAction(null)
+    }
+  }, [])
+
+  const toggleReadStatus = useCallback(
+    async (paperId: number, currentStatus: ReadingStatus) => {
+      setUpdatingAction({ paperId, action: "toggleRead" })
+      setError(null)
+      const newStatus = currentStatus === "read" ? "reading" : "read"
+      try {
+        // Use the paper feedback endpoint with action to track reading status
+        const res = await fetch(`/api/research/papers/feedback`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            user_id: "default",
+            paper_id: String(paperId),
+            action: newStatus,
+            weight: 1.0,
+            metadata: { reading_status: newStatus },
+          }),
         })
 
         if (!res.ok) {
-          throw new Error(await res.text())
-        }
-
-        if (markSaved === false) {
-          setItems((prev) => prev.filter((row) => row.paper.id !== paperId))
-          return
+          const errorText = await res.text()
+          if (errorText.startsWith("<!DOCTYPE") || errorText.startsWith("<html")) {
+            throw new Error(`Server error: ${res.status} ${res.statusText}`)
+          }
+          throw new Error(errorText)
         }
 
         setItems((prev) =>
@@ -157,7 +188,7 @@ export default function SavedPapersList() {
               ...row,
               reading_status: {
                 ...row.reading_status,
-                status,
+                status: newStatus,
                 updated_at: new Date().toISOString(),
               },
             }
@@ -270,11 +301,11 @@ export default function SavedPapersList() {
                           {paper.venue ? <div className="mt-1 text-xs text-muted-foreground">{paper.venue}</div> : null}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline">{paper.source || "unknown"}</Badge>
+                          <Badge variant="outline">{paper.primary_source || paper.source || "unknown"}</Badge>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           <div>{formatDate(item.saved_at)}</div>
-                          <div>Published: {formatDate(paper.published_at)}</div>
+                          <div>Published: {formatDate(paper.publication_date || paper.published_at)}</div>
                         </TableCell>
                         <TableCell>
                           <div className="text-sm">{formatJudge(item.latest_judge?.overall)}</div>
@@ -293,14 +324,7 @@ export default function SavedPapersList() {
                             size="sm"
                             variant="secondary"
                             disabled={rowUpdating}
-                            onClick={() =>
-                              updateReadingStatus(
-                                paper.id,
-                                status === "read" ? "reading" : "read",
-                                true,
-                                "toggleRead",
-                              )
-                            }
+                            onClick={() => toggleReadStatus(paper.id, status)}
                           >
                             {togglingRead ? <Loader2 className="h-3 w-3 animate-spin" /> : status === "read" ? "Reading" : "Mark Read"}
                           </Button>
@@ -308,7 +332,7 @@ export default function SavedPapersList() {
                             size="sm"
                             variant="ghost"
                             disabled={rowUpdating}
-                            onClick={() => updateReadingStatus(paper.id, status, false, "unsave")}
+                            onClick={() => unsavePaper(paper.id)}
                           >
                             {unsaving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Unsave"}
                           </Button>

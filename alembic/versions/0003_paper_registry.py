@@ -51,7 +51,11 @@ def _create_index(name: str, table: str, cols: list[str]) -> None:
 
 
 def upgrade() -> None:
+    # NOTE: The papers table may also be created by 0007_paper_harvest_tables with a different schema.
+    # Only create this version if the table doesn't exist.
+    created_table = False
     if _is_offline() or not _has_table("papers"):
+        created_table = True
         op.create_table(
             "papers",
             sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -75,14 +79,19 @@ def upgrade() -> None:
             sa.UniqueConstraint("doi", name="uq_papers_doi"),
         )
 
+    # Only create indexes for columns that exist in this schema version
+    # These indexes are always safe (columns exist in both schemas):
     _create_index("ix_papers_arxiv_id", "papers", ["arxiv_id"])
     _create_index("ix_papers_doi", "papers", ["doi"])
-    _create_index("ix_papers_title", "papers", ["title"])
-    _create_index("ix_papers_source", "papers", ["source"])
-    _create_index("ix_papers_published_at", "papers", ["published_at"])
-    _create_index("ix_papers_first_seen_at", "papers", ["first_seen_at"])
     _create_index("ix_papers_created_at", "papers", ["created_at"])
-    _create_index("ix_papers_updated_at", "papers", ["updated_at"])
+
+    # These indexes are only for this schema (not in harvest schema):
+    if _is_offline() or created_table:
+        _create_index("ix_papers_title", "papers", ["title"])
+        _create_index("ix_papers_source", "papers", ["source"])
+        _create_index("ix_papers_published_at", "papers", ["published_at"])
+        _create_index("ix_papers_first_seen_at", "papers", ["first_seen_at"])
+        _create_index("ix_papers_updated_at", "papers", ["updated_at"])
 
 
 def downgrade() -> None:

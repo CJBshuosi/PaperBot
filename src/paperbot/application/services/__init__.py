@@ -1,3 +1,12 @@
 from paperbot.application.services.llm_service import LLMService, get_llm_service
+from paperbot.application.services.paper_deduplicator import PaperDeduplicator
+from paperbot.application.services.query_rewriter import QueryRewriter
+from paperbot.application.services.venue_recommender import VenueRecommender
 
-__all__ = ["LLMService", "get_llm_service"]
+__all__ = [
+    "LLMService",
+    "get_llm_service",
+    "PaperDeduplicator",
+    "QueryRewriter",
+    "VenueRecommender",
+]
