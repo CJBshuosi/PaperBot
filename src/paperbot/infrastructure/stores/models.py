@@ -635,7 +635,12 @@ class ResearchTrackEmbeddingModel(Base):
 
 
 class NewsletterSubscriberModel(Base):
-    """Email newsletter subscriber for DailyPaper digest delivery."""
+    """Email newsletter subscriber for DailyPaper digest delivery.
+
+    TODO(GDPR): email stored as plaintext — consider encryption-at-rest or
+    hashing. Add a hard-delete method for GDPR/CCPA right-to-erasure (current
+    unsubscribe only sets status='unsubscribed', no row purge).
+    """
 
     __tablename__ = "newsletter_subscribers"
 

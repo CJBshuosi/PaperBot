@@ -714,6 +714,9 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
     selected = deduped[: max(1, int(req.max_items))]
     token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
 
+    # TODO: GitHub API calls are sequential — switch to concurrent.futures or
+    #  async httpx with bounded concurrency to avoid multi-minute requests and
+    #  rate-limit exhaustion (60 req/hr unauthenticated, 5000 authenticated).
     repos: List[Dict[str, Any]] = []
     for item in selected:
         repo_url = _extract_repo_url_from_paper(item)

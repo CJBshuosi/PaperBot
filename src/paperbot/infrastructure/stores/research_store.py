@@ -1092,6 +1092,8 @@ class SqlAlchemyResearchStore:
             if row is not None:
                 return int(row.id)
 
+        # TODO: scalar_one_or_none() can raise MultipleResultsFound if
+        #  multiple papers share the same URL or title. Switch to .first().
         if url_candidates:
             row = session.execute(
                 select(PaperModel).where(

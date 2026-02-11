@@ -86,7 +86,7 @@ Input Queries ──→  ├─── arXiv API (relevance sort)
 
 当启用 LLM 分析或 Judge 评分时，`/daily` 端点返回 SSE 流式响应，前端实时显示每个阶段的进度：
 
-```
+```text
 Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save → Notify → Result
   │          │               │                │            │
   │          │               │                │            └─ 移除 skip/skim 论文

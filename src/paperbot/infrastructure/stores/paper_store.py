@@ -118,6 +118,9 @@ class SqlAlchemyPaperStore:
         }
 
         with self._provider.session() as session:
+            # TODO: title+url fallback query uses scalar_one_or_none() which
+            #  raises MultipleResultsFound if duplicates exist. Switch to
+            #  .first() or add .limit(1) for safety.
             row = None
             if arxiv_id:
                 row = session.execute(
@@ -167,6 +170,10 @@ class SqlAlchemyPaperStore:
             row.source = str(source or row.source or "papers_cool")
             row.venue = venue or row.venue or ""
             row.published_at = _as_utc(published_at) or _as_utc(row.published_at)
+            # TODO: unconditional set_authors/set_keywords/set_metadata may wipe
+            #  existing data when new paper dict has empty values. Consider
+            #  preserving existing values when incoming data is empty:
+            #    row.set_authors(authors or row.get_authors())
             row.set_authors(authors)
             row.set_keywords(keywords)
             row.set_metadata(metadata)
@@ -268,11 +275,14 @@ class SqlAlchemyPaperStore:
                     row.recommendation = str(judge.get("recommendation") or "")
                     row.one_line_summary = str(judge.get("one_line_summary") or "")
                     row.judge_model = str(judge.get("judge_model") or "")
-                    row.judge_cost_tier = (
-                        int(judge.get("judge_cost_tier"))
-                        if judge.get("judge_cost_tier") is not None
-                        else None
-                    )
+                    try:
+                        row.judge_cost_tier = (
+                            int(judge.get("judge_cost_tier"))
+                            if judge.get("judge_cost_tier") is not None
+                            else None
+                        )
+                    except (ValueError, TypeError):
+                        row.judge_cost_tier = None
                     row.scored_at = scored_at
                     row.metadata_json = "{}"
 

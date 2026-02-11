@@ -1024,6 +1024,9 @@ export default function TopicWorkflowDashboard() {
           const rec = d.judge?.recommendation || "?"
           const overall = d.judge?.overall != null ? Number(d.judge.overall).toFixed(2) : "?"
           addStreamLog(`judge ${d.done || 0}/${d.total || 0}: [${rec} ${overall}] ${d.title || "paper"} (${d.query || ""})`)
+          // TODO: refactor judge update — current nested map + matched flag is hard
+          //  to follow. Use findIndex to locate target query+item, then apply a
+          //  single immutable update. See PR #25 review for suggested approach.
           if (d.query && d.title && d.judge) {
             store.updateDailyResult((prev) => {
               const sourceQueries = prev.report.queries || []

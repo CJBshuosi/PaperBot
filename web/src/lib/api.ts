@@ -207,6 +207,8 @@ export async function fetchPaperDetails(id: string): Promise<PaperDetails> {
     }
 }
 
+// TODO: add unit tests for fetchScholarDetails — cover successful network+trends,
+//  partial responses, and both-null fallback path.
 export async function fetchScholarDetails(id: string): Promise<ScholarDetails> {
     const scholarName = slugToName(id)
 
@@ -237,6 +239,8 @@ export async function fetchScholarDetails(id: string): Promise<ScholarDetails> {
         }),
     ])
 
+    // TODO: mock fallback is hardcoded to Dawn Song — replace with generic
+    //  placeholder or remove entirely once real scholar data is always available.
     // Fallback to mock data if the scholar is not configured in subscriptions yet.
     if (!network && !trends) {
         const papers = await fetchPapers()
