@@ -3,6 +3,16 @@
 > 对标 HuggingFace Daily Papers / AlphaXiv 的完整功能规划。
 > 本文件同时作为迭代清单使用：完成一项请将 `[ ]` 更新为 `[x]`。
 
+
+## 已完成进度（2026-02-10）
+
+- [x] 修复 Judge Prompt f-string 语法错误（CI collection error）
+- [x] DailyPaper 去除 `top_k_per_query` 过早截断（确保 `top_n` 能生效）
+- [x] 新增 Repo 批量富化 API：`POST /api/research/paperscool/repos`
+- [x] 新增学者网络 API：`POST /api/research/scholar/network`
+- [x] 新增学者趋势 API：`POST /api/research/scholar/trends`
+- [x] 打通前端 API 代理（Next route handlers）
+
 ---
 
 ## 对标结论
@@ -30,29 +40,29 @@
 
 ### 1.1 Paper Registry（论文持久化）
 
-- [ ] 新增 `PaperModel` 表
+- [x] 新增 `PaperModel` 表
   - 字段：`id`（自增）、`arxiv_id`（唯一索引）、`doi`、`title`、`authors_json`、`abstract`、`url`、`external_url`、`pdf_url`、`source`（papers_cool / arxiv_api / semantic_scholar）、`venue`、`published_at`、`first_seen_at`、`keywords_json`、`metadata_json`
   - 唯一约束：`(arxiv_id)` 或 `(doi)` 去重
   - 文件：`src/paperbot/infrastructure/stores/models.py`
-- [ ] 新增 Alembic 迁移
-- [ ] 新增 `PaperStore`（CRUD + upsert + 按 arxiv_id/doi 查重）
+- [x] 新增 Alembic 迁移
+- [x] 新增 `PaperStore`（CRUD + upsert + 按 arxiv_id/doi 查重）
   - 文件：`src/paperbot/infrastructure/stores/paper_store.py`
-- [ ] `build_daily_paper_report()` 完成后自动入库
+- [x] `build_daily_paper_report()` 完成后自动入库
   - 文件：`src/paperbot/application/workflows/dailypaper.py`
   - 逻辑：遍历 `report["queries"][*]["top_items"]`，逐条 upsert
-- [ ] Judge 评分写入 `PaperModel` 或关联表 `paper_judge_scores`
+- [x] Judge 评分写入 `PaperModel` 或关联表 `paper_judge_scores`
   - 字段：`paper_id`、`query`、`overall`、`relevance`、`novelty`、`rigor`、`impact`、`clarity`、`recommendation`、`one_line_summary`、`scored_at`
-- [ ] `PaperFeedbackModel` 的 `paper_id` 关联到 `PaperModel.id`（目前 paper_id 是自由文本）
-- [ ] 论文 ID 归一化工具函数 `normalize_paper_id(url_or_id) -> arxiv_id | doi`
+- [x] `PaperFeedbackModel` 的 `paper_id` 关联到 `PaperModel.id`（目前 paper_id 是自由文本）
+- [x] 论文 ID 归一化工具函数 `normalize_paper_id(url_or_id) -> arxiv_id | doi`
   - 文件：`src/paperbot/domain/paper_identity.py`
 
 ### 1.2 收藏 / 阅读列表
 
-- [ ] 新增 `PaperReadingStatusModel` 表（或扩展 `PaperFeedbackModel`）
+- [x] 新增 `PaperReadingStatusModel` 表（或扩展 `PaperFeedbackModel`）
   - 字段：`user_id`、`paper_id`、`status`（unread/reading/read/archived）、`saved_at`、`read_at`
-- [ ] API：`GET /api/research/papers/saved`（用户收藏列表，支持排序：judge_score / saved_at / published_at）
-- [ ] API：`POST /api/research/papers/{paper_id}/status`（更新阅读状态）
-- [ ] API：`GET /api/research/papers/{paper_id}`（论文详情，聚合 judge + feedback + summary）
+- [x] API：`GET /api/research/papers/saved`（用户收藏列表，支持排序：judge_score / saved_at / published_at）
+- [x] API：`POST /api/research/papers/{paper_id}/status`（更新阅读状态）
+- [x] API：`GET /api/research/papers/{paper_id}`（论文详情，聚合 judge + feedback + summary）
 - [ ] 前端：收藏列表页面组件
   - 文件：`web/src/components/research/SavedPapersList.tsx`
 
@@ -60,13 +70,13 @@
 
 - [ ] 新增 `PaperRepoModel` 表
   - 字段：`paper_id`、`repo_url`、`owner`、`name`、`stars`、`forks`、`last_commit_at`、`language`、`description`、`fetched_at`
-- [ ] Enrichment 服务：从论文 abstract/url/external_url 中正则提取 GitHub 链接
-  - 文件：`src/paperbot/application/services/repo_enrichment.py`
-  - 正则：`github\.com/[\w\-]+/[\w\-]+`
-  - 调用 GitHub API 补元数据（stars/forks/language/last_commit）
+- [x] Enrichment 服务：从论文 abstract/url/external_url 中提取 GitHub 链接并补元数据
+  - 当前实现：`src/paperbot/api/routes/paperscool.py`（后续可下沉到 service）
+  - 提取来源：`github_url/external_url/url/pdf_url/alternative_urls + snippet/abstract`
+  - 调用 GitHub API 补元数据（stars/forks/language/updated_at）
 - [ ] DailyPaper 生成后异步调用 repo enrichment
 - [ ] API：`GET /api/research/papers/{paper_id}/repos`
-- [ ] API：`GET /api/research/paperscool/repos`（批量，含 stars/活跃度）
+- [x] API：`POST /api/research/paperscool/repos`（批量，含 stars/活跃度）
 
 ---
 
@@ -98,11 +108,12 @@
 
 ### 2.3 富文本推送
 
-- [ ] HTML 邮件模板
-  - 文件：`src/paperbot/application/services/templates/daily_email.html`
-  - 内容：Top 5 论文卡片（标题+摘要+Judge 评分徽章+链接）、趋势摘要、统计数据
-  - 使用 Jinja2 渲染
+- [x] HTML 邮件模板（BestBlogs 风格）
+  - 文件：`src/paperbot/application/services/email_template.py`（共享模板）
+  - 布局：本期导读 → 三步精选流程 → 分层推荐（Must Read / Worth Reading / Skim）
+  - 每篇论文"方法大框"：研究问题 / 核心方法 / 关键证据 / 适用场景 / 创新点（从 Judge 五维 rationale 自动拼）
   - `_send_email()` 发送 `multipart/alternative`（text + html）
+  - SMTP 和 Resend 两个渠道共享同一模板
 - [ ] Slack Block Kit 消息
   - 将 `_send_slack()` 的 `text` payload 替换为 `blocks` 结构
   - 包含 Header Block + Section Blocks（论文卡片）+ Divider
@@ -125,30 +136,27 @@
 
 ### 3.1 学者合作网络（Coauthor Graph）
 
-- [ ] API：`GET /api/research/scholar/network`
-  - 参数：`scholar_id`（S2 author ID）、`depth`（默认 1，最大 2）
-  - 返回：`{ "nodes": [...], "edges": [...] }`
-    - node：`{ "id", "name", "affiliation", "h_index", "paper_count", "citation_count" }`
-    - edge：`{ "source", "target", "coauthor_count", "recent_paper_titles" }`
-  - 实现：调用 `SemanticScholarClient.get_author()` + `get_author_papers()` → 提取 coauthor → 递归
-  - 文件：`src/paperbot/api/routes/scholar.py`
-  - 基础设施：`src/paperbot/infrastructure/api_clients/semantic_scholar.py`（已有 `get_author` / `get_author_papers`）
+- [x] API：`POST /api/research/scholar/network`
+  - 参数：`scholar_id` 或 `scholar_name`、`max_papers`、`recent_years`、`max_nodes`
+  - 返回：`{ "scholar", "stats", "nodes", "edges" }`
+    - node：`{ "id", "name", "type", "collab_papers", "citation_sum" }`
+    - edge：`{ "source", "target", "weight", "sample_titles" }`
+  - 实现：调用 `SemanticScholarClient.get_author()` + `get_author_papers()` 聚合 coauthor 图
+  - 文件：`src/paperbot/api/routes/research.py`
+  - 基础设施：`src/paperbot/infrastructure/api_clients/semantic_scholar.py`
 - [ ] 前端：学者关系图可视化（复用 xyflow / d3-force）
   - 文件：`web/src/components/research/ScholarNetworkGraph.tsx`
 
 ### 3.2 学者趋势分析
 
-- [ ] API：`GET /api/research/scholar/trends`
-  - 参数：`scholar_id`、`years`（默认 5）
+- [x] API：`POST /api/research/scholar/trends`
+  - 参数：`scholar_id` 或 `scholar_name`、`max_papers`、`year_window`
   - 返回：
-    - `yearly_stats`：`[{ "year", "paper_count", "citation_count", "top_venues" }]`
-    - `topic_migration`：`[{ "period", "keywords", "shift_direction" }]`（LLM 生成）
-    - `citation_velocity`：`{ "recent_3y_avg", "historical_avg", "trend" }`
-    - `collaboration_trend`：`{ "unique_coauthors_per_year", "new_collaborators" }`
-  - 实现：
-    - 基础统计：从 S2 author papers 聚合
-    - 主题迁移：复用 `TrendAnalyzer`（`analysis/trend_analyzer.py`），输入学者各年代表论文
-  - 文件：`src/paperbot/application/services/scholar_trends.py`
+    - `publication_velocity`：`[{ "year", "papers", "citations" }]`
+    - `topic_distribution` / `venue_distribution`
+    - `trend_summary`：`{ "publication_trend", "citation_trend", "active_years" }`
+  - 实现：从 S2 author papers 聚合统计并生成趋势方向
+  - 文件：`src/paperbot/api/routes/research.py`
 - [ ] 前端：学者趋势图表（年度发表量/引用趋势/主题变迁时间线）
   - 文件：`web/src/components/research/ScholarTrendsChart.tsx`
 
@@ -354,6 +362,85 @@ OpenClaw 的"多 Agent"是指将不同消息渠道路由到不同 Agent 实例�
 - [ ] PDF 下载 + 文本提取
 - [ ] 全文索引（用于 AI Chat with Paper 的深度问答）
 - [ ] 逐段批注（类 AlphaXiv）
+
+### 4.5 论文框架图提取（Paper Framework Figure Extraction）
+
+> 目标：自动提取论文中的方法框架图（通常是 Figure 1），嵌入邮件推送和论文详情页。
+> 三条提取路径 + LaTeX 快速通道，后续做 A/B Test 对比效果。
+
+**路径 A：LaTeX 源码直提（arXiv 论文优先，精度最高）**
+
+- [ ] arXiv 提供 LaTeX 源码包下载（`https://arxiv.org/e-print/{arxiv_id}`）
+- [ ] 解压 `.tar.gz` → 解析 `.tex` 文件中的 `\includegraphics` 命令
+- [ ] 定位框架图：匹配 `\begin{figure}` 环境 + caption 关键词（"overview"、"framework"、"architecture"、"pipeline"）
+- [ ] 直接提取对应图片文件（`.pdf`/`.png`/`.eps`）→ 转换为 PNG/WebP
+- 优点：无损质量、精准定位、无需模型推理
+- 缺点：仅限 arXiv 有源码的论文（覆盖率 ~70-80%）
+
+**路径 B：MinerU 文档布局检测（PDF 结构化解析，推荐）**
+
+- [ ] 使用 [MinerU](https://github.com/opendatalab/MinerU)（30k+ stars）解析 PDF
+  - LayoutLMv3 布局检测 → 自动识别 figure 区域 + 导出图片 + 关联 caption 文本
+  - 输出 Markdown/JSON + 图片目录，figure 作为独立元素
+- [ ] 遍历 MinerU 输出的 figure 列表 → 匹配 caption 关键词定位框架图
+- [ ] 备选：[Docling](https://github.com/DS4SD/docling)（IBM 出品，结构化文档解析）或 [Marker](https://github.com/vikparuchuri/marker)（PDF→Markdown，速度快）
+- 优点：从 PDF 内部结构提取原始图片（无损）、自动关联 caption、文档专用模型准确率高
+- 缺点：需下载 LayoutLMv3 权重（~1.5GB），首次推理较慢
+
+**路径 C：SAM 3 视觉语义分割（扫描版 PDF fallback）**
+
+- [ ] 使用 [SAM 3](https://pyimagesearch.com/2026/01/26/sam-3-concept-based-visual-understanding-and-segmentation/)（Meta Segment Anything Model 3）
+  - 支持 concept-based text prompt 分割：`"framework diagram"` / `"architecture overview figure"`
+  - PDF 页面渲染为高 DPI 图片 → SAM 3 分割 → 裁剪导出
+- [ ] 适用场景：扫描版 PDF（图片型，无内嵌矢量图）、MinerU 提取失败的 fallback
+- 优点：不依赖 PDF 内部结构，纯视觉语义理解，对扫描件友好
+- 缺点：图片质量受渲染 DPI 影响（有损）、拿不到 caption 文本、模型较重（ViT-H）
+
+**路径 D：PyMuPDF 轻量启发式（兜底方案）**
+
+- [ ] PyMuPDF（fitz）直接提取 PDF 内嵌位图
+- [ ] 启发式定位：页面位置（前 3 页）+ 图片尺寸（宽度 > 页面 50%）+ 周围文本匹配（"Figure 1"）
+- [ ] 可选：LLM 视觉模型辅助判断（传入候选图片 → 判断哪张是框架图）
+- 优点：零模型依赖、速度极快
+- 缺点：矢量图可能提取为空、启发式规则覆盖率有限
+
+**提取策略（级联 fallback）：**
+
+```
+LaTeX 源码可用？ ──是──→ 路径 A（LaTeX 直提）
+       │否
+       ▼
+MinerU 提取成功？ ──是──→ 路径 B（布局检测）
+       │否
+       ▼
+扫描版 PDF？ ──是──→ 路径 C（SAM 3 分割）
+       │否
+       ▼
+路径 D（PyMuPDF 启发式兜底）
+```
+
+**A/B Test 计划：**
+
+- [ ] 收集 100 篇论文样本（50 有 LaTeX 源码 + 50 仅 PDF）
+- [ ] 人工标注 ground truth（每篇论文的框架图是哪张）
+- [ ] 对比指标：提取成功率、图片质量（SSIM）、定位准确率、耗时
+- [ ] 确定生产环境的级联策略和各路径权重
+
+**通用后处理：**
+
+- [ ] 图片压缩 + 尺寸归一化（邮件内嵌 ≤600px 宽）
+- [ ] 上传到对象存储（S3/R2）或 base64 内嵌邮件
+- [ ] 缓存：`PaperModel` 新增 `framework_figure_url` 字段
+- [ ] 邮件模板集成：在方法大框下方展示框架图缩略图
+
+**文件规划：**
+
+- [ ] `src/paperbot/application/services/figure_extractor.py` — 统一入口 + 级联调度
+- [ ] `src/paperbot/application/services/extractors/latex_extractor.py` — 路径 A
+- [ ] `src/paperbot/application/services/extractors/mineru_extractor.py` — 路径 B
+- [ ] `src/paperbot/application/services/extractors/sam3_extractor.py` — 路径 C
+- [ ] `src/paperbot/application/services/extractors/pymupdf_extractor.py` — 路径 D
+- [ ] 依赖：`magic-pdf`（MinerU）、`segment-anything-3`、`PyMuPDF`、`tarfile`、`Pillow`
 
 ---
 

@@ -1,6 +1,29 @@
 import { Activity, Paper, PaperDetails, Scholar, ScholarDetails, Stats, WikiConcept, TrendingTopic, PipelineTask, ReadingQueueItem, LLMUsageRecord } from "./types"
 
-const API_BASE_URL = "http://localhost:8000/api"
+const API_BASE_URL = process.env.PAPERBOT_API_BASE_URL || "http://127.0.0.1:8000/api"
+
+function slugToName(slug: string): string {
+    return slug
+        .split("-")
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ")
+}
+
+async function postJson<T>(path: string, payload: Record<string, unknown>): Promise<T | null> {
+    try {
+        const res = await fetch(`${API_BASE_URL}${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            cache: "no-store",
+        })
+        if (!res.ok) return null
+        return await res.json() as T
+    } catch {
+        return null
+    }
+}
 
 export async function fetchStats(): Promise<Stats> {
     // TODO: Replace with real API call
@@ -184,37 +207,130 @@ export async function fetchPaperDetails(id: string): Promise<PaperDetails> {
     }
 }
 
+// TODO: add unit tests for fetchScholarDetails — cover successful network+trends,
+//  partial responses, and both-null fallback path.
 export async function fetchScholarDetails(id: string): Promise<ScholarDetails> {
-    const papers = await fetchPapers()
+    const scholarName = slugToName(id)
+
+    type ScholarNetworkResponse = {
+        scholar?: { name?: string; affiliations?: string[]; citation_count?: number; paper_count?: number; h_index?: number }
+        stats?: { papers_used?: number }
+        nodes?: Array<{ name?: string; type?: string; collab_papers?: number }>
+    }
+
+    type ScholarTrendsResponse = {
+        scholar?: { name?: string; affiliations?: string[]; citation_count?: number; paper_count?: number; h_index?: number }
+        trend_summary?: { publication_trend?: "up" | "down" | "flat"; citation_trend?: "up" | "down" | "flat" }
+        topic_distribution?: Array<{ topic?: string; count?: number }>
+        recent_papers?: Array<{ title?: string; year?: number; citation_count?: number; venue?: string; url?: string }>
+    }
+
+    const [network, trends] = await Promise.all([
+        postJson<ScholarNetworkResponse>("/research/scholar/network", {
+            scholar_name: scholarName,
+            max_papers: 120,
+            recent_years: 5,
+            max_nodes: 30,
+        }),
+        postJson<ScholarTrendsResponse>("/research/scholar/trends", {
+            scholar_name: scholarName,
+            max_papers: 200,
+            year_window: 10,
+        }),
+    ])
+
+    // TODO: mock fallback is hardcoded to Dawn Song — replace with generic
+    //  placeholder or remove entirely once real scholar data is always available.
+    // Fallback to mock data if the scholar is not configured in subscriptions yet.
+    if (!network && !trends) {
+        const papers = await fetchPapers()
+        return {
+            id,
+            name: scholarName,
+            affiliation: "University of California, Berkeley",
+            h_index: 120,
+            papers_tracked: 45,
+            recent_activity: "Published 2 days ago",
+            status: "active",
+            bio: "Dawn Song is a Professor in the Department of Electrical Engineering and Computer Science at UC Berkeley. Her research interest lies in deep learning, security, and blockchain.",
+            location: "Berkeley, CA",
+            website: "https://dawnsong.io",
+            expertise_radar: [
+                { subject: "Security", A: 100, fullMark: 100 },
+                { subject: "Deep Learning", A: 90, fullMark: 100 },
+                { subject: "Blockchain", A: 80, fullMark: 100 },
+                { subject: "Systems", A: 85, fullMark: 100 },
+                { subject: "Privacy", A: 95, fullMark: 100 },
+            ],
+            publications: papers,
+            co_authors: [
+                { name: "Dan Hendrycks", avatar: "https://avatar.vercel.sh/dan.png" },
+                { name: "Kevin Eykholt", avatar: "https://avatar.vercel.sh/kevin.png" },
+            ],
+            stats: {
+                total_citations: 54321,
+                papers_count: 230,
+                h_index: 120,
+            },
+        }
+    }
+
+    const scholar = network?.scholar || trends?.scholar || {}
+    const topicDist = (trends?.topic_distribution || []).slice(0, 5)
+    const maxTopicCount = Math.max(1, ...topicDist.map((t) => Number(t.count || 0)))
+
+    const publications: Paper[] = (trends?.recent_papers || []).slice(0, 15).map((paper, idx) => ({
+        id: `sch-${id}-paper-${idx}`,
+        title: String(paper.title || "Untitled"),
+        venue: String(paper.venue || "Unknown venue"),
+        authors: String(scholar.name || scholarName),
+        citations: Number(paper.citation_count || 0),
+        status: "analyzing",
+        tags: topicDist.map((t) => String(t.topic || "")).filter(Boolean).slice(0, 3),
+    }))
+
+    const coauthors = (network?.nodes || [])
+        .filter((n) => n.type === "coauthor")
+        .slice(0, 12)
+        .map((n) => {
+            const name = String(n.name || "Unknown")
+            const collab = Number(n.collab_papers || 0)
+            return {
+                name: collab > 0 ? `${name} (${collab})` : name,
+                avatar: `https://avatar.vercel.sh/${encodeURIComponent(name)}.png`,
+            }
+        })
+
+    const publicationTrend = trends?.trend_summary?.publication_trend || "flat"
+    const recentActivity = publicationTrend === "up"
+        ? "Publication trend up"
+        : publicationTrend === "down"
+            ? "Publication trend down"
+            : "Publication trend stable"
 
     return {
         id,
-        name: id.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
-        affiliation: "University of California, Berkeley",
-        h_index: 120,
-        papers_tracked: 45,
-        recent_activity: "Published 2 days ago",
-        status: "active",
-        bio: "Dawn Song is a Professor in the Department of Electrical Engineering and Computer Science at UC Berkeley. Her research interest lies in deep learning, security, and blockchain.",
-        location: "Berkeley, CA",
-        website: "https://dawnsong.io",
-        expertise_radar: [
-            { subject: 'Security', A: 100, fullMark: 100 },
-            { subject: 'Deep Learning', A: 90, fullMark: 100 },
-            { subject: 'Blockchain', A: 80, fullMark: 100 },
-            { subject: 'Systems', A: 85, fullMark: 100 },
-            { subject: 'Privacy', A: 95, fullMark: 100 },
-        ],
-        publications: papers,
-        co_authors: [
-            { name: "Dan Hendrycks", avatar: "https://avatar.vercel.sh/dan.png" },
-            { name: "Kevin Eykholt", avatar: "https://avatar.vercel.sh/kevin.png" }
-        ],
+        name: String(scholar.name || scholarName),
+        affiliation: String((scholar.affiliations || ["Unknown affiliation"])[0] || "Unknown affiliation"),
+        h_index: Number(scholar.h_index || 0),
+        papers_tracked: Number(scholar.paper_count || 0),
+        recent_activity: recentActivity,
+        status: publicationTrend === "up" ? "active" : "idle",
+        bio: `Trend snapshot: ${trends?.trend_summary?.citation_trend || "flat"} citation trend over the recent analysis window.`,
+        location: "N/A",
+        website: "",
+        expertise_radar: topicDist.map((t) => ({
+            subject: String(t.topic || "Topic"),
+            A: Math.round((Number(t.count || 0) / maxTopicCount) * 100),
+            fullMark: 100,
+        })),
+        publications,
+        co_authors: coauthors,
         stats: {
-            total_citations: 54321,
-            papers_count: 230,
-            h_index: 120
-        }
+            total_citations: Number(scholar.citation_count || 0),
+            papers_count: Number(scholar.paper_count || 0),
+            h_index: Number(scholar.h_index || 0),
+        },
     }
 }
 

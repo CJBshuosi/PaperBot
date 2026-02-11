@@ -20,6 +20,7 @@ from .routes import (
     memory,
     research,
     paperscool,
+    newsletter,
 )
 from paperbot.infrastructure.event_log.logging_event_log import LoggingEventLog
 from paperbot.infrastructure.event_log.composite_event_log import CompositeEventLog
@@ -63,6 +64,7 @@ app.include_router(runbook.router, prefix="/api", tags=["Runbook"])
 app.include_router(memory.router, prefix="/api", tags=["Memory"])
 app.include_router(research.router, prefix="/api", tags=["Research"])
 app.include_router(paperscool.router, prefix="/api", tags=["PapersCool"])
+app.include_router(newsletter.router, prefix="/api", tags=["Newsletter"])
 
 
 @app.on_event("startup")

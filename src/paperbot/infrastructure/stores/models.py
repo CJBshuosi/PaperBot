@@ -450,6 +450,90 @@ class ResearchMilestoneModel(Base):
     track = relationship("ResearchTrackModel", back_populates="milestones")
 
 
+class PaperModel(Base):
+    """Canonical paper registry row (deduplicated across sources)."""
+
+    __tablename__ = "papers"
+    __table_args__ = (
+        UniqueConstraint("arxiv_id", name="uq_papers_arxiv_id"),
+        UniqueConstraint("doi", name="uq_papers_doi"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    arxiv_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    doi: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+
+    title: Mapped[str] = mapped_column(Text, default="", index=True)
+    authors_json: Mapped[str] = mapped_column(Text, default="[]")
+    abstract: Mapped[str] = mapped_column(Text, default="")
+
+    url: Mapped[str] = mapped_column(String(512), default="")
+    external_url: Mapped[str] = mapped_column(String(512), default="")
+    pdf_url: Mapped[str] = mapped_column(String(512), default="")
+
+    source: Mapped[str] = mapped_column(String(32), default="papers_cool", index=True)
+    venue: Mapped[str] = mapped_column(String(256), default="")
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    keywords_json: Mapped[str] = mapped_column(Text, default="[]")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    judge_scores = relationship(
+        "PaperJudgeScoreModel", back_populates="paper", cascade="all, delete-orphan"
+    )
+    feedback_rows = relationship("PaperFeedbackModel", back_populates="paper")
+    reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
+
+    def set_authors(self, values: Optional[list[str]]) -> None:
+        self.authors_json = json.dumps(
+            [str(v) for v in (values or []) if str(v).strip()],
+            ensure_ascii=False,
+        )
+
+    def get_authors(self) -> list[str]:
+        try:
+            data = json.loads(self.authors_json or "[]")
+            if isinstance(data, list):
+                return [str(v) for v in data if str(v).strip()]
+        except Exception:
+            pass
+        return []
+
+    def set_keywords(self, values: Optional[list[str]]) -> None:
+        self.keywords_json = json.dumps(
+            [str(v) for v in (values or []) if str(v).strip()],
+            ensure_ascii=False,
+        )
+
+    def get_keywords(self) -> list[str]:
+        try:
+            data = json.loads(self.keywords_json or "[]")
+            if isinstance(data, list):
+                return [str(v) for v in data if str(v).strip()]
+        except Exception:
+            pass
+        return []
+
+    def set_metadata(self, data: Dict[str, Any]) -> None:
+        self.metadata_json = json.dumps(data or {}, ensure_ascii=False)
+
+    def get_metadata(self) -> Dict[str, Any]:
+        try:
+            parsed = json.loads(self.metadata_json or "{}")
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return {}
+
+
 class PaperFeedbackModel(Base):
     """User feedback on recommended/seen papers (track-scoped)."""
 
@@ -461,6 +545,9 @@ class PaperFeedbackModel(Base):
     track_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_tracks.id"), index=True)
 
     paper_id: Mapped[str] = mapped_column(String(64), index=True)
+    paper_ref_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("papers.id"), nullable=True, index=True
+    )
     action: Mapped[str] = mapped_column(String(16), index=True)  # like/dislike/skip/save/cite
 
     weight: Mapped[float] = mapped_column(Float, default=0.0)
@@ -468,6 +555,64 @@ class PaperFeedbackModel(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
     track = relationship("ResearchTrackModel", back_populates="paper_feedback")
+    paper = relationship("PaperModel", back_populates="feedback_rows")
+
+
+class PaperJudgeScoreModel(Base):
+    """Structured LLM-as-Judge scores linked to canonical papers."""
+
+    __tablename__ = "paper_judge_scores"
+    __table_args__ = (
+        UniqueConstraint("paper_id", "query", name="uq_paper_judge_scores_paper_query"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(Integer, ForeignKey("papers.id"), index=True)
+    query: Mapped[str] = mapped_column(String(256), default="", index=True)
+
+    overall: Mapped[float] = mapped_column(Float, default=0.0)
+    relevance: Mapped[float] = mapped_column(Float, default=0.0)
+    novelty: Mapped[float] = mapped_column(Float, default=0.0)
+    rigor: Mapped[float] = mapped_column(Float, default=0.0)
+    impact: Mapped[float] = mapped_column(Float, default=0.0)
+    clarity: Mapped[float] = mapped_column(Float, default=0.0)
+
+    recommendation: Mapped[str] = mapped_column(String(32), default="", index=True)
+    one_line_summary: Mapped[str] = mapped_column(Text, default="")
+    judge_model: Mapped[str] = mapped_column(String(128), default="")
+    judge_cost_tier: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    paper = relationship("PaperModel", back_populates="judge_scores")
+
+
+class PaperReadingStatusModel(Base):
+    """Per-user reading lifecycle state for a paper."""
+
+    __tablename__ = "paper_reading_status"
+    __table_args__ = (
+        UniqueConstraint("user_id", "paper_id", name="uq_paper_reading_status_user_paper"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    paper_id: Mapped[int] = mapped_column(Integer, ForeignKey("papers.id"), index=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="unread", index=True)
+    saved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    read_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    paper = relationship("PaperModel", back_populates="reading_status_rows")
 
 
 class ResearchTrackEmbeddingModel(Base):
@@ -487,6 +632,25 @@ class ResearchTrackEmbeddingModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
     track = relationship("ResearchTrackModel", back_populates="embeddings")
+
+
+class NewsletterSubscriberModel(Base):
+    """Email newsletter subscriber for DailyPaper digest delivery.
+
+    TODO(GDPR): email stored as plaintext — consider encryption-at-rest or
+    hashing. Add a hard-delete method for GDPR/CCPA right-to-erasure (current
+    unsubscribe only sets status='unsubscribed', no row purge).
+    """
+
+    __tablename__ = "newsletter_subscribers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    unsub_token: Mapped[str] = mapped_column(String(64), unique=True)
+    subscribed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    unsub_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
 class ResearchContextRunModel(Base):

@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from paperbot.application.services.llm_service import LLMService, get_llm_service
 from paperbot.application.workflows.analysis.paper_judge import PaperJudge
+from paperbot.infrastructure.stores.paper_store import SqlAlchemyPaperStore
 
 
 SUPPORTED_LLM_FEATURES = ("summary", "trends", "insight", "relevance")
@@ -52,6 +53,67 @@ def build_daily_paper_report(
         "queries": query_rows,
         "global_top": global_top,
     }
+
+
+def _iter_report_papers(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for query in report.get("queries") or []:
+        for item in query.get("top_items") or []:
+            row = dict(item)
+            row.setdefault("source", (report.get("sources") or [report.get("source")])[0])
+            rows.append(row)
+
+    for item in report.get("global_top") or []:
+        row = dict(item)
+        row.setdefault("source", (report.get("sources") or [report.get("source")])[0])
+        rows.append(row)
+
+    deduped: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in rows:
+        key = f"{item.get('url') or ''}|{item.get('title') or ''}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def ingest_daily_report_to_registry(
+    report: Dict[str, Any],
+    *,
+    paper_store: Optional[SqlAlchemyPaperStore] = None,
+) -> Dict[str, int]:
+    """Persist DailyPaper report items to canonical paper registry."""
+
+    store = paper_store or SqlAlchemyPaperStore()
+    generated_at = report.get("generated_at")
+    seen_at: Optional[datetime] = None
+    if isinstance(generated_at, str) and generated_at.strip():
+        stamp = generated_at.strip()
+        if stamp.endswith("Z"):
+            stamp = f"{stamp[:-1]}+00:00"
+        try:
+            seen_at = datetime.fromisoformat(stamp)
+            if seen_at.tzinfo is None:
+                seen_at = seen_at.replace(tzinfo=timezone.utc)
+        except Exception:
+            seen_at = None
+
+    papers = _iter_report_papers(report)
+    source_hint = (report.get("sources") or [report.get("source") or "papers_cool"])[0]
+    return store.upsert_many(papers=papers, source_hint=source_hint, seen_at=seen_at)
+
+
+def persist_judge_scores_to_registry(
+    report: Dict[str, Any],
+    *,
+    paper_store: Optional[SqlAlchemyPaperStore] = None,
+) -> Dict[str, int]:
+    """Persist LLM judge outputs into structured judge score table."""
+
+    store = paper_store or SqlAlchemyPaperStore()
+    return store.upsert_judge_scores_from_report(report)
 
 
 def enrich_daily_paper_report(

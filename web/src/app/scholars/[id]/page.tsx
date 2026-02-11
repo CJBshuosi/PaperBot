@@ -28,7 +28,14 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
                         <p className="text-lg text-muted-foreground">{scholar.affiliation}</p>
                         <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
                             <div className="flex items-center gap-1"><MapPin className="h-4 w-4" /> {scholar.location}</div>
-                            <div className="flex items-center gap-1"><LinkIcon className="h-4 w-4" /> <a href={scholar.website} className="hover:underline" target="_blank">Website</a></div>
+                            <div className="flex items-center gap-1">
+                                <LinkIcon className="h-4 w-4" />
+                                {scholar.website ? (
+                                    <a href={scholar.website} className="hover:underline" target="_blank" rel="noreferrer">Website</a>
+                                ) : (
+                                    <span className="text-muted-foreground">Website N/A</span>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>

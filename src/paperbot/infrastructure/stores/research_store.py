@@ -5,13 +5,17 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
 from paperbot.infrastructure.stores.models import (
     Base,
     PaperFeedbackModel,
+    PaperJudgeScoreModel,
+    PaperModel,
     PaperImpressionModel,
+    PaperReadingStatusModel,
     ResearchContextRunModel,
     ResearchMilestoneModel,
     ResearchTaskModel,
@@ -326,6 +330,7 @@ class SqlAlchemyResearchStore:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         now = _utcnow()
+        metadata = dict(metadata or {})
         with self._provider.session() as session:
             track = session.execute(
                 select(ResearchTrackModel).where(
@@ -335,16 +340,35 @@ class SqlAlchemyResearchStore:
             if track is None:
                 return None
 
+            resolved_paper_ref_id = self._resolve_paper_ref_id(
+                session=session,
+                paper_id=(paper_id or "").strip(),
+                metadata=metadata,
+            )
+
             row = PaperFeedbackModel(
                 user_id=user_id,
                 track_id=track_id,
                 paper_id=(paper_id or "").strip(),
+                paper_ref_id=resolved_paper_ref_id,
                 action=(action or "").strip(),
                 weight=float(weight or 0.0),
                 ts=now,
                 metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
             )
             session.add(row)
+
+            if resolved_paper_ref_id and (action or "").strip() == "save":
+                self._upsert_reading_status_row(
+                    session=session,
+                    user_id=user_id,
+                    paper_ref_id=resolved_paper_ref_id,
+                    status="unread",
+                    mark_saved=True,
+                    metadata=metadata,
+                    now=now,
+                )
+
             track.updated_at = now
             session.add(track)
             session.commit()
@@ -393,6 +417,218 @@ class SqlAlchemyResearchStore:
             if pid:
                 ids.add(pid)
         return ids
+
+    def set_paper_reading_status(
+        self,
+        *,
+        user_id: str,
+        paper_id: str,
+        status: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        mark_saved: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now = _utcnow()
+        metadata = dict(metadata or {})
+        with self._provider.session() as session:
+            paper_ref_id = self._resolve_paper_ref_id(
+                session=session,
+                paper_id=(paper_id or "").strip(),
+                metadata=metadata,
+            )
+            if not paper_ref_id:
+                return None
+
+            row = self._upsert_reading_status_row(
+                session=session,
+                user_id=user_id,
+                paper_ref_id=paper_ref_id,
+                status=status,
+                mark_saved=mark_saved,
+                metadata=metadata,
+                now=now,
+            )
+            session.commit()
+            session.refresh(row)
+            return self._reading_status_to_dict(row)
+
+    def list_saved_papers(
+        self,
+        *,
+        user_id: str,
+        limit: int = 200,
+        sort_by: str = "saved_at",
+    ) -> List[Dict[str, Any]]:
+        with self._provider.session() as session:
+            saved_at_by_paper: Dict[int, datetime] = {}
+
+            status_rows = (
+                session.execute(
+                    select(PaperReadingStatusModel).where(
+                        PaperReadingStatusModel.user_id == user_id,
+                        PaperReadingStatusModel.saved_at.is_not(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in status_rows:
+                if row.paper_id and row.saved_at:
+                    saved_at_by_paper[int(row.paper_id)] = row.saved_at
+
+            feedback_rows = (
+                session.execute(
+                    select(PaperFeedbackModel).where(
+                        PaperFeedbackModel.user_id == user_id,
+                        PaperFeedbackModel.action == "save",
+                        PaperFeedbackModel.paper_ref_id.is_not(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in feedback_rows:
+                pid = int(row.paper_ref_id or 0)
+                if pid <= 0:
+                    continue
+                current = saved_at_by_paper.get(pid)
+                if current is None or (row.ts and row.ts > current):
+                    saved_at_by_paper[pid] = row.ts or _utcnow()
+
+            paper_ids = list(saved_at_by_paper.keys())
+            if not paper_ids:
+                return []
+
+            papers = (
+                session.execute(select(PaperModel).where(PaperModel.id.in_(paper_ids)))
+                .scalars()
+                .all()
+            )
+            status_by_paper = {
+                int(row.paper_id): row
+                for row in session.execute(
+                    select(PaperReadingStatusModel).where(
+                        PaperReadingStatusModel.user_id == user_id,
+                        PaperReadingStatusModel.paper_id.in_(paper_ids),
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+            latest_judge_by_paper: Dict[int, PaperJudgeScoreModel] = {}
+            for pid in paper_ids:
+                judge = session.execute(
+                    select(PaperJudgeScoreModel)
+                    .where(PaperJudgeScoreModel.paper_id == pid)
+                    .order_by(desc(PaperJudgeScoreModel.scored_at), desc(PaperJudgeScoreModel.id))
+                    .limit(1)
+                ).scalar_one_or_none()
+                if judge is not None:
+                    latest_judge_by_paper[pid] = judge
+
+            rows: List[Dict[str, Any]] = []
+            for paper in papers:
+                pid = int(paper.id)
+                status_row = status_by_paper.get(pid)
+                judge_row = latest_judge_by_paper.get(pid)
+                rows.append(
+                    {
+                        "paper": self._paper_to_dict(paper),
+                        "saved_at": (
+                            saved_at_by_paper.get(pid).isoformat()
+                            if saved_at_by_paper.get(pid)
+                            else None
+                        ),
+                        "reading_status": (
+                            self._reading_status_to_dict(status_row) if status_row else None
+                        ),
+                        "latest_judge": self._judge_score_to_dict(judge_row) if judge_row else None,
+                    }
+                )
+
+            if sort_by == "judge_score":
+                rows.sort(
+                    key=lambda row: float(((row.get("latest_judge") or {}).get("overall") or 0.0)),
+                    reverse=True,
+                )
+            elif sort_by == "published_at":
+                rows.sort(
+                    key=lambda row: str(((row.get("paper") or {}).get("published_at") or "")),
+                    reverse=True,
+                )
+            else:
+                rows.sort(key=lambda row: str(row.get("saved_at") or ""), reverse=True)
+
+            return rows[: max(1, int(limit))]
+
+    def get_paper_detail(
+        self, *, paper_id: str, user_id: str = "default"
+    ) -> Optional[Dict[str, Any]]:
+        with self._provider.session() as session:
+            paper_ref_id = self._resolve_paper_ref_id(
+                session=session,
+                paper_id=(paper_id or "").strip(),
+                metadata={},
+            )
+            if not paper_ref_id:
+                return None
+
+            paper = session.execute(
+                select(PaperModel).where(PaperModel.id == int(paper_ref_id))
+            ).scalar_one_or_none()
+            if not paper:
+                return None
+
+            reading_status = session.execute(
+                select(PaperReadingStatusModel).where(
+                    PaperReadingStatusModel.user_id == user_id,
+                    PaperReadingStatusModel.paper_id == int(paper_ref_id),
+                )
+            ).scalar_one_or_none()
+
+            judge_scores = (
+                session.execute(
+                    select(PaperJudgeScoreModel)
+                    .where(PaperJudgeScoreModel.paper_id == int(paper_ref_id))
+                    .order_by(desc(PaperJudgeScoreModel.scored_at), desc(PaperJudgeScoreModel.id))
+                )
+                .scalars()
+                .all()
+            )
+
+            feedback_rows = (
+                session.execute(
+                    select(PaperFeedbackModel)
+                    .where(
+                        PaperFeedbackModel.user_id == user_id,
+                        PaperFeedbackModel.paper_ref_id == int(paper_ref_id),
+                    )
+                    .order_by(desc(PaperFeedbackModel.ts), desc(PaperFeedbackModel.id))
+                    .limit(100)
+                )
+                .scalars()
+                .all()
+            )
+
+            feedback_summary: Dict[str, int] = {}
+            for row in feedback_rows:
+                action = str(row.action or "")
+                if not action:
+                    continue
+                feedback_summary[action] = feedback_summary.get(action, 0) + 1
+
+            return {
+                "paper": self._paper_to_dict(paper),
+                "reading_status": (
+                    self._reading_status_to_dict(reading_status) if reading_status else None
+                ),
+                "latest_judge": (
+                    self._judge_score_to_dict(judge_scores[0]) if judge_scores else None
+                ),
+                "judge_scores": [self._judge_score_to_dict(row) for row in judge_scores],
+                "feedback_summary": feedback_summary,
+                "feedback_rows": [self._feedback_to_dict(row) for row in feedback_rows],
+            }
 
     def create_context_run(
         self,
@@ -679,6 +915,209 @@ class SqlAlchemyResearchStore:
         }
 
     @staticmethod
+    def _normalize_reading_status(value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized in {"unread", "reading", "read", "archived"}:
+            return normalized
+        return "unread"
+
+    def _upsert_reading_status_row(
+        self,
+        *,
+        session,
+        user_id: str,
+        paper_ref_id: int,
+        status: str,
+        mark_saved: Optional[bool],
+        metadata: Optional[Dict[str, Any]],
+        now: datetime,
+    ) -> PaperReadingStatusModel:
+        row = session.execute(
+            select(PaperReadingStatusModel).where(
+                PaperReadingStatusModel.user_id == user_id,
+                PaperReadingStatusModel.paper_id == int(paper_ref_id),
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = PaperReadingStatusModel(
+                user_id=user_id,
+                paper_id=int(paper_ref_id),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+
+        row.status = self._normalize_reading_status(status)
+        row.updated_at = now
+
+        if row.status == "read" and row.read_at is None:
+            row.read_at = now
+
+        if mark_saved is True:
+            row.saved_at = row.saved_at or now
+        elif mark_saved is False:
+            row.saved_at = None
+
+        if metadata is not None:
+            row.metadata_json = json.dumps(metadata, ensure_ascii=False)
+
+        session.add(row)
+        return row
+
+    @staticmethod
+    def _paper_to_dict(p: PaperModel) -> Dict[str, Any]:
+        try:
+            metadata = json.loads(p.metadata_json or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+
+        return {
+            "id": int(p.id),
+            "arxiv_id": p.arxiv_id,
+            "doi": p.doi,
+            "title": p.title,
+            "authors": p.get_authors(),
+            "abstract": p.abstract,
+            "url": p.url,
+            "external_url": p.external_url,
+            "pdf_url": p.pdf_url,
+            "source": p.source,
+            "venue": p.venue,
+            "published_at": p.published_at.isoformat() if p.published_at else None,
+            "first_seen_at": p.first_seen_at.isoformat() if p.first_seen_at else None,
+            "keywords": p.get_keywords(),
+            "metadata": metadata,
+        }
+
+    @staticmethod
+    def _judge_score_to_dict(row: PaperJudgeScoreModel) -> Dict[str, Any]:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+
+        return {
+            "id": int(row.id),
+            "paper_id": int(row.paper_id),
+            "query": row.query,
+            "overall": float(row.overall or 0.0),
+            "relevance": float(row.relevance or 0.0),
+            "novelty": float(row.novelty or 0.0),
+            "rigor": float(row.rigor or 0.0),
+            "impact": float(row.impact or 0.0),
+            "clarity": float(row.clarity or 0.0),
+            "recommendation": row.recommendation,
+            "one_line_summary": row.one_line_summary,
+            "judge_model": row.judge_model,
+            "judge_cost_tier": row.judge_cost_tier,
+            "scored_at": row.scored_at.isoformat() if row.scored_at else None,
+            "metadata": metadata,
+        }
+
+    @staticmethod
+    def _reading_status_to_dict(row: PaperReadingStatusModel) -> Dict[str, Any]:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+        return {
+            "id": int(row.id),
+            "user_id": row.user_id,
+            "paper_id": int(row.paper_id),
+            "status": row.status,
+            "saved_at": row.saved_at.isoformat() if row.saved_at else None,
+            "read_at": row.read_at.isoformat() if row.read_at else None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "metadata": metadata,
+        }
+
+    @staticmethod
+    def _resolve_paper_ref_id(
+        *,
+        session,
+        paper_id: str,
+        metadata: Dict[str, Any],
+    ) -> Optional[int]:
+        pid = (paper_id or "").strip()
+        if not pid:
+            return None
+
+        if pid.isdigit():
+            row = session.execute(
+                select(PaperModel).where(PaperModel.id == int(pid))
+            ).scalar_one_or_none()
+            if row is not None:
+                return int(row.id)
+
+        arxiv_id = normalize_arxiv_id(pid)
+        doi = normalize_doi(pid)
+
+        url_candidates = []
+        for key in ("paper_url", "url", "external_url", "pdf_url"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                url_candidates.append(value.strip())
+        if pid.startswith("http"):
+            url_candidates.append(pid)
+
+        if not arxiv_id:
+            for candidate in url_candidates:
+                arxiv_id = normalize_arxiv_id(candidate)
+                if arxiv_id:
+                    break
+        if not doi:
+            for candidate in url_candidates:
+                doi = normalize_doi(candidate)
+                if doi:
+                    break
+
+        if arxiv_id:
+            row = session.execute(
+                select(PaperModel).where(PaperModel.arxiv_id == arxiv_id)
+            ).scalar_one_or_none()
+            if row is not None:
+                return int(row.id)
+
+        if doi:
+            row = session.execute(
+                select(PaperModel).where(PaperModel.doi == doi)
+            ).scalar_one_or_none()
+            if row is not None:
+                return int(row.id)
+
+        # TODO: scalar_one_or_none() can raise MultipleResultsFound if
+        #  multiple papers share the same URL or title. Switch to .first().
+        if url_candidates:
+            row = session.execute(
+                select(PaperModel).where(
+                    or_(
+                        PaperModel.url.in_(url_candidates),
+                        PaperModel.external_url.in_(url_candidates),
+                        PaperModel.pdf_url.in_(url_candidates),
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                return int(row.id)
+
+        title = str(metadata.get("title") or "").strip()
+        if title:
+            row = session.execute(
+                select(PaperModel).where(func.lower(PaperModel.title) == title.lower())
+            ).scalar_one_or_none()
+            if row is not None:
+                return int(row.id)
+
+        return None
+
+    @staticmethod
     def _feedback_to_dict(f: PaperFeedbackModel) -> Dict[str, Any]:
         try:
             metadata = json.loads(f.metadata_json or "{}")
@@ -691,6 +1130,7 @@ class SqlAlchemyResearchStore:
             "user_id": f.user_id,
             "track_id": f.track_id,
             "paper_id": f.paper_id,
+            "paper_ref_id": f.paper_ref_id,
             "action": f.action,
             "weight": float(f.weight or 0.0),
             "ts": f.ts.isoformat() if f.ts else None,
