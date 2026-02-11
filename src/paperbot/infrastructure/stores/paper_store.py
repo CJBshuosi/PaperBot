@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -8,15 +7,6 @@ from sqlalchemy import desc, func, select
 
 from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
 from paperbot.infrastructure.stores.models import Base, PaperJudgeScoreModel, PaperModel
-=======
-# src/paperbot/infrastructure/stores/paper_store.py
-"""
-Paper storage repository.
-
-Handles persistence and retrieval of harvested papers.
-"""
-
-from __future__ import annotations
 
 import json
 from dataclasses import dataclass
@@ -33,7 +23,6 @@ from paperbot.infrastructure.stores.models import (
     PaperFeedbackModel,
     PaperModel,
 )
->>>>>>> 09ca42d (feat(Harvest): add -- Paper Search and Storage)
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
 
 
@@ -41,7 +30,6 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-<<<<<<< HEAD
 def _safe_list(values: Any) -> List[str]:
     if not isinstance(values, list):
         return []
@@ -84,7 +72,6 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
 
 class SqlAlchemyPaperStore:
     """Canonical paper registry with idempotent upsert for daily workflows."""
-=======
 @dataclass
 class LibraryPaper:
     """Paper with library metadata (saved_at, track_id, action)."""
@@ -105,7 +92,6 @@ class PaperStore:
     - Source tracking
     - User library (saved papers)
     """
->>>>>>> 09ca42d (feat(Harvest): add -- Paper Search and Storage)
 
     def __init__(self, db_url: Optional[str] = None, *, auto_create_schema: bool = True):
         self.db_url = db_url or get_db_url()
@@ -113,7 +99,6 @@ class PaperStore:
         if auto_create_schema:
             Base.metadata.create_all(self._provider.engine)
 
-<<<<<<< HEAD
     def upsert_paper(
         self,
         *,
@@ -366,7 +351,6 @@ class PaperStore:
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
-=======
     def upsert_papers_batch(
         self,
         papers: List[HarvestedPaper],
@@ -838,4 +822,3 @@ def paper_to_dict(paper: PaperModel) -> Dict[str, Any]:
         "created_at": paper.created_at.isoformat() if paper.created_at else None,
         "updated_at": paper.updated_at.isoformat() if paper.updated_at else None,
     }
->>>>>>> 09ca42d (feat(Harvest): add -- Paper Search and Storage)

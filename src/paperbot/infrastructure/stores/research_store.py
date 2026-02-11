@@ -8,11 +8,12 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
-<<<<<<< HEAD
 from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
-=======
+
+from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
+
 from paperbot.utils.logging_config import Logger, LogFiles
->>>>>>> 09ca42d (feat(Harvest): add -- Paper Search and Storage)
+
 from paperbot.infrastructure.stores.models import (
     Base,
     PaperFeedbackModel,
@@ -346,16 +347,13 @@ class SqlAlchemyResearchStore:
                 Logger.error("Track not found", file=LogFiles.HARVEST)
                 return None
 
-<<<<<<< HEAD
+
             resolved_paper_ref_id = self._resolve_paper_ref_id(
                 session=session,
                 paper_id=(paper_id or "").strip(),
                 metadata=metadata,
             )
-
-=======
             Logger.info("Creating new feedback record", file=LogFiles.HARVEST)
->>>>>>> 09ca42d (feat(Harvest): add -- Paper Search and Storage)
             row = PaperFeedbackModel(
                 user_id=user_id,
                 track_id=track_id,

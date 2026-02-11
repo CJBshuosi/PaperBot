@@ -1,7 +1,7 @@
 """paper harvest tables
 
-Revision ID: 0003_paper_harvest_tables
-Revises: 0002_research_eval_runs
+Revision ID: 0007_paper_harvest_tables
+Revises: 0006_newsletter_subscribers
 Create Date: 2026-02-06
 
 Adds:
@@ -14,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import context, op
 
-revision = "0003_paper_harvest_tables"
-down_revision = "0002_research_eval_runs"
+revision = "0007_paper_harvest_tables"
+down_revision = "0006_newsletter_subscribers"
 branch_labels = None
 depends_on = None
 
@@ -52,9 +52,6 @@ def _create_index(name: str, table: str, cols: list[str]) -> None:
 
 
 def upgrade() -> None:
-    if _is_offline():
-        _upgrade_create_tables()
-        return
     _upgrade_create_tables()
     _upgrade_create_indexes()
 

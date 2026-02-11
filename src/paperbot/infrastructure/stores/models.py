@@ -449,91 +449,6 @@ class ResearchMilestoneModel(Base):
 
     track = relationship("ResearchTrackModel", back_populates="milestones")
 
-
-class PaperModel(Base):
-    """Canonical paper registry row (deduplicated across sources)."""
-
-    __tablename__ = "papers"
-    __table_args__ = (
-        UniqueConstraint("arxiv_id", name="uq_papers_arxiv_id"),
-        UniqueConstraint("doi", name="uq_papers_doi"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-
-    arxiv_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    doi: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
-
-    title: Mapped[str] = mapped_column(Text, default="", index=True)
-    authors_json: Mapped[str] = mapped_column(Text, default="[]")
-    abstract: Mapped[str] = mapped_column(Text, default="")
-
-    url: Mapped[str] = mapped_column(String(512), default="")
-    external_url: Mapped[str] = mapped_column(String(512), default="")
-    pdf_url: Mapped[str] = mapped_column(String(512), default="")
-
-    source: Mapped[str] = mapped_column(String(32), default="papers_cool", index=True)
-    venue: Mapped[str] = mapped_column(String(256), default="")
-    published_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-
-    keywords_json: Mapped[str] = mapped_column(Text, default="[]")
-    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
-
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-
-    judge_scores = relationship(
-        "PaperJudgeScoreModel", back_populates="paper", cascade="all, delete-orphan"
-    )
-    feedback_rows = relationship("PaperFeedbackModel", back_populates="paper")
-    reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
-
-    def set_authors(self, values: Optional[list[str]]) -> None:
-        self.authors_json = json.dumps(
-            [str(v) for v in (values or []) if str(v).strip()],
-            ensure_ascii=False,
-        )
-
-    def get_authors(self) -> list[str]:
-        try:
-            data = json.loads(self.authors_json or "[]")
-            if isinstance(data, list):
-                return [str(v) for v in data if str(v).strip()]
-        except Exception:
-            pass
-        return []
-
-    def set_keywords(self, values: Optional[list[str]]) -> None:
-        self.keywords_json = json.dumps(
-            [str(v) for v in (values or []) if str(v).strip()],
-            ensure_ascii=False,
-        )
-
-    def get_keywords(self) -> list[str]:
-        try:
-            data = json.loads(self.keywords_json or "[]")
-            if isinstance(data, list):
-                return [str(v) for v in data if str(v).strip()]
-        except Exception:
-            pass
-        return []
-
-    def set_metadata(self, data: Dict[str, Any]) -> None:
-        self.metadata_json = json.dumps(data or {}, ensure_ascii=False)
-
-    def get_metadata(self) -> Dict[str, Any]:
-        try:
-            parsed = json.loads(self.metadata_json or "{}")
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-        return {}
-
-
 class PaperFeedbackModel(Base):
     """User feedback on recommended/seen papers (track-scoped)."""
 
@@ -750,6 +665,11 @@ class PaperModel(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # Soft delete
+
+    # Relationships
+    feedback_rows = relationship("PaperFeedbackModel", back_populates="paper")
+    judge_scores = relationship("PaperJudgeScoreModel", back_populates="paper")
+    reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
 
     def get_authors(self) -> list:
         try:
