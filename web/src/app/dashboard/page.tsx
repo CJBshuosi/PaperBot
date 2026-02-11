@@ -12,13 +12,23 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 
 export default async function DashboardPage() {
-  const [stats, trends, tasks, readingQueue, llmUsage] = await Promise.all([
+  const [statsResult, trendsResult, tasksResult, readingQueueResult, llmUsageResult] = await Promise.allSettled([
     fetchStats(),
     fetchTrendingTopics(),
     fetchPipelineTasks(),
     fetchReadingQueue(),
     fetchLLMUsage()
   ])
+  const stats = statsResult.status === "fulfilled" ? statsResult.value : {
+    tracked_scholars: 0,
+    new_papers: 0,
+    llm_usage: "0",
+    read_later: 0,
+  }
+  const trends = trendsResult.status === "fulfilled" ? trendsResult.value : []
+  const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : []
+  const readingQueue = readingQueueResult.status === "fulfilled" ? readingQueueResult.value : []
+  const llmUsage = llmUsageResult.status === "fulfilled" ? llmUsageResult.value : []
 
   return (
     <div className="flex-1 p-4 space-y-3 min-h-screen">
@@ -74,9 +84,9 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="py-2 px-4">
             <div className="flex flex-wrap gap-1.5">
-              {trends.map((topic, i) => (
+              {trends.map((topic) => (
                 <Badge
-                  key={i}
+                  key={`${topic.text}-${topic.value}`}
                   variant="secondary"
                   className="text-xs cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
                 >

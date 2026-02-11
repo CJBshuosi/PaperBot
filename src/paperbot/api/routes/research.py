@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from paperbot.context_engine import ContextEngine, ContextEngineConfig
 from paperbot.context_engine.track_router import TrackRouter
@@ -139,22 +140,15 @@ def update_track(
     background_tasks: BackgroundTasks,
     user_id: str = "default",
 ):
-    update_data: Dict[str, Any] = {}
-    if req.name is not None:
-        update_data["name"] = req.name
-    if req.description is not None:
-        update_data["description"] = req.description
-    if req.keywords is not None:
-        update_data["keywords"] = req.keywords
-    if req.venues is not None:
-        update_data["venues"] = req.venues
-    if req.methods is not None:
-        update_data["methods"] = req.methods
+    update_data = req.model_dump(exclude_unset=True, exclude_none=True)
 
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    track = _research_store.update_track(user_id=user_id, track_id=track_id, **update_data)
+    try:
+        track = _research_store.update_track(user_id=user_id, track_id=track_id, **update_data)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Track name already exists") from None
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
     _schedule_embedding_precompute(background_tasks, user_id=user_id, track_ids=[track_id])

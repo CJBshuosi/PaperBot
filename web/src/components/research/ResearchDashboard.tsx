@@ -353,6 +353,11 @@ export default function ResearchDashboard() {
   async function createTrack() {
     const name = newTrackName.trim()
     if (!name) return
+    const duplicate = tracks.some((track) => track.name.trim() === name)
+    if (duplicate) {
+      setError(`Track "${name}" already exists.`)
+      return
+    }
     setLoading(true)
     setError(null)
     try {

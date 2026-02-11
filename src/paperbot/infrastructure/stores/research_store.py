@@ -213,7 +213,11 @@ class SqlAlchemyResearchStore:
 
             row.updated_at = now
             session.add(row)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                raise
             session.refresh(row)
             return self._track_to_dict(row)
 

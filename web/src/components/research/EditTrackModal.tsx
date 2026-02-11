@@ -28,8 +28,10 @@ interface EditTrackModalProps {
       description: string
       keywords: string[]
     }
-  ) => Promise<void>
+  ) => Promise<boolean>
   isLoading?: boolean
+  error?: string | null
+  onClearError?: () => void
 }
 
 export function EditTrackModal({
@@ -38,6 +40,8 @@ export function EditTrackModal({
   track,
   onUpdateTrack,
   isLoading = false,
+  error = null,
+  onClearError,
 }: EditTrackModalProps) {
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
@@ -62,13 +66,15 @@ export function EditTrackModal({
       .map((s) => s.trim())
       .filter(Boolean)
 
-    await onUpdateTrack(track.id, {
+    const updated = await onUpdateTrack(track.id, {
       name: trimmedName,
       description: description.trim(),
       keywords: keywordList,
     })
 
-    onOpenChange(false)
+    if (updated) {
+      onOpenChange(false)
+    }
   }
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -77,6 +83,7 @@ export function EditTrackModal({
       setName("")
       setDescription("")
       setKeywords("")
+      onClearError?.()
     }
     onOpenChange(newOpen)
   }
@@ -92,12 +99,20 @@ export function EditTrackModal({
         </DialogHeader>
 
         <div className="space-y-4 py-4">
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="edit-track-name">Name</Label>
             <Input
               id="edit-track-name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                if (error) onClearError?.()
+                setName(e.target.value)
+              }}
               placeholder="e.g., RAG Systems, LLM Security"
               disabled={isLoading}
             />
@@ -108,7 +123,10 @@ export function EditTrackModal({
             <Textarea
               id="edit-track-description"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => {
+                if (error) onClearError?.()
+                setDescription(e.target.value)
+              }}
               placeholder="Describe what this track is about..."
               rows={3}
               disabled={isLoading}
@@ -120,7 +138,10 @@ export function EditTrackModal({
             <Input
               id="edit-track-keywords"
               value={keywords}
-              onChange={(e) => setKeywords(e.target.value)}
+              onChange={(e) => {
+                if (error) onClearError?.()
+                setKeywords(e.target.value)
+              }}
               placeholder="retrieval, augmented generation, reranking"
               disabled={isLoading}
             />

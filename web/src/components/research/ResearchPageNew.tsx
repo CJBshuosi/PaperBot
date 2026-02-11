@@ -69,7 +69,9 @@ export default function ResearchPageNew() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const [editModalOpen, setEditModalOpen] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
   const [trackToEdit, setTrackToEdit] = useState<Track | null>(null)
   const [manageModalOpen, setManageModalOpen] = useState(false)
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
@@ -159,15 +161,22 @@ export default function ResearchPageNew() {
     name: string
     description: string
     keywords: string[]
-  }) {
+  }): Promise<boolean> {
+    const name = data.name.trim()
+    const duplicate = tracks.some((track) => track.name.trim() === name)
+    if (duplicate) {
+      setCreateError(`Track "${name}" already exists.`)
+      return false
+    }
     setLoading(true)
     setError(null)
+    setCreateError(null)
     try {
       await fetchJson(`/api/research/tracks`, {
         method: "POST",
         body: JSON.stringify({
           user_id: userId,
-          name: data.name,
+          name,
           description: data.description,
           keywords: data.keywords,
           activate: true,
@@ -175,9 +184,17 @@ export default function ResearchPageNew() {
         headers: { "Content-Type": "application/json" },
       })
       setCreateModalOpen(false)
+      setCreateError(null)
       await refreshTracks()
+      return true
     } catch (e) {
-      setError(String(e))
+      const message = String(e)
+      if (message.startsWith("409")) {
+        setCreateError(`Track "${name}" already exists.`)
+      } else {
+        setCreateError(message)
+      }
+      return false
     } finally {
       setLoading(false)
     }
@@ -185,30 +202,45 @@ export default function ResearchPageNew() {
 
   function handleEditTrack(track: Track) {
     setTrackToEdit(track)
+    setEditError(null)
     setEditModalOpen(true)
   }
 
   async function handleUpdateTrack(
     trackId: number,
     data: { name: string; description: string; keywords: string[] }
-  ) {
+  ): Promise<boolean> {
+    const name = data.name.trim()
+    const duplicate = tracks.some(
+      (track) => track.id !== trackId && track.name.trim() === name
+    )
+    if (duplicate) {
+      setEditError(`Track "${name}" already exists.`)
+      return false
+    }
     setLoading(true)
     setError(null)
+    setEditError(null)
     try {
       await fetchJson(`/api/research/tracks/${trackId}?user_id=${encodeURIComponent(userId)}`, {
         method: "PATCH",
         body: JSON.stringify({
-          name: data.name,
+          name,
           description: data.description,
           keywords: data.keywords,
         }),
         headers: { "Content-Type": "application/json" },
       })
-      setEditModalOpen(false)
-      setTrackToEdit(null)
       await refreshTracks()
+      return true
     } catch (e) {
-      setError(String(e))
+      const message = String(e)
+      if (message.startsWith("409")) {
+        setEditError(`Track "${name}" already exists.`)
+      } else {
+        setEditError(message)
+      }
+      return false
     } finally {
       setLoading(false)
     }
@@ -324,18 +356,31 @@ export default function ResearchPageNew() {
       {/* Create Track Modal */}
       <CreateTrackModal
         open={createModalOpen}
-        onOpenChange={setCreateModalOpen}
+        onOpenChange={(open) => {
+          setCreateModalOpen(open)
+          if (!open) setCreateError(null)
+        }}
         onCreateTrack={handleCreateTrack}
         isLoading={loading}
+        error={createError}
+        onClearError={() => setCreateError(null)}
       />
 
       {/* Edit Track Modal */}
       <EditTrackModal
         open={editModalOpen}
-        onOpenChange={setEditModalOpen}
+        onOpenChange={(open) => {
+          setEditModalOpen(open)
+          if (!open) {
+            setTrackToEdit(null)
+            setEditError(null)
+          }
+        }}
         track={trackToEdit}
         onUpdateTrack={handleUpdateTrack}
         isLoading={loading}
+        error={editError}
+        onClearError={() => setEditError(null)}
       />
 
       {/* Manage Tracks Modal */}

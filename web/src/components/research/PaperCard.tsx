@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { Check, ExternalLink, Heart, Loader2, Save, ThumbsDown } from "lucide-react"
 
-import { cn } from "@/lib/utils"
+import { cn, safeHref } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 
@@ -46,6 +46,7 @@ export function PaperCard({
 
   const authorText = paper.authors?.slice(0, 3).join(", ") || "Unknown authors"
   const hasMoreAuthors = (paper.authors?.length || 0) > 3
+  const safeUrl = safeHref(paper.url)
 
   const handleSave = async () => {
     if (!onSave || isSaved) return
@@ -100,9 +101,9 @@ export function PaperCard({
             )}
             {paper.title}
           </h3>
-          {paper.url && (
+          {safeUrl && (
             <a
-              href={paper.url}
+              href={safeUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
