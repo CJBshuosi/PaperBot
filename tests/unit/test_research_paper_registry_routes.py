@@ -32,6 +32,27 @@ def _prepare_db(tmp_path: Path):
         action="save",
         metadata={"title": "UniICL"},
     )
+    research_store.ingest_repo_enrichment_rows(
+        rows=[
+            {
+                "title": "UniICL",
+                "paper_url": "https://arxiv.org/abs/2501.12345",
+                "repo_url": "https://github.com/example/unicicl",
+                "query": "icl compression",
+                "github": {
+                    "full_name": "example/unicicl",
+                    "stars": 321,
+                    "forks": 12,
+                    "open_issues": 1,
+                    "watchers": 18,
+                    "language": "Python",
+                    "license": "MIT",
+                    "topics": ["icl", "llm"],
+                    "html_url": "https://github.com/example/unicicl",
+                },
+            }
+        ]
+    )
     return research_store, int(paper["id"])
 
 
@@ -50,6 +71,8 @@ def test_saved_and_detail_routes(tmp_path, monkeypatch):
     payload = detail.json()["detail"]
     assert payload["paper"]["id"] == paper_id
     assert payload["paper"]["title"] == "UniICL"
+    assert len(payload["repos"]) == 1
+    assert payload["repos"][0]["repo_url"] == "https://github.com/example/unicicl"
 
 
 def test_update_status_route(tmp_path, monkeypatch):
@@ -66,3 +89,17 @@ def test_update_status_route(tmp_path, monkeypatch):
     payload = resp.json()["status"]
     assert payload["paper_id"] == paper_id
     assert payload["status"] == "reading"
+
+
+def test_paper_repos_route(tmp_path, monkeypatch):
+    store, paper_id = _prepare_db(tmp_path)
+    monkeypatch.setattr(research_route, "_research_store", store)
+
+    with TestClient(api_main.app) as client:
+        resp = client.get(f"/api/research/papers/{paper_id}/repos")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["paper_id"] == str(paper_id)
+    assert len(payload["repos"]) == 1
+    assert payload["repos"][0]["full_name"] == "example/unicicl"

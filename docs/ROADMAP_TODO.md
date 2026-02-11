@@ -63,19 +63,19 @@
 - [x] API：`GET /api/research/papers/saved`（用户收藏列表，支持排序：judge_score / saved_at / published_at）
 - [x] API：`POST /api/research/papers/{paper_id}/status`（更新阅读状态）
 - [x] API：`GET /api/research/papers/{paper_id}`（论文详情，聚合 judge + feedback + summary）
-- [ ] 前端：收藏列表页面组件
+- [x] 前端：收藏列表页面组件
   - 文件：`web/src/components/research/SavedPapersList.tsx`
 
 ### 1.3 GitHub Repo 关联（Repo Enrichment）
 
-- [ ] 新增 `PaperRepoModel` 表
+- [x] 新增 `PaperRepoModel` 表
   - 字段：`paper_id`、`repo_url`、`owner`、`name`、`stars`、`forks`、`last_commit_at`、`language`、`description`、`fetched_at`
 - [x] Enrichment 服务：从论文 abstract/url/external_url 中提取 GitHub 链接并补元数据
   - 当前实现：`src/paperbot/api/routes/paperscool.py`（后续可下沉到 service）
   - 提取来源：`github_url/external_url/url/pdf_url/alternative_urls + snippet/abstract`
   - 调用 GitHub API 补元数据（stars/forks/language/updated_at）
-- [ ] DailyPaper 生成后异步调用 repo enrichment
-- [ ] API：`GET /api/research/papers/{paper_id}/repos`
+- [x] DailyPaper 生成后异步调用 repo enrichment
+- [x] API：`GET /api/research/papers/{paper_id}/repos`
 - [x] API：`POST /api/research/paperscool/repos`（批量，含 stars/活跃度）
 
 ---
@@ -575,3 +575,4 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 - 2025-02-10: 新增多智能体系统现状盘点（5 套管线 + 15 个 Agent）与 OpenClaw 迁移评估
 - 2026-02-11: 对齐远端 `origin/master` 的 Harvest 基线，保留旧实现到 `backup/feat-dailypaper-sse-stream-pre-harvest-20260211`
 - 2026-02-11: 新增 Phase 4（Agent Browser 自动化）任务清单，覆盖采集、E2E、对标监测、安全与限流
+- 2026-02-11: 完成 Phase 1 收尾（PaperRepoModel + /papers/{paper_id}/repos + DailyPaper 异步 repo enrichment），并修复 harvest 基线下 paper store 兼容性

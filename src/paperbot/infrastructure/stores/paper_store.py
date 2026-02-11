@@ -1,29 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
-
-from sqlalchemy import desc, func, select
-
-from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
-from paperbot.infrastructure.stores.models import Base, PaperJudgeScoreModel, PaperModel
-
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from sqlalchemy import Integer, String, cast, func, or_, select
+from sqlalchemy import Integer, String, cast, desc, func, or_, select
 
-from paperbot.utils.logging_config import Logger, LogFiles
 from paperbot.domain.harvest import HarvestedPaper, HarvestSource
+from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
 from paperbot.infrastructure.stores.models import (
     Base,
     HarvestRunModel,
     PaperFeedbackModel,
+    PaperJudgeScoreModel,
     PaperModel,
 )
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
+from paperbot.utils.logging_config import LogFiles, Logger
 
 
 def _utcnow() -> datetime:
@@ -72,6 +67,8 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
 
 class SqlAlchemyPaperStore:
     """Canonical paper registry with idempotent upsert for daily workflows."""
+
+
 @dataclass
 class LibraryPaper:
     """Paper with library metadata (saved_at, track_id, action)."""
@@ -107,7 +104,6 @@ class PaperStore:
         seen_at: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         now = _utcnow()
-        first_seen = seen_at or now
 
         title = str(paper.get("title") or "").strip()
         url = str(paper.get("url") or "").strip()
@@ -133,30 +129,39 @@ class PaperStore:
             source_hint
             or (paper.get("sources") or [None])[0]
             or paper.get("source")
+            or paper.get("primary_source")
             or "papers_cool"
         )
         venue = str(paper.get("subject_or_venue") or paper.get("venue") or "").strip()
-        published_at = _parse_datetime(
-            paper.get("published_at") or paper.get("published") or paper.get("publicationDate")
+        publication_date = str(
+            paper.get("publication_date")
+            or paper.get("published_at")
+            or paper.get("published")
+            or ""
+        ).strip()
+
+        year_raw = (
+            paper.get("year") if paper.get("year") is not None else paper.get("published_year")
         )
+        try:
+            year = int(year_raw) if year_raw is not None else None
+        except Exception:
+            year = None
+
+        citation_raw = paper.get("citation_count")
+        try:
+            citation_count = int(citation_raw) if citation_raw is not None else 0
+        except Exception:
+            citation_count = 0
 
         authors = _safe_list(paper.get("authors"))
         keywords = _safe_list(paper.get("keywords"))
+        fields_of_study = _safe_list(paper.get("fields_of_study"))
 
-        metadata = {
-            "paper_id": paper.get("paper_id"),
-            "matched_queries": _safe_list(paper.get("matched_queries")),
-            "branches": _safe_list(paper.get("branches")),
-            "score": paper.get("score"),
-            "pdf_stars": paper.get("pdf_stars"),
-            "kimi_stars": paper.get("kimi_stars"),
-            "alternative_urls": _safe_list(paper.get("alternative_urls")),
-        }
+        normalized_title = title.lower().strip() or "untitled"
+        title_hash = hashlib.sha256(normalized_title.encode("utf-8")).hexdigest()
 
         with self._provider.session() as session:
-            # TODO: title+url fallback query uses scalar_one_or_none() which
-            #  raises MultipleResultsFound if duplicates exist. Switch to
-            #  .first() or add .limit(1) for safety.
             row = None
             if arxiv_id:
                 row = session.execute(
@@ -171,50 +176,55 @@ class PaperStore:
                     select(PaperModel).where(PaperModel.url == url)
                 ).scalar_one_or_none()
             if row is None and title:
-                row = session.execute(
-                    select(PaperModel).where(
-                        func.lower(PaperModel.title) == title.lower(),
-                        PaperModel.url == url,
+                row = (
+                    session.execute(
+                        select(PaperModel)
+                        .where(func.lower(PaperModel.title) == title.lower())
+                        .limit(1)
                     )
-                ).scalar_one_or_none()
+                    .scalars()
+                    .first()
+                )
 
             created = row is None
             if row is None:
                 row = PaperModel(
-                    first_seen_at=_as_utc(first_seen) or now,
+                    title_hash=title_hash,
                     created_at=now,
                     updated_at=now,
                 )
                 session.add(row)
 
-            # Keep earliest first_seen_at for existing records.
-            existing_seen = _as_utc(row.first_seen_at)
-            candidate_seen = _as_utc(first_seen) or now
-            if not existing_seen or candidate_seen < existing_seen:
-                row.first_seen_at = candidate_seen
-
             if arxiv_id:
                 row.arxiv_id = arxiv_id
             if doi:
                 row.doi = doi
-
+            row.title_hash = title_hash
             row.title = title or row.title or ""
             row.abstract = abstract or row.abstract or ""
-            row.url = url or row.url or ""
-            row.external_url = external_url or row.external_url or ""
-            row.pdf_url = pdf_url or row.pdf_url or ""
-            row.source = str(source or row.source or "papers_cool")
-            row.venue = venue or row.venue or ""
-            row.published_at = _as_utc(published_at) or _as_utc(row.published_at)
-            # TODO: unconditional set_authors/set_keywords/set_metadata may wipe
-            #  existing data when new paper dict has empty values. Consider
-            #  preserving existing values when incoming data is empty:
-            #    row.set_authors(authors or row.get_authors())
-            row.set_authors(authors)
-            row.set_keywords(keywords)
-            row.set_metadata(metadata)
-            row.updated_at = now
+            row.url = url or row.url or None
+            row.pdf_url = pdf_url or row.pdf_url or None
+            row.venue = venue or row.venue or None
+            row.year = year if year is not None else row.year
+            row.publication_date = publication_date or row.publication_date
+            row.citation_count = max(citation_count, int(row.citation_count or 0))
 
+            if authors:
+                row.authors_json = json.dumps(authors, ensure_ascii=False)
+            if keywords:
+                row.keywords_json = json.dumps(keywords, ensure_ascii=False)
+            if fields_of_study:
+                row.fields_of_study_json = json.dumps(fields_of_study, ensure_ascii=False)
+
+            source_text = str(source or "").strip() or "papers_cool"
+            row.primary_source = source_text
+            existing_sources = row.get_sources()
+            merged_sources = (
+                sorted({*existing_sources, source_text}) if source_text else existing_sources
+            )
+            row.set_sources(merged_sources)
+
+            row.updated_at = now
             session.commit()
             session.refresh(row)
 
@@ -247,10 +257,10 @@ class PaperStore:
 
     def list_recent(self, *, limit: int = 50, source: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._provider.session() as session:
-            stmt = select(PaperModel)
+            stmt = select(PaperModel).where(PaperModel.deleted_at.is_(None))
             if source:
-                stmt = stmt.where(PaperModel.source == source)
-            stmt = stmt.order_by(desc(PaperModel.first_seen_at), desc(PaperModel.id)).limit(
+                stmt = stmt.where(PaperModel.primary_source == source)
+            stmt = stmt.order_by(desc(PaperModel.updated_at), desc(PaperModel.id)).limit(
                 max(1, int(limit))
             )
             rows = session.execute(stmt).scalars().all()
@@ -332,25 +342,37 @@ class PaperStore:
 
     @staticmethod
     def _paper_to_dict(row: PaperModel) -> Dict[str, Any]:
+        publication_date = row.publication_date
+        published_at = publication_date
+
         return {
             "id": int(row.id),
             "arxiv_id": row.arxiv_id,
             "doi": row.doi,
+            "semantic_scholar_id": row.semantic_scholar_id,
+            "openalex_id": row.openalex_id,
             "title": row.title,
             "authors": row.get_authors(),
             "abstract": row.abstract,
             "url": row.url,
-            "external_url": row.external_url,
+            "external_url": row.url,
             "pdf_url": row.pdf_url,
-            "source": row.source,
+            "source": row.primary_source,
+            "primary_source": row.primary_source,
             "venue": row.venue,
-            "published_at": row.published_at.isoformat() if row.published_at else None,
-            "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else None,
+            "year": row.year,
+            "publication_date": publication_date,
+            "published_at": published_at,
+            "first_seen_at": row.created_at.isoformat() if row.created_at else None,
             "keywords": row.get_keywords(),
-            "metadata": row.get_metadata(),
+            "fields_of_study": row.get_fields_of_study(),
+            "sources": row.get_sources(),
+            "citation_count": int(row.citation_count or 0),
+            "metadata": {},
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
+
     def upsert_papers_batch(
         self,
         papers: List[HarvestedPaper],
@@ -376,7 +398,9 @@ class PaperStore:
                     self._update_paper(existing, paper, now)
                     updated_count += 1
                 else:
-                    Logger.info("No existing paper found, creating new record", file=LogFiles.HARVEST)
+                    Logger.info(
+                        "No existing paper found, creating new record", file=LogFiles.HARVEST
+                    )
                     model = self._create_model(paper, now)
                     session.add(model)
                     new_count += 1
@@ -384,7 +408,10 @@ class PaperStore:
             Logger.info("Committing transaction to database", file=LogFiles.HARVEST)
             session.commit()
 
-        Logger.info(f"Batch upsert complete: {new_count} new, {updated_count} updated", file=LogFiles.HARVEST)
+        Logger.info(
+            f"Batch upsert complete: {new_count} new, {updated_count} updated",
+            file=LogFiles.HARVEST,
+        )
         return new_count, updated_count
 
     def _find_existing(self, session, paper: HarvestedPaper) -> Optional[PaperModel]:
@@ -452,9 +479,7 @@ class PaperStore:
             updated_at=now,
         )
 
-    def _update_paper(
-        self, existing: PaperModel, paper: HarvestedPaper, now: datetime
-    ) -> None:
+    def _update_paper(self, existing: PaperModel, paper: HarvestedPaper, now: datetime) -> None:
         """Update existing paper with new data."""
         # Fill in missing identifiers
         if not existing.doi and paper.doi:
@@ -546,9 +571,7 @@ class PaperStore:
 
             # Keyword filter (search in keywords_json)
             if keywords:
-                keyword_conditions = [
-                    PaperModel.keywords_json.ilike(f"%{kw}%") for kw in keywords
-                ]
+                keyword_conditions = [PaperModel.keywords_json.ilike(f"%{kw}%") for kw in keywords]
                 stmt = stmt.where(or_(*keyword_conditions))
 
             # Year filters (use explicit None check to allow year_from=0 if needed)
@@ -598,9 +621,7 @@ class PaperStore:
                 )
             ).scalar_one_or_none()
 
-    def get_paper_by_source_id(
-        self, source: HarvestSource, source_id: str
-    ) -> Optional[PaperModel]:
+    def get_paper_by_source_id(self, source: HarvestSource, source_id: str) -> Optional[PaperModel]:
         """
         Get a paper by its source-specific ID.
 
@@ -649,7 +670,9 @@ class PaperStore:
             # 1. Integer ID as string (from harvest saves): "123" -> join on papers.id
             # 2. Semantic Scholar ID (from recommendation saves): "abc123" -> join on papers.semantic_scholar_id
 
-            Logger.info("Executing database query to join papers with feedback", file=LogFiles.HARVEST)
+            Logger.info(
+                "Executing database query to join papers with feedback", file=LogFiles.HARVEST
+            )
             # First, get all matching paper-feedback pairs
             # Join on external IDs (semantic_scholar_id, arxiv_id, openalex_id)
             # This avoids CAST errors on PostgreSQL for non-numeric paper_ids
@@ -678,7 +701,10 @@ class PaperStore:
 
             # Execute and deduplicate in Python by paper.id (keeping latest feedback)
             all_results = session.execute(base_stmt).all()
-            Logger.info(f"Query returned {len(all_results)} results before deduplication", file=LogFiles.HARVEST)
+            Logger.info(
+                f"Query returned {len(all_results)} results before deduplication",
+                file=LogFiles.HARVEST,
+            )
 
             # Deduplicate by paper.id, keeping the one with latest timestamp
             Logger.info("Deduplicating results by paper id", file=LogFiles.HARVEST)
@@ -691,26 +717,38 @@ class PaperStore:
 
             # Convert to list and sort
             unique_results = list(paper_map.values())
-            Logger.info(f"After deduplication: {len(unique_results)} unique papers", file=LogFiles.HARVEST)
+            Logger.info(
+                f"After deduplication: {len(unique_results)} unique papers", file=LogFiles.HARVEST
+            )
 
             # Sort
             min_ts = datetime.min.replace(tzinfo=timezone.utc)
             if sort_by == "saved_at":
-                unique_results.sort(key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc"))
+                unique_results.sort(
+                    key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc")
+                )
             elif sort_by == "title":
-                unique_results.sort(key=lambda x: x[0].title or "", reverse=(sort_order.lower() == "desc"))
+                unique_results.sort(
+                    key=lambda x: x[0].title or "", reverse=(sort_order.lower() == "desc")
+                )
             elif sort_by == "citation_count":
-                unique_results.sort(key=lambda x: x[0].citation_count or 0, reverse=(sort_order.lower() == "desc"))
+                unique_results.sort(
+                    key=lambda x: x[0].citation_count or 0, reverse=(sort_order.lower() == "desc")
+                )
             elif sort_by == "year":
-                unique_results.sort(key=lambda x: x[0].year or 0, reverse=(sort_order.lower() == "desc"))
+                unique_results.sort(
+                    key=lambda x: x[0].year or 0, reverse=(sort_order.lower() == "desc")
+                )
             else:
-                unique_results.sort(key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc"))
+                unique_results.sort(
+                    key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc")
+                )
 
             # Get total count before pagination
             total = len(unique_results)
 
             # Apply pagination
-            paginated_results = unique_results[offset:offset + limit]
+            paginated_results = unique_results[offset : offset + limit]
 
             return [
                 LibraryPaper(
@@ -725,12 +763,10 @@ class PaperStore:
     def remove_from_library(self, user_id: str, paper_id: int) -> bool:
         """Remove paper from user's library by deleting 'save' feedback."""
         with self._provider.session() as session:
-            stmt = (
-                PaperFeedbackModel.__table__.delete().where(
-                    PaperFeedbackModel.user_id == user_id,
-                    PaperFeedbackModel.paper_id == str(paper_id),
-                    PaperFeedbackModel.action == "save",
-                )
+            stmt = PaperFeedbackModel.__table__.delete().where(
+                PaperFeedbackModel.user_id == user_id,
+                PaperFeedbackModel.paper_id == str(paper_id),
+                PaperFeedbackModel.action == "save",
             )
             result = session.execute(stmt)
             session.commit()
@@ -830,9 +866,9 @@ class PaperStore:
         with self._provider.session() as session:
             return (
                 session.execute(
-                    select(func.count()).select_from(PaperModel).where(
-                        PaperModel.deleted_at.is_(None)
-                    )
+                    select(func.count())
+                    .select_from(PaperModel)
+                    .where(PaperModel.deleted_at.is_(None))
                 ).scalar()
                 or 0
             )
@@ -843,6 +879,10 @@ class PaperStore:
             self._provider.engine.dispose()
         except Exception:
             pass
+
+
+# Backward-compatible alias: older workflows/tests import SqlAlchemyPaperStore.
+SqlAlchemyPaperStore = PaperStore
 
 
 def paper_to_dict(paper: PaperModel) -> Dict[str, Any]:

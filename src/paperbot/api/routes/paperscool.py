@@ -3,11 +3,11 @@ from __future__ import annotations
 import copy
 import os
 import re
+from threading import Thread
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -29,6 +29,7 @@ from paperbot.application.workflows.dailypaper import (
     select_judge_candidates,
 )
 from paperbot.application.workflows.paperscool_topic_search import PapersCoolTopicSearchWorkflow
+from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
 from paperbot.utils.text_processing import extract_github_url
 
 router = APIRouter()
@@ -90,7 +91,9 @@ class DailyPaperRequest(BaseModel):
     top_n: int = Field(10, ge=1, le=200)
     formats: List[str] = Field(default_factory=lambda: ["both"])
     save: bool = False
-    output_dir: str = Field("./reports/dailypaper", description="Relative path under project root for saving reports")
+    output_dir: str = Field(
+        "./reports/dailypaper", description="Relative path under project root for saving reports"
+    )
     enable_llm_analysis: bool = False
     llm_features: List[str] = Field(default_factory=lambda: ["summary"])
     enable_judge: bool = False
@@ -126,6 +129,7 @@ class PapersCoolReposRequest(BaseModel):
     papers: List[Dict[str, Any]] = Field(default_factory=list)
     max_items: int = Field(100, ge=1, le=1000)
     include_github_api: bool = True
+    persist: bool = False
 
 
 class PapersCoolReposResponse(BaseModel):
@@ -133,6 +137,7 @@ class PapersCoolReposResponse(BaseModel):
     matched_repos: int
     github_api_used: bool
     repos: List[Dict[str, Any]]
+    persist_summary: Optional[Dict[str, int]] = None
 
 
 @router.post("/research/paperscool/search", response_model=PapersCoolSearchResponse)
@@ -214,7 +219,11 @@ async def _dailypaper_stream(req: DailyPaperRequest):
 
             yield StreamEvent(
                 type="progress",
-                data={"phase": "llm", "message": "Starting LLM enrichment...", "total": summary_total},
+                data={
+                    "phase": "llm",
+                    "message": "Starting LLM enrichment...",
+                    "total": summary_total,
+                },
             )
 
             for query in report.get("queries") or []:
@@ -241,7 +250,9 @@ async def _dailypaper_stream(req: DailyPaperRequest):
 
                 if "relevance" in features:
                     for item in top_items:
-                        item["relevance"] = llm_service.assess_relevance(paper=item, query=query_name)
+                        item["relevance"] = llm_service.assess_relevance(
+                            paper=item, query=query_name
+                        )
                         if "summary" not in features:
                             summary_done += 1
 
@@ -259,7 +270,10 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                     )
 
             if "insight" in features:
-                yield StreamEvent(type="progress", data={"phase": "insight", "message": "Generating daily insight..."})
+                yield StreamEvent(
+                    type="progress",
+                    data={"phase": "insight", "message": "Generating daily insight..."},
+                )
                 llm_block["daily_insight"] = llm_service.generate_daily_insight(report)
                 yield StreamEvent(type="insight", data={"analysis": llm_block["daily_insight"]})
 
@@ -384,13 +398,15 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                         kept.append(item)
                     else:
                         removed.append(item)
-                        filter_log.append({
-                            "query": query_name,
-                            "title": item.get("title") or "Untitled",
-                            "recommendation": rec,
-                            "overall": j.get("overall"),
-                            "action": "removed",
-                        })
+                        filter_log.append(
+                            {
+                                "query": query_name,
+                                "title": item.get("title") or "Untitled",
+                                "recommendation": rec,
+                                "overall": j.get("overall"),
+                                "action": "removed",
+                            }
+                        )
                 else:
                     # No judge score — keep by default (unjudged papers)
                     kept.append(item)
@@ -442,6 +458,8 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         except Exception as exc:
             report["judge_registry_ingest"] = {"error": str(exc)}
 
+    _enqueue_repo_enrichment_async(report)
+
     markdown = render_daily_paper_markdown(report)
 
     markdown_path = None
@@ -459,7 +477,9 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         json_path = artifacts.json_path
 
     if req.notify:
-        yield StreamEvent(type="progress", data={"phase": "notify", "message": "Sending notifications..."})
+        yield StreamEvent(
+            type="progress", data={"phase": "notify", "message": "Sending notifications..."}
+        )
         notify_service = DailyPushService.from_env()
         notify_result = notify_service.push_dailypaper(
             report=report,
@@ -522,6 +542,8 @@ def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
         report["registry_ingest"] = ingest_summary
     except Exception as exc:
         report["registry_ingest"] = {"error": str(exc)}
+
+    _enqueue_repo_enrichment_async(report)
 
     markdown = render_daily_paper_markdown(report)
 
@@ -692,16 +714,19 @@ def _fetch_github_repo_metadata(repo_url: str, token: Optional[str]) -> Dict[str
         }
 
 
-@router.post("/research/paperscool/repos", response_model=PapersCoolReposResponse)
-def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
-    papers: List[Dict[str, Any]] = []
-    if isinstance(req.report, dict):
-        papers.extend(_flatten_report_papers(req.report))
-    papers.extend(list(req.papers or []))
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() not in {"", "0", "false", "off", "no"}
 
-    if not papers:
-        raise HTTPException(status_code=400, detail="report or papers is required")
 
+def _collect_repo_enrichment_rows(
+    *,
+    papers: List[Dict[str, Any]],
+    max_items: int,
+    include_github_api: bool,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     deduped: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for item in papers:
@@ -711,7 +736,7 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
         seen.add(key)
         deduped.append(item)
 
-    selected = deduped[: max(1, int(req.max_items))]
+    selected = deduped[: max(1, int(max_items))]
     token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
 
     # TODO: GitHub API calls are sequential — switch to concurrent.futures or
@@ -729,14 +754,75 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
             "paper_url": item.get("url") or item.get("external_url") or "",
             "repo_url": repo_url,
         }
-        if req.include_github_api:
+        if include_github_api:
             row["github"] = _fetch_github_repo_metadata(repo_url=repo_url, token=token)
         repos.append(row)
 
-    if req.include_github_api:
+    if include_github_api:
         repos.sort(
             key=lambda row: int(((row.get("github") or {}).get("stars") or -1)),
             reverse=True,
+        )
+
+    return selected, repos
+
+
+def _persist_repo_enrichment_async(report: Dict[str, Any]) -> None:
+    try:
+        max_items_raw = os.getenv("PAPERBOT_REPO_ENRICH_MAX_ITEMS", "100")
+        max_items = max(1, int(max_items_raw))
+    except Exception:
+        max_items = 100
+
+    include_github_api = _env_flag("PAPERBOT_REPO_ENRICH_INCLUDE_GITHUB_API", default=True)
+
+    try:
+        papers = _flatten_report_papers(report)
+        if not papers:
+            return
+        _, repos = _collect_repo_enrichment_rows(
+            papers=papers,
+            max_items=max_items,
+            include_github_api=include_github_api,
+        )
+        if not repos:
+            return
+        store = SqlAlchemyResearchStore()
+        store.ingest_repo_enrichment_rows(rows=repos, source="paperscool_daily_async")
+    except Exception:
+        # Async best-effort hook: ignore failures to avoid affecting daily report flow.
+        return
+
+
+def _enqueue_repo_enrichment_async(report: Dict[str, Any]) -> None:
+    if not _env_flag("PAPERBOT_REPO_ENRICH_ASYNC", default=True):
+        return
+    Thread(
+        target=_persist_repo_enrichment_async, args=(copy.deepcopy(report),), daemon=True
+    ).start()
+
+
+@router.post("/research/paperscool/repos", response_model=PapersCoolReposResponse)
+def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
+    papers: List[Dict[str, Any]] = []
+    if isinstance(req.report, dict):
+        papers.extend(_flatten_report_papers(req.report))
+    papers.extend(list(req.papers or []))
+
+    if not papers:
+        raise HTTPException(status_code=400, detail="report or papers is required")
+
+    selected, repos = _collect_repo_enrichment_rows(
+        papers=papers,
+        max_items=req.max_items,
+        include_github_api=bool(req.include_github_api),
+    )
+
+    persist_summary: Optional[Dict[str, int]] = None
+    if req.persist:
+        store = SqlAlchemyResearchStore()
+        persist_summary = store.ingest_repo_enrichment_rows(
+            rows=repos, source="paperscool_repos_api"
         )
 
     return PapersCoolReposResponse(
@@ -744,6 +830,7 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
         matched_repos=len(repos),
         github_api_used=bool(req.include_github_api),
         repos=repos,
+        persist_summary=persist_summary,
     )
 
 

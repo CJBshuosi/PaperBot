@@ -9,18 +9,14 @@ from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
-
-from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
-
-from paperbot.utils.logging_config import Logger, LogFiles
-
 from paperbot.infrastructure.stores.models import (
     Base,
     PaperFeedbackModel,
+    PaperImpressionModel,
     PaperJudgeScoreModel,
     PaperModel,
-    PaperImpressionModel,
     PaperReadingStatusModel,
+    PaperRepoModel,
     ResearchContextRunModel,
     ResearchMilestoneModel,
     ResearchTaskModel,
@@ -28,6 +24,7 @@ from paperbot.infrastructure.stores.models import (
     ResearchTrackModel,
 )
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
+from paperbot.utils.logging_config import LogFiles, Logger
 
 
 def _utcnow() -> datetime:
@@ -52,6 +49,32 @@ def _load_list(raw: str) -> List[str]:
     except Exception:
         pass
     return []
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not value:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
 
 
 class SqlAlchemyResearchStore:
@@ -347,7 +370,6 @@ class SqlAlchemyResearchStore:
                 Logger.error("Track not found", file=LogFiles.HARVEST)
                 return None
 
-
             resolved_paper_ref_id = self._resolve_paper_ref_id(
                 session=session,
                 paper_id=(paper_id or "").strip(),
@@ -570,6 +592,90 @@ class SqlAlchemyResearchStore:
 
             return rows[: max(1, int(limit))]
 
+    def ingest_repo_enrichment_rows(
+        self,
+        *,
+        rows: List[Dict[str, Any]],
+        source: str = "paperscool_repo_enrich",
+    ) -> Dict[str, int]:
+        now = _utcnow()
+        created = 0
+        updated = 0
+        skipped = 0
+        unresolved = 0
+
+        with self._provider.session() as session:
+            for raw in rows or []:
+                if not isinstance(raw, dict):
+                    skipped += 1
+                    continue
+
+                github = raw.get("github") if isinstance(raw.get("github"), dict) else {}
+                repo_url = str(raw.get("repo_url") or github.get("repo_url") or "").strip()
+                if not repo_url:
+                    skipped += 1
+                    continue
+
+                paper_meta = {
+                    "title": raw.get("title"),
+                    "paper_url": raw.get("paper_url"),
+                    "url": raw.get("paper_url"),
+                }
+                paper_hint = str(raw.get("paper_id") or raw.get("paper_ref_id") or "").strip()
+                paper_ref_id = self._resolve_paper_ref_id(
+                    session=session,
+                    paper_id=paper_hint,
+                    metadata=paper_meta,
+                )
+                if not paper_ref_id:
+                    unresolved += 1
+                    continue
+
+                was_created = self._upsert_paper_repo_row(
+                    session=session,
+                    paper_ref_id=int(paper_ref_id),
+                    repo_row=raw,
+                    source=source,
+                    now=now,
+                )
+                if was_created is None:
+                    skipped += 1
+                elif was_created:
+                    created += 1
+                else:
+                    updated += 1
+
+            session.commit()
+
+        return {
+            "total": created + updated,
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "unresolved_paper": unresolved,
+        }
+
+    def list_paper_repos(self, *, paper_id: str) -> Optional[List[Dict[str, Any]]]:
+        with self._provider.session() as session:
+            paper_ref_id = self._resolve_paper_ref_id(
+                session=session,
+                paper_id=(paper_id or "").strip(),
+                metadata={},
+            )
+            if not paper_ref_id:
+                return None
+
+            rows = (
+                session.execute(
+                    select(PaperRepoModel)
+                    .where(PaperRepoModel.paper_id == int(paper_ref_id))
+                    .order_by(desc(PaperRepoModel.stars), desc(PaperRepoModel.synced_at))
+                )
+                .scalars()
+                .all()
+            )
+            return [self._repo_to_dict(row) for row in rows]
+
     def get_paper_detail(
         self, *, paper_id: str, user_id: str = "default"
     ) -> Optional[Dict[str, Any]]:
@@ -619,6 +725,16 @@ class SqlAlchemyResearchStore:
                 .all()
             )
 
+            repo_rows = (
+                session.execute(
+                    select(PaperRepoModel)
+                    .where(PaperRepoModel.paper_id == int(paper_ref_id))
+                    .order_by(desc(PaperRepoModel.stars), desc(PaperRepoModel.synced_at))
+                )
+                .scalars()
+                .all()
+            )
+
             feedback_summary: Dict[str, int] = {}
             for row in feedback_rows:
                 action = str(row.action or "")
@@ -635,6 +751,7 @@ class SqlAlchemyResearchStore:
                     self._judge_score_to_dict(judge_scores[0]) if judge_scores else None
                 ),
                 "judge_scores": [self._judge_score_to_dict(row) for row in judge_scores],
+                "repos": [self._repo_to_dict(row) for row in repo_rows],
                 "feedback_summary": feedback_summary,
                 "feedback_rows": [self._feedback_to_dict(row) for row in feedback_rows],
             }
@@ -975,28 +1092,43 @@ class SqlAlchemyResearchStore:
 
     @staticmethod
     def _paper_to_dict(p: PaperModel) -> Dict[str, Any]:
+        metadata_raw = getattr(p, "metadata_json", "{}") or "{}"
         try:
-            metadata = json.loads(p.metadata_json or "{}")
+            metadata = json.loads(metadata_raw)
             if not isinstance(metadata, dict):
                 metadata = {}
         except Exception:
             metadata = {}
 
+        published_at = None
+        if getattr(p, "publication_date", None):
+            published_at = str(getattr(p, "publication_date"))
+
+        source = getattr(p, "primary_source", None) or getattr(p, "source", "")
+
         return {
             "id": int(p.id),
             "arxiv_id": p.arxiv_id,
             "doi": p.doi,
+            "semantic_scholar_id": getattr(p, "semantic_scholar_id", None),
+            "openalex_id": getattr(p, "openalex_id", None),
             "title": p.title,
             "authors": p.get_authors(),
             "abstract": p.abstract,
             "url": p.url,
-            "external_url": p.external_url,
+            "external_url": p.url,
             "pdf_url": p.pdf_url,
-            "source": p.source,
+            "source": source,
+            "primary_source": source,
             "venue": p.venue,
-            "published_at": p.published_at.isoformat() if p.published_at else None,
-            "first_seen_at": p.first_seen_at.isoformat() if p.first_seen_at else None,
+            "year": getattr(p, "year", None),
+            "publication_date": getattr(p, "publication_date", None),
+            "published_at": published_at,
+            "first_seen_at": p.created_at.isoformat() if p.created_at else None,
             "keywords": p.get_keywords(),
+            "fields_of_study": p.get_fields_of_study(),
+            "sources": p.get_sources(),
+            "citation_count": int(getattr(p, "citation_count", 0) or 0),
             "metadata": metadata,
         }
 
@@ -1048,6 +1180,105 @@ class SqlAlchemyResearchStore:
         }
 
     @staticmethod
+    def _repo_to_dict(row: PaperRepoModel) -> Dict[str, Any]:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+
+        return {
+            "id": int(row.id),
+            "paper_id": int(row.paper_id),
+            "repo_url": row.repo_url,
+            "full_name": row.full_name,
+            "description": row.description,
+            "stars": int(row.stars or 0),
+            "forks": int(row.forks or 0),
+            "open_issues": int(row.open_issues or 0),
+            "watchers": int(row.watchers or 0),
+            "language": row.language,
+            "license": row.license,
+            "archived": bool(row.archived),
+            "html_url": row.html_url,
+            "topics": row.get_topics(),
+            "updated_at_remote": (
+                row.updated_at_remote.isoformat() if row.updated_at_remote else None
+            ),
+            "pushed_at_remote": row.pushed_at_remote.isoformat() if row.pushed_at_remote else None,
+            "query": row.query,
+            "source": row.source,
+            "synced_at": row.synced_at.isoformat() if row.synced_at else None,
+            "metadata": metadata,
+        }
+
+    def _upsert_paper_repo_row(
+        self,
+        *,
+        session,
+        paper_ref_id: int,
+        repo_row: Dict[str, Any],
+        source: str,
+        now: datetime,
+    ) -> Optional[bool]:
+        github = repo_row.get("github") if isinstance(repo_row.get("github"), dict) else {}
+        repo_url = str(repo_row.get("repo_url") or github.get("repo_url") or "").strip()
+        if not repo_url:
+            return None
+
+        row = session.execute(
+            select(PaperRepoModel).where(
+                PaperRepoModel.paper_id == int(paper_ref_id),
+                PaperRepoModel.repo_url == repo_url,
+            )
+        ).scalar_one_or_none()
+        created = row is None
+        if row is None:
+            row = PaperRepoModel(
+                paper_id=int(paper_ref_id),
+                repo_url=repo_url,
+                created_at=now,
+                updated_at=now,
+                synced_at=now,
+            )
+            session.add(row)
+
+        row.full_name = str(github.get("full_name") or repo_row.get("full_name") or "").strip()
+        row.description = str(github.get("description") or repo_row.get("description") or "")
+        row.stars = _safe_int(github.get("stars") or repo_row.get("stars"), 0)
+        row.forks = _safe_int(github.get("forks") or repo_row.get("forks"), 0)
+        row.open_issues = _safe_int(github.get("open_issues") or repo_row.get("open_issues"), 0)
+        row.watchers = _safe_int(github.get("watchers") or repo_row.get("watchers"), 0)
+        row.language = str(github.get("language") or repo_row.get("language") or "").strip()
+        row.license = str(github.get("license") or repo_row.get("license") or "").strip()
+        row.archived = bool(github.get("archived") or repo_row.get("archived"))
+        row.html_url = str(github.get("html_url") or repo_row.get("html_url") or repo_url).strip()
+        row.updated_at_remote = _parse_datetime(
+            github.get("updated_at") or repo_row.get("updated_at")
+        )
+        row.pushed_at_remote = _parse_datetime(github.get("pushed_at") or repo_row.get("pushed_at"))
+        row.query = str(repo_row.get("query") or "").strip()
+        row.source = (str(source or "").strip() or "paperscool_repo_enrich")[:32]
+
+        topics = github.get("topics") or repo_row.get("topics") or []
+        if not isinstance(topics, list):
+            topics = []
+        row.set_topics([str(v) for v in topics if str(v).strip()])
+
+        metadata = {
+            "title": repo_row.get("title"),
+            "paper_url": repo_row.get("paper_url"),
+            "github": github,
+        }
+        row.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        row.synced_at = now
+        row.updated_at = now
+
+        session.add(row)
+        return created
+
+    @staticmethod
     def _resolve_paper_ref_id(
         *,
         session,
@@ -1055,8 +1286,6 @@ class SqlAlchemyResearchStore:
         metadata: Dict[str, Any],
     ) -> Optional[int]:
         pid = (paper_id or "").strip()
-        if not pid:
-            return None
 
         if pid.isdigit():
             row = session.execute(
@@ -1065,8 +1294,8 @@ class SqlAlchemyResearchStore:
             if row is not None:
                 return int(row.id)
 
-        arxiv_id = normalize_arxiv_id(pid)
-        doi = normalize_doi(pid)
+        arxiv_id = normalize_arxiv_id(pid) if pid else None
+        doi = normalize_doi(pid) if pid else None
 
         url_candidates = []
         for key in ("paper_url", "url", "external_url", "pdf_url"):
