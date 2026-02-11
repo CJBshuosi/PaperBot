@@ -273,12 +273,12 @@
 
 ### 3.8.2 契约抽象（必须先做）
 
-- [ ] 定义统一 `AgentRuntime` 接口
+- [x] 定义统一 `AgentRuntime` 接口
   - 生命周期：`input -> plan -> execute -> emit events -> finalize`
   - 文件：`src/paperbot/core/abstractions/agent_runtime.py`
-- [ ] 定义统一 `AgentMessage` / `AgentResult` / `AgentError` schema
+- [x] 定义统一 `AgentMessage` / `AgentResult` / `AgentError` schema
   - 兼容当前 runbook/event_log 字段：`run_id`、`trace_id`、`stage`、`agent_name`
-- [ ] 定义 `SourceCollector` 接口（API Source / Browser Source 同契约）
+- [x] 定义 `SourceCollector` 接口（API Source / Browser Source 同契约）
   - 文件：`src/paperbot/application/ports/source_collector.py`
 
 ### 3.8.3 观测统一（SSE + 日志 + 事件）
@@ -626,3 +626,4 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 - 2026-02-11: 完成 Phase 1 收尾（PaperRepoModel + /papers/{paper_id}/repos + DailyPaper 异步 repo enrichment），并修复 harvest 基线下 paper store 兼容性
 - 2026-02-11: 新增 Phase 3.8 Agent Runtime 统一 TODO（契约/事件总线/迁移顺序），并明确 1 issue = 1 commit 规则
 - 2026-02-11: 完成 Issue #44（Agent inventory + 边界决策文档），新增 `docs/agent_inventory.md`
+- 2026-02-11: 完成 Issue #45（AgentRuntime/SourceCollector 契约 + 兼容适配器 + contract tests）
