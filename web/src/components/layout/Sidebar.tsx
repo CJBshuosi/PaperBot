@@ -24,10 +24,10 @@ type SidebarProps = React.HTMLAttributes<HTMLDivElement> & {
 }
 
 const routes = [
-  { label: "Dashboard", icon: LayoutDashboard, href: "/" },
+  { label: "Research", icon: FlaskConical, href: "/" },
+  { label: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
   { label: "Scholars", icon: Users, href: "/scholars" },
   { label: "Papers", icon: FileText, href: "/papers" },
-  { label: "Research", icon: FlaskConical, href: "/research" },
   { label: "Workflows", icon: Workflow, href: "/workflows" },
   { label: "DeepCode Studio", icon: Code2, href: "/studio" },
   { label: "Wiki", icon: BookOpen, href: "/wiki" },

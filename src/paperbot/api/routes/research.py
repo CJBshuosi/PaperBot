@@ -78,6 +78,14 @@ class TrackCreateRequest(BaseModel):
     activate: bool = True
 
 
+class TrackUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128)
+    description: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    venues: Optional[List[str]] = None
+    methods: Optional[List[str]] = None
+
+
 class TrackResponse(BaseModel):
     track: Dict[str, Any]
 
@@ -121,6 +129,35 @@ def get_active_track(user_id: str = "default"):
     track = _research_store.get_active_track(user_id=user_id)
     if not track:
         raise HTTPException(status_code=404, detail="No active track for user")
+    return TrackResponse(track=track)
+
+
+@router.patch("/research/tracks/{track_id}", response_model=TrackResponse)
+def update_track(
+    track_id: int,
+    req: TrackUpdateRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = "default",
+):
+    update_data: Dict[str, Any] = {}
+    if req.name is not None:
+        update_data["name"] = req.name
+    if req.description is not None:
+        update_data["description"] = req.description
+    if req.keywords is not None:
+        update_data["keywords"] = req.keywords
+    if req.venues is not None:
+        update_data["venues"] = req.venues
+    if req.methods is not None:
+        update_data["methods"] = req.methods
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    track = _research_store.update_track(user_id=user_id, track_id=track_id, **update_data)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    _schedule_embedding_precompute(background_tasks, user_id=user_id, track_ids=[track_id])
     return TrackResponse(track=track)
 
 
