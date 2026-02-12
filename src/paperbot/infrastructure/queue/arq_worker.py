@@ -389,16 +389,21 @@ async def daily_papers_job(
         render_daily_paper_markdown,
     )
     from paperbot.application.services.daily_push_service import DailyPushService
-    from paperbot.application.workflows.paperscool_topic_search import PapersCoolTopicSearchWorkflow
+    from paperbot.application.workflows.unified_topic_search import (
+        make_default_search_service,
+        run_unified_topic_search,
+    )
     from paperbot.workflows.feed import ScholarFeedService
 
-    search_workflow = PapersCoolTopicSearchWorkflow()
-    search_result = search_workflow.run(
+    search_service = make_default_search_service()
+    search_result = await run_unified_topic_search(
         queries=job_queries,
         sources=job_sources,
         branches=job_branches,
         top_k_per_query=max(1, int(top_k_per_query)),
         show_per_branch=max(1, int(show_per_branch)),
+        search_service=search_service,
+        persist=False,
     )
     report = build_daily_paper_report(
         search_result=search_result, title=title, top_n=max(1, int(top_n))

@@ -26,6 +26,11 @@ from paperbot.application.workflows.dailypaper import (
     render_daily_paper_markdown,
 )
 from paperbot.application.services.daily_push_service import DailyPushService
+from paperbot.application.workflows.unified_topic_search import (
+    make_default_search_service,
+    run_unified_topic_search,
+)
+from paperbot.infrastructure.stores.paper_store import PaperStore
 
 # Load local .env automatically for CLI workflows using LLM providers.
 load_dotenv(find_dotenv(usecwd=True), override=False)
@@ -241,10 +246,14 @@ async def _quick_score(paper_id: str):
     print("Please use the main.py entry point instead.")
 
 
-def _create_topic_search_workflow():
-    from paperbot.application.workflows.paperscool_topic_search import PapersCoolTopicSearchWorkflow
+_paper_search_service = None
 
-    return PapersCoolTopicSearchWorkflow()
+
+def _get_paper_search_service():
+    global _paper_search_service
+    if _paper_search_service is None:
+        _paper_search_service = make_default_search_service(registry=PaperStore())
+    return _paper_search_service
 
 
 def _run_topic_search(parsed: argparse.Namespace) -> int:
@@ -255,13 +264,16 @@ def _run_topic_search(parsed: argparse.Namespace) -> int:
     branches = parsed.branches or ["arxiv", "venue"]
     sources = parsed.sources or ["papers_cool"]
 
-    workflow = _create_topic_search_workflow()
-    result = workflow.run(
-        queries=queries,
-        sources=sources,
-        branches=branches,
-        top_k_per_query=max(1, int(parsed.top_k)),
-        show_per_branch=max(1, int(parsed.show)),
+    result = asyncio.run(
+        run_unified_topic_search(
+            queries=queries,
+            sources=sources,
+            branches=branches,
+            top_k_per_query=max(1, int(parsed.top_k)),
+            show_per_branch=max(1, int(parsed.show)),
+            search_service=_get_paper_search_service(),
+            persist=False,
+        )
     )
 
     if parsed.json:
@@ -287,14 +299,17 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
     branches = parsed.branches or ["arxiv", "venue"]
     sources = parsed.sources or ["papers_cool"]
 
-    workflow = _create_topic_search_workflow()
     effective_top_k = max(1, int(parsed.top_k), int(parsed.top_n))
-    search_result = workflow.run(
-        queries=queries,
-        sources=sources,
-        branches=branches,
-        top_k_per_query=effective_top_k,
-        show_per_branch=max(1, int(parsed.show)),
+    search_result = asyncio.run(
+        run_unified_topic_search(
+            queries=queries,
+            sources=sources,
+            branches=branches,
+            top_k_per_query=effective_top_k,
+            show_per_branch=max(1, int(parsed.show)),
+            search_service=_get_paper_search_service(),
+            persist=False,
+        )
     )
 
     report = build_daily_paper_report(

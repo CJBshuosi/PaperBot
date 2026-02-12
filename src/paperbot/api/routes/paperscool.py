@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from paperbot.api.streaming import StreamEvent, wrap_generator
 from paperbot.application.services.daily_push_service import DailyPushService
 from paperbot.application.services.llm_service import get_llm_service
+from paperbot.application.services.paper_search_service import PaperSearchService
 from paperbot.application.workflows.analysis.paper_judge import PaperJudge
 from paperbot.application.workflows.dailypaper import (
     DailyPaperReporter,
@@ -28,11 +29,16 @@ from paperbot.application.workflows.dailypaper import (
     render_daily_paper_markdown,
     select_judge_candidates,
 )
-from paperbot.application.workflows.paperscool_topic_search import PapersCoolTopicSearchWorkflow
+from paperbot.application.workflows.unified_topic_search import (
+    make_default_search_service,
+    run_unified_topic_search,
+)
+from paperbot.infrastructure.stores.paper_store import PaperStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
 from paperbot.utils.text_processing import extract_github_url
 
 router = APIRouter()
+_paper_search_service: Optional[PaperSearchService] = None
 
 _ALLOWED_REPORT_BASE = os.path.abspath("./reports")
 
@@ -60,6 +66,13 @@ def _validate_email_list(emails: List[str]) -> List[str]:
         if _EMAIL_RE.match(addr):
             cleaned.append(addr)
     return cleaned
+
+
+def _get_paper_search_service() -> PaperSearchService:
+    global _paper_search_service
+    if _paper_search_service is None:
+        _paper_search_service = make_default_search_service(registry=PaperStore())
+    return _paper_search_service
 
 
 class PapersCoolSearchRequest(BaseModel):
@@ -141,20 +154,21 @@ class PapersCoolReposResponse(BaseModel):
 
 
 @router.post("/research/paperscool/search", response_model=PapersCoolSearchResponse)
-def topic_search(req: PapersCoolSearchRequest):
+async def topic_search(req: PapersCoolSearchRequest):
     cleaned_queries = [q.strip() for q in req.queries if (q or "").strip()]
     if not cleaned_queries:
         raise HTTPException(status_code=400, detail="queries is required")
 
-    workflow = PapersCoolTopicSearchWorkflow()
     try:
-        result = workflow.run(
+        result = await run_unified_topic_search(
             queries=cleaned_queries,
             sources=req.sources,
             branches=req.branches,
             top_k_per_query=req.top_k_per_query,
             show_per_branch=req.show_per_branch,
             min_score=req.min_score,
+            search_service=_get_paper_search_service(),
+            persist=False,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"topic search failed: {exc}") from exc
@@ -167,15 +181,16 @@ async def _dailypaper_stream(req: DailyPaperRequest):
 
     # Phase 1 — Search
     yield StreamEvent(type="progress", data={"phase": "search", "message": "Searching papers..."})
-    workflow = PapersCoolTopicSearchWorkflow()
     effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
-    search_result = workflow.run(
+    search_result = await run_unified_topic_search(
         queries=cleaned_queries,
         sources=req.sources,
         branches=req.branches,
         top_k_per_query=effective_top_k,
         show_per_branch=req.show_per_branch,
         min_score=req.min_score,
+        search_service=_get_paper_search_service(),
+        persist=False,
     )
     summary = search_result.get("summary") or {}
     yield StreamEvent(
@@ -510,7 +525,7 @@ async def generate_daily_report(req: DailyPaperRequest):
 
     # Fast sync path when no LLM/Judge — avoids SSE overhead
     if not req.enable_llm_analysis and not req.enable_judge:
-        return _sync_daily_report(req, cleaned_queries)
+        return await _sync_daily_report(req, cleaned_queries)
 
     # SSE streaming path for long-running operations
     return StreamingResponse(
@@ -520,18 +535,19 @@ async def generate_daily_report(req: DailyPaperRequest):
     )
 
 
-def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
+async def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
     """Original synchronous path for fast requests (no LLM/Judge)."""
-    workflow = PapersCoolTopicSearchWorkflow()
     effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
     try:
-        search_result = workflow.run(
+        search_result = await run_unified_topic_search(
             queries=cleaned_queries,
             sources=req.sources,
             branches=req.branches,
             top_k_per_query=effective_top_k,
             show_per_branch=req.show_per_branch,
             min_score=req.min_score,
+            search_service=_get_paper_search_service(),
+            persist=False,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"daily search failed: {exc}") from exc
