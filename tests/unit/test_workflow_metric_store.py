@@ -6,7 +6,7 @@ from paperbot.infrastructure.stores.workflow_metric_store import WorkflowMetricS
 
 
 def test_workflow_metric_store_records_and_summarizes(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path / workflow-metrics.db}"
+    db_url = f"sqlite:///{tmp_path / 'workflow-metrics.db'}"
     store = WorkflowMetricStore(db_url=db_url)
 
     store.record_metric(
@@ -40,7 +40,7 @@ def test_workflow_metric_store_records_and_summarizes(tmp_path: Path):
 
 
 def test_workflow_metric_store_filters_by_workflow_and_track(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path / workflow-filter.db}"
+    db_url = f"sqlite:///{tmp_path / 'workflow-filter.db'}"
     store = WorkflowMetricStore(db_url=db_url)
 
     store.record_metric(

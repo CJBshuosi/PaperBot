@@ -10,7 +10,7 @@ from paperbot.infrastructure.stores.workflow_metric_store import WorkflowMetricS
 
 
 def test_research_workflow_metrics_summary_route(tmp_path: Path, monkeypatch):
-    db_url = f"sqlite:///{tmp_path / workflow-route.db}"
+    db_url = f"sqlite:///{tmp_path / 'workflow-route.db'}"
     store = WorkflowMetricStore(db_url=db_url)
     store.record_metric(
         workflow="research_context",
