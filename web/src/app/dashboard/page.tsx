@@ -4,20 +4,22 @@ import { PipelineStatus } from "@/components/dashboard/PipelineStatus"
 import { ReadingQueue } from "@/components/dashboard/ReadingQueue"
 import { LLMUsageChart } from "@/components/dashboard/LLMUsageChart"
 import { QuickActions } from "@/components/dashboard/QuickActions"
+import { DeadlineRadar } from "@/components/dashboard/DeadlineRadar"
 import { Users, FileText, Zap, BookOpen, Search, TrendingUp } from "lucide-react"
-import { fetchStats, fetchTrendingTopics, fetchPipelineTasks, fetchReadingQueue, fetchLLMUsage } from "@/lib/api"
+import { fetchStats, fetchTrendingTopics, fetchPipelineTasks, fetchReadingQueue, fetchLLMUsage, fetchDeadlineRadar } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 
 export default async function DashboardPage() {
-  const [statsResult, trendsResult, tasksResult, readingQueueResult, llmUsageResult] = await Promise.allSettled([
+  const [statsResult, trendsResult, tasksResult, readingQueueResult, llmUsageResult, deadlineResult] = await Promise.allSettled([
     fetchStats(),
     fetchTrendingTopics(),
     fetchPipelineTasks(),
     fetchReadingQueue(),
-    fetchLLMUsage()
+    fetchLLMUsage(),
+    fetchDeadlineRadar("default"),
   ])
   const stats = statsResult.status === "fulfilled" ? statsResult.value : {
     tracked_scholars: 0,
@@ -29,6 +31,7 @@ export default async function DashboardPage() {
   const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : []
   const readingQueue = readingQueueResult.status === "fulfilled" ? readingQueueResult.value : []
   const llmUsage = llmUsageResult.status === "fulfilled" ? llmUsageResult.value : []
+  const deadlines = deadlineResult.status === "fulfilled" ? deadlineResult.value : []
 
   return (
     <div className="flex-1 p-4 space-y-3 min-h-screen">
@@ -68,6 +71,7 @@ export default async function DashboardPage() {
         <div className="col-span-12 lg:col-span-4 space-y-2">
           <PipelineStatus tasks={tasks} />
           <ReadingQueue items={readingQueue} />
+          <DeadlineRadar items={deadlines} />
           <QuickActions />
         </div>
 

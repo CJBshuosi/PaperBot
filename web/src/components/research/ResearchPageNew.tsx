@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { useSearchParams } from "next/navigation"
 
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -56,6 +57,8 @@ function getGreeting(): string {
 }
 
 export default function ResearchPageNew() {
+  const searchParams = useSearchParams()
+
   // User state
   const [userId] = useState("default")
 
@@ -91,12 +94,21 @@ export default function ResearchPageNew() {
 
   const papers = contextPack?.paper_recommendations || []
   const reasons = contextPack?.paper_recommendation_reasons || {}
+  const routeTrackId = Number(searchParams.get("track_id") || 0)
 
   // Load tracks on mount
   useEffect(() => {
     refreshTracks().catch((e) => setError(String(e)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!routeTrackId || !Number.isFinite(routeTrackId)) return
+    if (!tracks.some((track) => track.id === routeTrackId)) return
+    if (activeTrackId === routeTrackId) return
+    activateTrack(routeTrackId).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeTrackId, tracks, activeTrackId])
 
   async function refreshTracks(): Promise<number | null> {
     const data = await fetchJson<{ tracks: Track[] }>(

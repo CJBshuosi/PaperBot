@@ -689,9 +689,15 @@ function NewsletterSubscribeWidget() {
 
 /* ── Main Dashboard ───────────────────────────────────── */
 
-export default function TopicWorkflowDashboard() {
+type TopicWorkflowDashboardProps = {
+  initialQueries?: string[]
+}
+
+export default function TopicWorkflowDashboard({ initialQueries }: TopicWorkflowDashboardProps = {}) {
   /* Config state (local — queries only) */
-  const [queryItems, setQueryItems] = useState<string[]>([...DEFAULT_QUERIES])
+  const [queryItems, setQueryItems] = useState<string[]>([
+    ...((initialQueries && initialQueries.length ? initialQueries : DEFAULT_QUERIES) || DEFAULT_QUERIES),
+  ])
 
   /* Persisted state (zustand) */
   const store = useWorkflowStore()

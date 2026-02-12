@@ -1,4 +1,4 @@
-import { Activity, Paper, PaperDetails, Scholar, ScholarDetails, Stats, WikiConcept, TrendingTopic, PipelineTask, ReadingQueueItem, LLMUsageRecord } from "./types"
+import { Activity, Paper, PaperDetails, Scholar, ScholarDetails, Stats, WikiConcept, TrendingTopic, PipelineTask, ReadingQueueItem, LLMUsageRecord, DeadlineRadarItem } from "./types"
 
 const API_BASE_URL = process.env.PAPERBOT_API_BASE_URL || "http://127.0.0.1:8000/api"
 
@@ -122,6 +122,25 @@ export async function fetchLLMUsage(): Promise<LLMUsageRecord[]> {
         { date: "Sat", gpt4: 8000, claude: 5000, ollama: 1000 },
         { date: "Sun", gpt4: 6000, claude: 4000, ollama: 500 }
     ]
+}
+
+export async function fetchDeadlineRadar(userId: string = "default"): Promise<DeadlineRadarItem[]> {
+    try {
+        const qs = new URLSearchParams({
+            user_id: userId,
+            days: "180",
+            ccf_levels: "A,B,C",
+            limit: "10",
+        })
+        const res = await fetch(`${API_BASE_URL}/research/deadlines/radar?${qs.toString()}`, {
+            cache: "no-store",
+        })
+        if (!res.ok) return []
+        const payload = await res.json() as { items?: DeadlineRadarItem[] }
+        return payload.items || []
+    } catch {
+        return []
+    }
 }
 
 

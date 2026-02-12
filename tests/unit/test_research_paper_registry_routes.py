@@ -174,3 +174,34 @@ def test_track_feed_route_with_pagination_and_feedback_boost(tmp_path, monkeypat
     ids = {payload1["items"][0]["paper"]["id"], payload2["items"][0]["paper"]["id"]}
     assert int(p1["id"]) in ids
     assert int(p2["id"]) in ids
+
+
+def test_deadline_radar_route_returns_workflow_query_and_track_match(tmp_path, monkeypatch):
+    db_path = tmp_path / "deadline-radar.db"
+    db_url = f"sqlite:///{db_path}"
+    research_store = SqlAlchemyResearchStore(db_url=db_url)
+    research_store.create_track(
+        user_id="u-deadline",
+        name="nlp-track",
+        keywords=["llm", "retrieval"],
+        activate=True,
+    )
+
+    monkeypatch.setattr(research_route, "_research_store", research_store)
+
+    with TestClient(api_main.app) as client:
+        resp = client.get(
+            "/api/research/deadlines/radar",
+            params={"user_id": "u-deadline", "days": 365, "ccf_levels": "A"},
+        )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["items"]
+
+    first = payload["items"][0]
+    assert isinstance(first.get("workflow_query"), str)
+    assert first["workflow_query"]
+
+    matched_any = any(item.get("matched_tracks") for item in payload["items"])
+    assert matched_any

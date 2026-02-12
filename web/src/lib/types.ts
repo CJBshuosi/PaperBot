@@ -129,3 +129,19 @@ export interface LLMUsageRecord {
     claude: number
     ollama: number
 }
+
+export interface DeadlineRadarItem {
+    name: string
+    ccf_level: string
+    field: string
+    deadline: string
+    days_left: number
+    url: string
+    keywords: string[]
+    workflow_query: string
+    matched_tracks: Array<{
+        track_id: number
+        track_name: string
+        matched_keywords: string[]
+    }>
+}
