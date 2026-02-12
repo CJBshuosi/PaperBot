@@ -127,6 +127,10 @@ Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save
 
 ![Dashboard](asset/ui/dashboard.jpg)
 
+| Research Workspace | Model Provider Settings |
+|--------------------|------------------------|
+| ![Research](asset/ui/research.png) | ![Settings](asset/ui/setting.png) |
+
 | 论文分析 | 学者画像 |
 |----------|----------|
 | ![Paper](asset/ui/paper.jpg) | ![Scholar](asset/ui/scholar2.jpg) |
@@ -145,9 +149,9 @@ Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save
 |---------|-------------------|
 | ![Cards](asset/ui/9-2.png) | ![Insights](asset/ui/9-4.png) |
 
-| Judge 评分卡片 | Judge 雷达图详情 |
-|---------------|-----------------|
-| ![Judge Cards](asset/ui/9-4.png) | ![Judge Radar](asset/ui/9-5.png) |
+| Judge 雷达图详情 |
+|-----------------|
+| ![Judge Radar](asset/ui/9-5.png) |
 
 ### Email 推送
 
