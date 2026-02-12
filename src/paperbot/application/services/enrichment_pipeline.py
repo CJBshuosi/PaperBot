@@ -1,7 +1,7 @@
 """EnrichmentPipeline — Chain of Responsibility for paper enrichment.
 
 Each step processes a paper and can add judge scores, summaries,
-repo discovery results, etc.
+or post-filter flags.
 """
 
 from __future__ import annotations
@@ -51,4 +51,75 @@ class EnrichmentPipeline:
                 except Exception as e:
                     title = str(paper.get("title", ""))[:60]
                     step_name = type(step).__name__
-                    logger.warning(f"Enrichment step {step_name} failed for '{title}': {e}")
+                    logger.warning(f"Enrichment step {step_name} failed for {title}: {e}")
+
+
+class LLMEnrichmentStep:
+    """Attach LLM summary/relevance features to selected papers."""
+
+    def __init__(self, *, llm_service=None, features: Optional[List[str]] = None):
+        from paperbot.application.services.llm_service import get_llm_service
+
+        self._llm = llm_service or get_llm_service()
+        self._features = set(features or ["summary"])
+
+    async def process(self, paper: Dict[str, Any], context: EnrichmentContext) -> None:
+        target_ids = context.extra.get("llm_target_ids")
+        if isinstance(target_ids, set) and id(paper) not in target_ids:
+            return
+
+        title = str(paper.get("title") or "")
+        abstract = str(paper.get("snippet") or paper.get("abstract") or "")
+
+        if "summary" in self._features:
+            paper["ai_summary"] = self._llm.summarize_paper(title=title, abstract=abstract)
+
+        if "relevance" in self._features:
+            query = str(context.extra.get("query_for_relevance") or context.query or "")
+            paper["relevance"] = self._llm.assess_relevance(paper=paper, query=query)
+
+
+class JudgeStep:
+    """Attach judge scores to selected papers."""
+
+    def __init__(self, *, judge=None, n_runs: int = 1):
+        if judge is None:
+            from paperbot.application.services.llm_service import get_llm_service
+            from paperbot.application.workflows.analysis.paper_judge import PaperJudge
+
+            judge = PaperJudge(llm_service=get_llm_service())
+        self._judge = judge
+        self._n_runs = max(1, int(n_runs))
+
+    async def process(self, paper: Dict[str, Any], context: EnrichmentContext) -> None:
+        target_ids = context.extra.get("judge_target_ids")
+        if isinstance(target_ids, set) and id(paper) not in target_ids:
+            return
+
+        query_map = context.extra.get("paper_query_map") or {}
+        query = str(query_map.get(id(paper)) or context.query or "")
+
+        if self._n_runs > 1:
+            judgment = self._judge.judge_with_calibration(
+                paper=paper,
+                query=query,
+                n_runs=self._n_runs,
+            )
+        else:
+            judgment = self._judge.judge_single(paper=paper, query=query)
+        paper["judge"] = judgment.to_dict()
+
+
+class FilterStep:
+    """Mark papers as filtered when recommendation is not in keep-set."""
+
+    def __init__(self, keep: Optional[set[str]] = None):
+        self._keep = keep or {"must_read", "worth_reading"}
+
+    async def process(self, paper: Dict[str, Any], context: EnrichmentContext) -> None:
+        judge = paper.get("judge")
+        if not isinstance(judge, dict):
+            return
+        rec = str(judge.get("recommendation") or "").strip().lower()
+        if rec and rec not in self._keep:
+            paper["_filtered_out"] = True

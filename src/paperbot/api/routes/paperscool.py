@@ -15,13 +15,18 @@ from pydantic import BaseModel, Field
 from paperbot.api.streaming import StreamEvent, wrap_generator
 from paperbot.application.services.daily_push_service import DailyPushService
 from paperbot.application.services.llm_service import get_llm_service
+from paperbot.application.services.enrichment_pipeline import (
+    EnrichmentContext,
+    EnrichmentPipeline,
+    FilterStep,
+    JudgeStep,
+    LLMEnrichmentStep,
+)
 from paperbot.application.services.paper_search_service import PaperSearchService
 from paperbot.application.workflows.analysis.paper_judge import PaperJudge
 from paperbot.application.workflows.dailypaper import (
     DailyPaperReporter,
-    apply_judge_scores_to_report,
     build_daily_paper_report,
-    enrich_daily_paper_report,
     ingest_daily_report_to_registry,
     normalize_llm_features,
     normalize_output_formats,
@@ -214,7 +219,15 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         },
     )
 
-    # Phase 3 — LLM Enrichment
+    query_items: List[Dict[str, Any]] = []
+    paper_query_map: Dict[int, str] = {}
+    for query in report.get("queries") or []:
+        query_name = query.get("normalized_query") or query.get("raw_query") or ""
+        for item in query.get("top_items") or []:
+            query_items.append(item)
+            paper_query_map[id(item)] = query_name
+
+    # Phase 3 — LLM Enrichment (pipeline)
     if req.enable_llm_analysis:
         features = normalize_llm_features(req.llm_features)
         if features:
@@ -226,52 +239,42 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                 "daily_insight": "",
             }
 
-            summary_done = 0
-            summary_total = 0
+            llm_targets: set[int] = set()
             if "summary" in features or "relevance" in features:
                 for query in report.get("queries") or []:
-                    summary_total += len((query.get("top_items") or [])[:3])
+                    for item in (query.get("top_items") or [])[:3]:
+                        llm_targets.add(id(item))
 
             yield StreamEvent(
                 type="progress",
                 data={
                     "phase": "llm",
                     "message": "Starting LLM enrichment...",
-                    "total": summary_total,
+                    "total": len(llm_targets),
                 },
             )
 
-            for query in report.get("queries") or []:
-                query_name = query.get("normalized_query") or query.get("raw_query") or ""
-                top_items = (query.get("top_items") or [])[:3]
+            if llm_targets:
+                pipeline = EnrichmentPipeline(
+                    steps=[LLMEnrichmentStep(llm_service=llm_service, features=features)]
+                )
+                await pipeline.run(
+                    query_items,
+                    context=EnrichmentContext(
+                        query="; ".join(cleaned_queries),
+                        extra={
+                            "llm_target_ids": llm_targets,
+                            "query_for_relevance": "; ".join(cleaned_queries),
+                        },
+                    ),
+                )
 
-                if "summary" in features:
-                    for item in top_items:
-                        item["ai_summary"] = llm_service.summarize_paper(
-                            title=item.get("title") or "",
-                            abstract=item.get("snippet") or item.get("abstract") or "",
-                        )
-                        summary_done += 1
-                        yield StreamEvent(
-                            type="llm_summary",
-                            data={
-                                "title": item.get("title") or "Untitled",
-                                "query": query_name,
-                                "ai_summary": item["ai_summary"],
-                                "done": summary_done,
-                                "total": summary_total,
-                            },
-                        )
-
-                if "relevance" in features:
-                    for item in top_items:
-                        item["relevance"] = llm_service.assess_relevance(
-                            paper=item, query=query_name
-                        )
-                        if "summary" not in features:
-                            summary_done += 1
-
-                if "trends" in features and top_items:
+            if "trends" in features:
+                for query in report.get("queries") or []:
+                    query_name = query.get("normalized_query") or query.get("raw_query") or ""
+                    top_items = (query.get("top_items") or [])[:3]
+                    if not top_items:
+                        continue
                     trend_text = llm_service.analyze_trends(topic=query_name, papers=top_items)
                     llm_block["query_trends"].append({"query": query_name, "analysis": trend_text})
                     yield StreamEvent(
@@ -293,6 +296,11 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                 yield StreamEvent(type="insight", data={"analysis": llm_block["daily_insight"]})
 
             report["llm_analysis"] = llm_block
+            summary_done = sum(
+                1
+                for item in query_items
+                if id(item) in llm_targets and (item.get("ai_summary") or item.get("relevance"))
+            )
             yield StreamEvent(
                 type="llm_done",
                 data={
@@ -301,7 +309,7 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                 },
             )
 
-    # Phase 4 — Judge
+    # Phase 4 — Judge + Filter (pipeline)
     if req.enable_judge:
         llm_service_j = get_llm_service()
         judge = PaperJudge(llm_service=llm_service_j)
@@ -312,12 +320,17 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             token_budget=req.judge_token_budget,
         )
         selected = list(selection.get("selected") or [])
-        recommendation_count: Dict[str, int] = {
-            "must_read": 0,
-            "worth_reading": 0,
-            "skim": 0,
-            "skip": 0,
-        }
+        judge_targets: set[int] = set()
+        queries = list(report.get("queries") or [])
+        for row in selected:
+            query_index = int(row.get("query_index") or 0)
+            item_index = int(row.get("item_index") or 0)
+            if query_index >= len(queries):
+                continue
+            top_items = list(queries[query_index].get("top_items") or [])
+            if item_index >= len(top_items):
+                continue
+            judge_targets.add(id(top_items[item_index]))
 
         yield StreamEvent(
             type="progress",
@@ -329,46 +342,31 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             },
         )
 
-        queries = list(report.get("queries") or [])
-        for idx, row in enumerate(selected, start=1):
-            query_index = int(row.get("query_index") or 0)
-            item_index = int(row.get("item_index") or 0)
+        if judge_targets:
+            judge_pipeline = EnrichmentPipeline(
+                steps=[JudgeStep(judge=judge, n_runs=max(1, int(req.judge_runs)))]
+            )
+            await judge_pipeline.run(
+                query_items,
+                context=EnrichmentContext(
+                    query="; ".join(cleaned_queries),
+                    extra={"judge_target_ids": judge_targets, "paper_query_map": paper_query_map},
+                ),
+            )
 
-            if query_index >= len(queries):
+        recommendation_count: Dict[str, int] = {
+            "must_read": 0,
+            "worth_reading": 0,
+            "skim": 0,
+            "skip": 0,
+        }
+        for item in query_items:
+            if id(item) not in judge_targets:
                 continue
-
-            query = queries[query_index]
-            query_name = query.get("normalized_query") or query.get("raw_query") or ""
-            top_items = list(query.get("top_items") or [])
-            if item_index >= len(top_items):
-                continue
-
-            item = top_items[item_index]
-            if req.judge_runs > 1:
-                judgment = judge.judge_with_calibration(
-                    paper=item,
-                    query=query_name,
-                    n_runs=max(1, int(req.judge_runs)),
-                )
-            else:
-                judgment = judge.judge_single(paper=item, query=query_name)
-
-            j_payload = judgment.to_dict()
-            item["judge"] = j_payload
-            rec = j_payload.get("recommendation")
+            j_payload = item.get("judge") if isinstance(item.get("judge"), dict) else {}
+            rec = str(j_payload.get("recommendation") or "")
             if rec in recommendation_count:
                 recommendation_count[rec] += 1
-
-            yield StreamEvent(
-                type="judge",
-                data={
-                    "query": query_name,
-                    "title": item.get("title") or "Untitled",
-                    "judge": j_payload,
-                    "done": idx,
-                    "total": len(selected),
-                },
-            )
 
         for query in report.get("queries") or []:
             top_items = list(query.get("top_items") or [])
@@ -390,12 +388,15 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         }
         yield StreamEvent(type="judge_done", data=report["judge"])
 
-        # Phase 4b — Filter: remove papers below "worth_reading"
         KEEP_RECOMMENDATIONS = {"must_read", "worth_reading"}
         yield StreamEvent(
             type="progress",
             data={"phase": "filter", "message": "Filtering papers by judge recommendation..."},
         )
+
+        filter_pipeline = EnrichmentPipeline(steps=[FilterStep(keep=KEEP_RECOMMENDATIONS)])
+        await filter_pipeline.run(query_items, context=EnrichmentContext())
+
         filter_log: List[Dict[str, Any]] = []
         total_before = 0
         total_after = 0
@@ -404,37 +405,40 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             items_before = list(query.get("top_items") or [])
             total_before += len(items_before)
             kept: List[Dict[str, Any]] = []
-            removed: List[Dict[str, Any]] = []
             for item in items_before:
-                j = item.get("judge")
-                if isinstance(j, dict):
-                    rec = j.get("recommendation", "")
-                    if rec in KEEP_RECOMMENDATIONS:
-                        kept.append(item)
-                    else:
-                        removed.append(item)
-                        filter_log.append(
-                            {
-                                "query": query_name,
-                                "title": item.get("title") or "Untitled",
-                                "recommendation": rec,
-                                "overall": j.get("overall"),
-                                "action": "removed",
-                            }
-                        )
-                else:
-                    # No judge score — keep by default (unjudged papers)
-                    kept.append(item)
+                if item.get("_filtered_out"):
+                    j = item.get("judge") if isinstance(item.get("judge"), dict) else {}
+                    filter_log.append(
+                        {
+                            "query": query_name,
+                            "title": item.get("title") or "Untitled",
+                            "recommendation": j.get("recommendation"),
+                            "overall": j.get("overall"),
+                            "action": "removed",
+                        }
+                    )
+                    continue
+                kept.append(item)
             total_after += len(kept)
             query["top_items"] = kept
 
-        # Also filter global_top
+        judge_by_key: Dict[str, Dict[str, Any]] = {}
+        for item in query_items:
+            if not isinstance(item.get("judge"), dict):
+                continue
+            key = f"{(item.get('url') or '').strip()}|{(item.get('title') or '').strip().lower()}"
+            if key:
+                judge_by_key[key] = item["judge"]
+
         global_before = list(report.get("global_top") or [])
         global_kept = []
         for item in global_before:
+            key = f"{(item.get('url') or '').strip()}|{(item.get('title') or '').strip().lower()}"
+            if key in judge_by_key:
+                item["judge"] = judge_by_key[key]
             j = item.get("judge")
             if isinstance(j, dict):
-                rec = j.get("recommendation", "")
+                rec = str(j.get("recommendation") or "")
                 if rec in KEEP_RECOMMENDATIONS:
                     global_kept.append(item)
             else:
