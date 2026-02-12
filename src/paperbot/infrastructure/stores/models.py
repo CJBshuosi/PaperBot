@@ -871,6 +871,22 @@ class LLMUsageModel(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class PipelineSessionModel(Base):
+    """Long-running pipeline session checkpoints for resume/recovery."""
+
+    __tablename__ = "pipeline_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    checkpoint: Mapped[str] = mapped_column(String(64), default="init", index=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    state_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class HarvestRunModel(Base):
     """Harvest execution tracking."""
 

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from paperbot.api import main as api_main
 from paperbot.api.routes import paperscool as paperscool_route
+from paperbot.infrastructure.stores.pipeline_session_store import PipelineSessionStore
 
 
 def _parse_sse_events(text: str):
@@ -739,3 +740,72 @@ def test_paperscool_daily_route_enqueues_repo_enrichment(monkeypatch):
 
     assert resp.status_code == 200
     assert called["count"] == 1
+
+
+def test_paperscool_daily_resume_session(monkeypatch, tmp_path):
+    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    paperscool_route._pipeline_session_store = PipelineSessionStore(
+        db_url=f"sqlite:///{tmp_path / daily-session.db}"
+    )
+
+    class _FakeJudgment:
+        def to_dict(self):
+            return {
+                "relevance": {"score": 5, "rationale": ""},
+                "novelty": {"score": 4, "rationale": ""},
+                "rigor": {"score": 4, "rationale": ""},
+                "impact": {"score": 4, "rationale": ""},
+                "clarity": {"score": 4, "rationale": ""},
+                "overall": 4.2,
+                "one_line_summary": "good",
+                "recommendation": "must_read",
+                "judge_model": "fake",
+                "judge_cost_tier": 1,
+            }
+
+    class _FakeJudge:
+        def __init__(self, llm_service=None):
+            pass
+
+        def judge_single(self, *, paper, query):
+            return _FakeJudgment()
+
+        def judge_with_calibration(self, *, paper, query, n_runs=1):
+            return _FakeJudgment()
+
+    monkeypatch.setattr(paperscool_route, "PaperJudge", _FakeJudge)
+    monkeypatch.setattr(paperscool_route, "get_llm_service", lambda: object())
+
+    with TestClient(api_main.app) as client:
+        first = client.post(
+            "/api/research/paperscool/daily",
+            json={
+                "queries": ["ICL压缩"],
+                "enable_judge": True,
+                "judge_runs": 1,
+                "judge_max_items_per_query": 2,
+            },
+        )
+        assert first.status_code == 200
+        first_events = _parse_sse_events(first.text)
+        first_result = next(e for e in first_events if e.get("type") == "result")
+        session_id = first_result["data"].get("session_id")
+        assert session_id
+
+        session_resp = client.get(f"/api/research/paperscool/sessions/{session_id}")
+        assert session_resp.status_code == 200
+        assert session_resp.json()["session"]["status"] == "completed"
+
+        resumed = client.post(
+            "/api/research/paperscool/daily",
+            json={
+                "queries": ["ICL压缩"],
+                "enable_judge": True,
+                "session_id": session_id,
+                "resume": True,
+            },
+        )
+        assert resumed.status_code == 200
+        resumed_events = _parse_sse_events(resumed.text)
+        resumed_result = next(e for e in resumed_events if e.get("type") == "result")
+        assert resumed_result["data"].get("resumed") is True

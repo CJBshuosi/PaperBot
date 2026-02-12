@@ -39,11 +39,13 @@ from paperbot.application.workflows.unified_topic_search import (
     run_unified_topic_search,
 )
 from paperbot.infrastructure.stores.paper_store import PaperStore
+from paperbot.infrastructure.stores.pipeline_session_store import PipelineSessionStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
 from paperbot.utils.text_processing import extract_github_url
 
 router = APIRouter()
 _paper_search_service: Optional[PaperSearchService] = None
+_pipeline_session_store = PipelineSessionStore()
 
 _ALLOWED_REPORT_BASE = os.path.abspath("./reports")
 
@@ -121,6 +123,10 @@ class DailyPaperRequest(BaseModel):
     notify: bool = False
     notify_channels: List[str] = Field(default_factory=list)
     notify_email_to: List[str] = Field(default_factory=list)
+    session_id: Optional[str] = Field(
+        default=None, description="Resume token for long-running pipeline"
+    )
+    resume: bool = Field(False, description="Resume from latest persisted checkpoint")
 
 
 class DailyPaperResponse(BaseModel):
@@ -129,6 +135,10 @@ class DailyPaperResponse(BaseModel):
     markdown_path: Optional[str] = None
     json_path: Optional[str] = None
     notify_result: Optional[Dict[str, Any]] = None
+
+
+class PipelineSessionResponse(BaseModel):
+    session: Dict[str, Any]
 
 
 class PapersCoolAnalyzeRequest(BaseModel):
@@ -184,19 +194,71 @@ async def _dailypaper_stream(req: DailyPaperRequest):
     """SSE generator for the full DailyPaper pipeline."""
     cleaned_queries = [q.strip() for q in req.queries if (q or "").strip()]
 
-    # Phase 1 — Search
-    yield StreamEvent(type="progress", data={"phase": "search", "message": "Searching papers..."})
-    effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
-    search_result = await run_unified_topic_search(
-        queries=cleaned_queries,
-        sources=req.sources,
-        branches=req.branches,
-        top_k_per_query=effective_top_k,
-        show_per_branch=req.show_per_branch,
-        min_score=req.min_score,
-        search_service=_get_paper_search_service(),
-        persist=False,
+    session = _pipeline_session_store.start_session(
+        workflow="paperscool_daily",
+        payload=req.model_dump(),
+        session_id=req.session_id,
+        resume=req.resume,
     )
+    session_id = str(session.get("session_id") or "")
+    session_state: Dict[str, Any] = session.get("state") if req.resume else {}
+
+    yield StreamEvent(
+        type="status",
+        data={
+            "phase": "session",
+            "session_id": session_id,
+            "resume": bool(req.resume),
+            "checkpoint": session.get("checkpoint") or "init",
+        },
+    )
+
+    if (
+        req.resume
+        and session.get("status") == "completed"
+        and isinstance(session.get("result"), dict)
+    ):
+        cached_result = dict(session.get("result") or {})
+        payload = {
+            "report": cached_result.get("report") or {},
+            "markdown": cached_result.get("markdown") or "",
+            "markdown_path": cached_result.get("markdown_path"),
+            "json_path": cached_result.get("json_path"),
+            "notify_result": cached_result.get("notify_result"),
+            "session_id": session_id,
+            "resumed": True,
+        }
+        yield StreamEvent(type="result", data=payload)
+        return
+
+    # Phase 1 — Search
+    effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
+    if req.resume and isinstance(session_state.get("search_result"), dict):
+        search_result = dict(session_state.get("search_result") or {})
+        yield StreamEvent(
+            type="progress",
+            data={"phase": "search", "message": "Resumed search result from checkpoint"},
+        )
+    else:
+        yield StreamEvent(
+            type="progress", data={"phase": "search", "message": "Searching papers..."}
+        )
+        search_result = await run_unified_topic_search(
+            queries=cleaned_queries,
+            sources=req.sources,
+            branches=req.branches,
+            top_k_per_query=effective_top_k,
+            show_per_branch=req.show_per_branch,
+            min_score=req.min_score,
+            search_service=_get_paper_search_service(),
+            persist=False,
+        )
+        _pipeline_session_store.save_checkpoint(
+            session_id=session_id,
+            checkpoint="search_done",
+            state={"search_result": search_result},
+        )
+
     summary = search_result.get("summary") or {}
     yield StreamEvent(
         type="search_done",
@@ -204,18 +266,35 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             "items_count": len(search_result.get("items") or []),
             "queries_count": len(search_result.get("queries") or []),
             "unique_items": int(summary.get("unique_items") or 0),
+            "session_id": session_id,
         },
     )
 
     # Phase 2 — Build Report
-    yield StreamEvent(type="progress", data={"phase": "build", "message": "Building report..."})
-    report = build_daily_paper_report(search_result=search_result, title=req.title, top_n=req.top_n)
+    if req.resume and isinstance(session_state.get("report"), dict):
+        report = dict(session_state.get("report") or {})
+        yield StreamEvent(
+            type="progress",
+            data={"phase": "build", "message": "Resumed report from checkpoint"},
+        )
+    else:
+        yield StreamEvent(type="progress", data={"phase": "build", "message": "Building report..."})
+        report = build_daily_paper_report(
+            search_result=search_result, title=req.title, top_n=req.top_n
+        )
+        _pipeline_session_store.save_checkpoint(
+            session_id=session_id,
+            checkpoint="report_built",
+            state={"search_result": search_result, "report": report},
+        )
+
     yield StreamEvent(
         type="report_built",
         data={
             "queries_count": len(report.get("queries") or []),
             "global_top_count": len(report.get("global_top") or []),
             "report": report,
+            "session_id": session_id,
         },
     )
 
@@ -463,6 +542,12 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             },
         )
 
+    _pipeline_session_store.save_checkpoint(
+        session_id=session_id,
+        checkpoint="enriched",
+        state={"search_result": search_result, "report": report},
+    )
+
     # Phase 5 — Persist + Notify
     yield StreamEvent(type="progress", data={"phase": "save", "message": "Saving to registry..."})
     try:
@@ -509,16 +594,20 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             email_to_override=_validate_email_list(req.notify_email_to) or None,
         )
 
-    yield StreamEvent(
-        type="result",
-        data={
-            "report": report,
-            "markdown": markdown,
-            "markdown_path": markdown_path,
-            "json_path": json_path,
-            "notify_result": notify_result,
-        },
+    result_payload = {
+        "report": report,
+        "markdown": markdown,
+        "markdown_path": markdown_path,
+        "json_path": json_path,
+        "notify_result": notify_result,
+        "session_id": session_id,
+        "resumed": False,
+    }
+    _pipeline_session_store.save_result(
+        session_id=session_id, result=result_payload, status="completed"
     )
+
+    yield StreamEvent(type="result", data=result_payload)
 
 
 @router.post("/research/paperscool/daily")
@@ -537,6 +626,14 @@ async def generate_daily_report(req: DailyPaperRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@router.get("/research/paperscool/sessions/{session_id}", response_model=PipelineSessionResponse)
+async def get_daily_session(session_id: str):
+    session = _pipeline_session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    return PipelineSessionResponse(session=session)
 
 
 async def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
