@@ -4,9 +4,11 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from paperbot.domain.identity import PaperIdentity
 from paperbot.infrastructure.stores.models import PaperJudgeScoreModel
 from paperbot.infrastructure.stores.paper_store import SqlAlchemyPaperStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
+from paperbot.infrastructure.stores.identity_store import IdentityStore
 
 
 def _judged_report():
@@ -135,3 +137,37 @@ def test_saved_list_and_detail_from_research_store(tmp_path: Path):
     assert detail is not None
     assert detail["paper"]["title"] == "UniICL"
     assert detail["reading_status"]["status"] == "read"
+
+
+def test_feedback_resolves_via_identity_store_mapping(tmp_path: Path):
+    db_path = tmp_path / "identity-feedback.db"
+    db_url = f"sqlite:///{db_path}"
+
+    paper_store = SqlAlchemyPaperStore(db_url=db_url)
+    research_store = SqlAlchemyResearchStore(db_url=db_url)
+    identity_store = IdentityStore(db_url=db_url)
+
+    paper = paper_store.upsert_paper(
+        paper={
+            "title": "CrossSource Paper",
+            "url": "https://example.com/p/abc",
+            "pdf_url": "https://example.com/p/abc.pdf",
+        }
+    )
+
+    identity_store.upsert_identity(
+        paper_id=int(paper["id"]),
+        identity=PaperIdentity(source="papers_cool", external_id="pc:abc123"),
+    )
+
+    track = research_store.create_track(user_id="u2", name="track-u2", activate=True)
+    feedback = research_store.add_paper_feedback(
+        user_id="u2",
+        track_id=int(track["id"]),
+        paper_id="pc:abc123",
+        action="save",
+        metadata={},
+    )
+
+    assert feedback is not None
+    assert feedback["paper_ref_id"] == int(paper["id"])

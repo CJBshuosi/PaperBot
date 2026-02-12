@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from paperbot.application.services.identity_resolver import IdentityResolver
 from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
 from paperbot.infrastructure.stores.models import (
     Base,
@@ -91,6 +92,7 @@ class SqlAlchemyResearchStore:
     def __init__(self, db_url: Optional[str] = None, *, auto_create_schema: bool = True):
         self.db_url = db_url or get_db_url()
         self._provider = SessionProvider(self.db_url)
+        self._identity_resolver = IdentityResolver(db_url=self.db_url)
         if auto_create_schema:
             Base.metadata.create_all(self._provider.engine)
 
@@ -1321,8 +1323,29 @@ class SqlAlchemyResearchStore:
         session.add(row)
         return created
 
-    @staticmethod
     def _resolve_paper_ref_id(
+        self,
+        *,
+        session,
+        paper_id: str,
+        metadata: Dict[str, Any],
+    ) -> Optional[int]:
+        pid = (paper_id or "").strip()
+        hints = dict(metadata or {})
+
+        # Main path: centralized identity resolver (paper_identifiers + normalized fallbacks).
+        resolved = self._identity_resolver.resolve(pid, hints=hints)
+        if resolved is not None:
+            return int(resolved)
+
+        Logger.info(
+            "IdentityResolver miss; falling back to legacy paper_id resolution",
+            file=LogFiles.HARVEST,
+        )
+        return self._resolve_paper_ref_id_legacy(session=session, paper_id=pid, metadata=hints)
+
+    @staticmethod
+    def _resolve_paper_ref_id_legacy(
         *,
         session,
         paper_id: str,
