@@ -8,6 +8,8 @@ from sqlalchemy import delete, desc, select
 
 from paperbot.infrastructure.stores.models import Base, ModelEndpointModel
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
+from paperbot.utils.secret import decrypt as _decrypt_secret
+from paperbot.utils.secret import encrypt as _encrypt_secret
 
 _ALLOWED_VENDORS = {
     "openai",
@@ -129,7 +131,7 @@ class ModelEndpointStore:
                 if not api_key_text:
                     row.api_key_value = None
                 elif not api_key_text.startswith("***"):
-                    row.api_key_value = api_key_text
+                    row.api_key_value = _encrypt_secret(api_key_text)
             row.enabled = bool(payload.get("enabled", row.enabled))
             row.is_default = bool(payload.get("is_default", row.is_default))
             row.set_models(normalized_models)
@@ -205,7 +207,7 @@ class ModelEndpointStore:
     def _to_dict(row: ModelEndpointModel, *, include_secrets: bool = False) -> Dict[str, Any]:
         models = row.get_models()
         task_types = row.get_task_types()
-        key_raw = str(row.api_key_value or "").strip()
+        key_raw = _decrypt_secret(str(row.api_key_value or "").strip())
         key_present = bool(key_raw) or bool(os.getenv(row.api_key_env or ""))
         key_display = key_raw if include_secrets else _mask_secret(key_raw)
         return {
