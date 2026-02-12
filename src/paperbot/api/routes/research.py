@@ -27,6 +27,7 @@ _memory_store = SqlAlchemyMemoryStore()
 _track_router = TrackRouter(research_store=_research_store, memory_store=_memory_store)
 _metric_collector: Optional[MemoryMetricCollector] = None
 _paper_store: Optional["PaperStore"] = None
+_paper_search_service: Optional["PaperSearchService"] = None
 
 
 def _get_metric_collector() -> MemoryMetricCollector:
@@ -45,6 +46,20 @@ def _get_paper_store() -> "PaperStore":
     if _paper_store is None:
         _paper_store = PaperStore()
     return _paper_store
+
+
+def _get_paper_search_service() -> "PaperSearchService":
+    """Lazy initialization of unified paper search service."""
+    from paperbot.application.services.paper_search_service import PaperSearchService
+    from paperbot.infrastructure.adapters import build_adapter_registry
+
+    global _paper_search_service
+    if _paper_search_service is None:
+        _paper_search_service = PaperSearchService(
+            adapters=build_adapter_registry(),
+            registry=_get_paper_store(),
+        )
+    return _paper_search_service
 
 
 def _schedule_embedding_precompute(
@@ -907,9 +922,20 @@ async def build_context(req: ContextRequest):
             raise HTTPException(status_code=404, detail="Track not found")
 
     Logger.info("Initializing context engine", file=LogFiles.HARVEST)
+    search_service = None
+    if not req.offline and req.paper_limit > 0:
+        try:
+            search_service = _get_paper_search_service()
+        except Exception as exc:
+            Logger.warning(
+                f"Failed to initialize PaperSearchService, fallback to legacy S2 path: {exc}",
+                file=LogFiles.HARVEST,
+            )
+
     engine = ContextEngine(
         research_store=_research_store,
         memory_store=_memory_store,
+        search_service=search_service,
         track_router=_track_router,
         config=ContextEngineConfig(
             memory_limit=req.memory_limit,
