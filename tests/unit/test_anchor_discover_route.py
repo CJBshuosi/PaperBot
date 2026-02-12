@@ -10,7 +10,15 @@ from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStor
 
 
 class _FakeAnchorService:
-    def discover(self, *, track_id: int, user_id: str, limit: int, window_years: int):
+    def discover(
+        self,
+        *,
+        track_id: int,
+        user_id: str,
+        limit: int,
+        window_years: int,
+        personalized: bool,
+    ):
         return [
             {
                 "author_id": 1,
@@ -39,13 +47,22 @@ class _FakeAnchorService:
                     "user_id": user_id,
                     "limit": limit,
                     "window_years": window_years,
+                    "personalized": personalized,
                 },
             }
         ]
 
 
 class _ErrorAnchorService:
-    def discover(self, *, track_id: int, user_id: str, limit: int, window_years: int):
+    def discover(
+        self,
+        *,
+        track_id: int,
+        user_id: str,
+        limit: int,
+        window_years: int,
+        personalized: bool,
+    ):
         raise ValueError("track not found: 999")
 
 
@@ -64,15 +81,31 @@ def test_anchor_discover_route_returns_items(tmp_path: Path, monkeypatch):
             f"/api/research/tracks/{int(track['id'])}/anchors/discover",
             params={"user_id": "u-anchor", "limit": 5, "window_days": 730},
         )
+        resp_global = client.get(
+            f"/api/research/tracks/{int(track['id'])}/anchors/discover",
+            params={
+                "user_id": "u-anchor",
+                "limit": 5,
+                "window_days": 730,
+                "personalized": "false",
+            },
+        )
 
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["track_id"] == int(track["id"])
     assert payload["window_days"] == 730
     assert payload["limit"] == 5
+    assert payload["personalized"] is True
     assert len(payload["items"]) == 1
     assert payload["items"][0]["name"] == "Alice Smith"
     assert payload["items"][0]["_meta"]["window_years"] == 2
+    assert payload["items"][0]["_meta"]["personalized"] is True
+
+    assert resp_global.status_code == 200
+    payload_global = resp_global.json()
+    assert payload_global["personalized"] is False
+    assert payload_global["items"][0]["_meta"]["personalized"] is False
 
 
 def test_anchor_discover_route_returns_404_for_missing_track(tmp_path: Path, monkeypatch):

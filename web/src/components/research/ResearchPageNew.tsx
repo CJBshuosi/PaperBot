@@ -107,6 +107,7 @@ export default function ResearchPageNew() {
   const [anchors, setAnchors] = useState<AnchorAuthor[]>([])
   const [anchorsLoading, setAnchorsLoading] = useState(false)
   const [anchorsError, setAnchorsError] = useState<string | null>(null)
+  const [anchorPersonalized, setAnchorPersonalized] = useState(true)
 
   // UI state
   const [loading, setLoading] = useState(false)
@@ -157,7 +158,7 @@ export default function ResearchPageNew() {
     setAnchorsError(null)
 
     fetchJson<{ items: AnchorAuthor[] }>(
-      `/api/research/tracks/${activeTrackId}/anchors/discover?user_id=${encodeURIComponent(userId)}&limit=5&window_days=730`
+      `/api/research/tracks/${activeTrackId}/anchors/discover?user_id=${encodeURIComponent(userId)}&limit=5&window_days=730&personalized=${anchorPersonalized ? "true" : "false"}`
     )
       .then((data) => {
         if (cancelled) return
@@ -177,7 +178,7 @@ export default function ResearchPageNew() {
     return () => {
       cancelled = true
     }
-  }, [activeTrackId, userId])
+  }, [activeTrackId, userId, anchorPersonalized])
 
   async function refreshTracks(): Promise<number | null> {
     const data = await fetchJson<{ tracks: Track[] }>(
@@ -544,7 +545,18 @@ export default function ResearchPageNew() {
         {activeTrack && (
           <Card className="mb-6 border-border/60">
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">Anchor Authors · {activeTrack.name}</CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base">Anchor Authors · {activeTrack.name}</CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => setAnchorPersonalized((prev) => !prev)}
+                >
+                  {anchorPersonalized ? "Personalized" : "Global"}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {anchorsLoading ? (

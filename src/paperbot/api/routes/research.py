@@ -1011,6 +1011,7 @@ class AnchorDiscoverResponse(BaseModel):
     track_id: int
     limit: int
     window_days: int
+    personalized: bool
     items: List[Dict[str, Any]]
 
 
@@ -1140,6 +1141,7 @@ def discover_track_anchors(
     user_id: str = "default",
     limit: int = Query(20, ge=1, le=100),
     window_days: int = Query(365, ge=30, le=3650),
+    personalized: bool = Query(True),
 ):
     track = _research_store.get_track(user_id=user_id, track_id=track_id)
     if not track:
@@ -1152,6 +1154,7 @@ def discover_track_anchors(
             user_id=user_id,
             limit=limit,
             window_years=window_years,
+            personalized=personalized,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1161,6 +1164,7 @@ def discover_track_anchors(
         track_id=track_id,
         limit=limit,
         window_days=window_days,
+        personalized=personalized,
         items=items,
     )
 

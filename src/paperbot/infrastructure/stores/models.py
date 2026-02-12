@@ -734,6 +734,32 @@ class AuthorModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
     paper_links = relationship("PaperAuthorModel", back_populates="author")
+    user_scores = relationship("UserAnchorScoreModel", back_populates="author")
+
+
+class UserAnchorScoreModel(Base):
+    """Per-user, per-track personalized anchor scores."""
+
+    __tablename__ = "user_anchor_scores"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "track_id", "author_id", name="uq_user_anchor_scores_user_track_author"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    track_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_tracks.id"), index=True)
+    author_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+
+    personalized_anchor_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    breakdown_json: Mapped[str] = mapped_column(Text, default="{}")
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    author = relationship("AuthorModel", back_populates="user_scores")
+    track = relationship("ResearchTrackModel")
 
 
 class PaperAuthorModel(Base):

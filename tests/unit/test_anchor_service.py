@@ -14,6 +14,7 @@ from paperbot.infrastructure.stores.models import (
     Base,
     PaperFeedbackModel,
     ResearchTrackModel,
+    UserAnchorScoreModel,
 )
 from paperbot.infrastructure.stores.paper_store import PaperStore
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider
@@ -134,6 +135,20 @@ def test_anchor_service_discovers_and_scores_authors(tmp_path: Path):
     assert anchors[0]["score_breakdown"]["network"] > 0
     assert anchors[0]["evidence_status"] == "ok"
     assert anchors[0]["evidence_papers"]
+
+    global_mode = service.discover(
+        track_id=track_id,
+        user_id="default",
+        limit=5,
+        window_years=15,
+        personalized=False,
+    )
+    assert global_mode[0]["score_breakdown"]["personalization"] == 0
+    assert anchors[0]["anchor_score"] >= global_mode[0]["anchor_score"]
+
+    with provider.session() as session:
+        score_rows = session.execute(select(UserAnchorScoreModel)).scalars().all()
+    assert score_rows
 
 
 def test_anchor_service_raises_for_unknown_track(tmp_path: Path):

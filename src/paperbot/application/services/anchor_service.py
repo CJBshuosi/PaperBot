@@ -15,6 +15,7 @@ from paperbot.infrastructure.stores.models import (
     PaperFeedbackModel,
     PaperModel,
     ResearchTrackModel,
+    UserAnchorScoreModel,
 )
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
 
@@ -80,6 +81,7 @@ class AnchorService:
         user_id: str = "default",
         limit: int = 20,
         window_years: int = 5,
+        personalized: bool = True,
     ) -> list[dict]:
         now_year = datetime.utcnow().year
         year_from = max(now_year - max(int(window_years), 1) + 1, 1970)
@@ -176,16 +178,21 @@ class AnchorService:
                     (math.tanh(raw_feedback / 4.0) + 1.0) / 2.0 if feedback_rows else 0.0
                 )
 
-                relevance_score = 0.7 * keyword_match_rate + 0.3 * feedback_signal
+                relevance_score = keyword_match_rate
                 network_score = self._compute_network_score(
                     author_id=int(item.author.id),
                     network_map=network_map,
                     citation_map=citation_map,
                     max_citation_sum=max_citation_sum,
                 )
-                personalization_score = feedback_signal
+                personalization_score = feedback_signal if personalized else 0.0
 
-                anchor_score = 0.5 * intrinsic_score + 0.3 * relevance_score + 0.2 * network_score
+                anchor_score = (
+                    0.45 * intrinsic_score
+                    + 0.3 * relevance_score
+                    + 0.15 * network_score
+                    + 0.1 * personalization_score
+                )
                 level = _anchor_level(anchor_score)
 
                 item.author.anchor_score = float(round(anchor_score, 6))
@@ -211,6 +218,14 @@ class AnchorService:
                     else "No direct evidence papers found in current window; consider broadening keywords or window_days."
                 )
 
+                score_breakdown = {
+                    "intrinsic": float(round(intrinsic_score, 4)),
+                    "relevance": float(round(relevance_score, 4)),
+                    "network": float(round(network_score, 4)),
+                    "personalization": float(round(personalization_score, 4)),
+                    "total": float(round(anchor_score, 4)),
+                }
+
                 payload.append(
                     {
                         "author_id": int(item.author.id),
@@ -226,18 +241,22 @@ class AnchorService:
                         "citation_sum": int(item.citation_sum),
                         "keyword_match_rate": float(round(keyword_match_rate, 4)),
                         "feedback_signal": float(round(feedback_signal, 4)),
-                        "score_breakdown": {
-                            "intrinsic": float(round(intrinsic_score, 4)),
-                            "relevance": float(round(relevance_score, 4)),
-                            "network": float(round(network_score, 4)),
-                            "personalization": float(round(personalization_score, 4)),
-                            "total": float(round(anchor_score, 4)),
-                        },
+                        "score_breakdown": score_breakdown,
                         "evidence_status": evidence_status,
                         "evidence_note": evidence_note,
                         "evidence_papers": evidence_rows,
                     }
                 )
+
+                if personalized:
+                    self._upsert_user_anchor_score(
+                        session,
+                        user_id=user_id,
+                        track_id=int(track_id),
+                        author_id=int(item.author.id),
+                        score=float(round(anchor_score, 6)),
+                        breakdown=score_breakdown,
+                    )
 
             session.commit()
 
@@ -285,6 +304,40 @@ class AnchorService:
 
             session.commit()
             return {"authors": len(aggregates), "updated": updated}
+
+    @staticmethod
+    def _upsert_user_anchor_score(
+        session,
+        *,
+        user_id: str,
+        track_id: int,
+        author_id: int,
+        score: float,
+        breakdown: dict[str, Any],
+    ) -> None:
+        row = session.execute(
+            select(UserAnchorScoreModel).where(
+                UserAnchorScoreModel.user_id == str(user_id),
+                UserAnchorScoreModel.track_id == int(track_id),
+                UserAnchorScoreModel.author_id == int(author_id),
+            )
+        ).scalar_one_or_none()
+
+        if row is None:
+            row = UserAnchorScoreModel(
+                user_id=str(user_id),
+                track_id=int(track_id),
+                author_id=int(author_id),
+                personalized_anchor_score=float(score),
+                breakdown_json=json.dumps(breakdown, ensure_ascii=False),
+                computed_at=datetime.now(timezone.utc),
+            )
+            session.add(row)
+            return
+
+        row.personalized_anchor_score = float(score)
+        row.breakdown_json = json.dumps(breakdown, ensure_ascii=False)
+        row.computed_at = datetime.now(timezone.utc)
 
     @staticmethod
     def _collect_author_aggregates(
