@@ -171,6 +171,26 @@ class ModelEndpointStore:
             session.commit()
             return True
 
+    def activate_endpoint(self, endpoint_id: int) -> Optional[Dict[str, Any]]:
+        now = _utcnow()
+        with self._provider.session() as session:
+            row = session.execute(
+                select(ModelEndpointModel).where(ModelEndpointModel.id == int(endpoint_id))
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+
+            session.execute(
+                ModelEndpointModel.__table__.update().values(is_default=False, updated_at=now)
+            )
+            row.is_default = True
+            row.enabled = True
+            row.updated_at = now
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return self._to_dict(row)
+
     @staticmethod
     def _to_dict(row: ModelEndpointModel) -> Dict[str, Any]:
         models = row.get_models()
