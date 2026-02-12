@@ -531,6 +531,7 @@ class SqlAlchemyResearchStore:
         self,
         *,
         user_id: str,
+        track_id: Optional[int] = None,
         limit: int = 200,
         sort_by: str = "saved_at",
     ) -> List[Dict[str, Any]]:
@@ -557,6 +558,11 @@ class SqlAlchemyResearchStore:
                         PaperFeedbackModel.user_id == user_id,
                         PaperFeedbackModel.action == "save",
                         PaperFeedbackModel.paper_ref_id.is_not(None),
+                        (
+                            PaperFeedbackModel.track_id == int(track_id)
+                            if track_id is not None
+                            else True
+                        ),
                     )
                 )
                 .scalars()
@@ -636,6 +642,212 @@ class SqlAlchemyResearchStore:
                 rows.sort(key=lambda row: str(row.get("saved_at") or ""), reverse=True)
 
             return rows[: max(1, int(limit))]
+
+    def list_track_feed(
+        self,
+        *,
+        user_id: str,
+        track_id: int,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        with self._provider.session() as session:
+            track = session.execute(
+                select(ResearchTrackModel).where(
+                    ResearchTrackModel.user_id == user_id,
+                    ResearchTrackModel.id == int(track_id),
+                    ResearchTrackModel.archived_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if track is None:
+                return {"items": [], "total": 0}
+
+            track_dict = self._track_to_dict(track)
+            raw_terms = [
+                *track_dict.get("keywords", []),
+                *track_dict.get("methods", []),
+                *track_dict.get("venues", []),
+            ]
+            terms = sorted({str(term).strip().lower() for term in raw_terms if str(term).strip()})
+
+            stmt = select(PaperModel).where(PaperModel.deleted_at.is_(None))
+            if terms:
+                term_filters = []
+                for term in terms:
+                    like = f"%{term}%"
+                    term_filters.extend(
+                        [
+                            func.lower(func.coalesce(PaperModel.title, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.abstract, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.venue, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.keywords_json, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.fields_of_study_json, "")).like(
+                                like
+                            ),
+                        ]
+                    )
+                stmt = stmt.where(or_(*term_filters))
+
+            feedback_rows = (
+                session.execute(
+                    select(PaperFeedbackModel)
+                    .where(
+                        PaperFeedbackModel.user_id == user_id,
+                        PaperFeedbackModel.track_id == int(track_id),
+                        PaperFeedbackModel.action.in_(["save", "like", "dislike", "skip"]),
+                    )
+                    .order_by(desc(PaperFeedbackModel.ts), desc(PaperFeedbackModel.id))
+                )
+                .scalars()
+                .all()
+            )
+
+            feedback_candidate_ids = {
+                int(row.canonical_paper_id or row.paper_ref_id or 0)
+                for row in feedback_rows
+                if int(row.canonical_paper_id or row.paper_ref_id or 0) > 0
+            }
+
+            fetch_cap = max(200, (int(offset) + int(limit)) * 8)
+            candidates = (
+                session.execute(
+                    stmt.order_by(desc(PaperModel.created_at), desc(PaperModel.id)).limit(fetch_cap)
+                )
+                .scalars()
+                .all()
+            )
+
+            if feedback_candidate_ids:
+                existing_ids = {int(p.id) for p in candidates}
+                missing_ids = sorted(feedback_candidate_ids - existing_ids)
+                if missing_ids:
+                    extra = (
+                        session.execute(
+                            select(PaperModel)
+                            .where(PaperModel.id.in_(missing_ids), PaperModel.deleted_at.is_(None))
+                            .order_by(desc(PaperModel.created_at), desc(PaperModel.id))
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    candidates.extend(extra)
+
+            if not candidates:
+                return {"items": [], "total": 0}
+
+            candidate_ids = [int(p.id) for p in candidates]
+
+            feedback_by_paper: Dict[int, PaperFeedbackModel] = {}
+            feedback_summary_by_paper: Dict[int, Dict[str, int]] = {}
+            for row in feedback_rows:
+                pid = int(row.canonical_paper_id or row.paper_ref_id or 0)
+                if pid <= 0:
+                    continue
+                action = str(row.action or "").strip().lower()
+                if action:
+                    action_counter = feedback_summary_by_paper.setdefault(pid, {})
+                    action_counter[action] = action_counter.get(action, 0) + 1
+                if pid not in feedback_by_paper:
+                    feedback_by_paper[pid] = row
+
+            status_by_paper = {
+                int(row.paper_id): row
+                for row in session.execute(
+                    select(PaperReadingStatusModel).where(
+                        PaperReadingStatusModel.user_id == user_id,
+                        PaperReadingStatusModel.paper_id.in_(candidate_ids),
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+            latest_judge_by_paper: Dict[int, PaperJudgeScoreModel] = {}
+            judge_rows = (
+                session.execute(
+                    select(PaperJudgeScoreModel)
+                    .where(PaperJudgeScoreModel.paper_id.in_(candidate_ids))
+                    .order_by(desc(PaperJudgeScoreModel.scored_at), desc(PaperJudgeScoreModel.id))
+                )
+                .scalars()
+                .all()
+            )
+            for judge in judge_rows:
+                pid = int(judge.paper_id or 0)
+                if pid > 0 and pid not in latest_judge_by_paper:
+                    latest_judge_by_paper[pid] = judge
+
+            scored_rows: List[Dict[str, Any]] = []
+            for paper in candidates:
+                pid = int(paper.id)
+                text_blob = " ".join(
+                    [
+                        str(paper.title or ""),
+                        str(paper.abstract or ""),
+                        str(paper.venue or ""),
+                        " ".join(str(x) for x in (paper.get_keywords() or [])),
+                        " ".join(str(x) for x in (paper.get_fields_of_study() or [])),
+                    ]
+                ).lower()
+
+                matched_terms = [term for term in terms if term and term in text_blob]
+                keyword_score = float(len(matched_terms))
+
+                latest_feedback = feedback_by_paper.get(pid)
+                latest_feedback_action = (
+                    str(latest_feedback.action or "").strip().lower() if latest_feedback else ""
+                )
+                feedback_boost = {
+                    "save": 3.0,
+                    "like": 2.0,
+                    "skip": -1.0,
+                    "dislike": -4.0,
+                }.get(latest_feedback_action, 0.0)
+
+                citation_score = min(float(paper.citation_count or 0) / 200.0, 2.0)
+                judge_row = latest_judge_by_paper.get(pid)
+                judge_score = float(judge_row.overall or 0.0) if judge_row else 0.0
+
+                if terms and keyword_score <= 0 and abs(feedback_boost) < 1e-6:
+                    continue
+
+                feed_score = (
+                    keyword_score * 2.5 + feedback_boost + citation_score + judge_score * 0.3
+                )
+                scored_rows.append(
+                    {
+                        "paper": self._paper_to_dict(paper),
+                        "latest_judge": (
+                            self._judge_score_to_dict(latest_judge_by_paper[pid])
+                            if pid in latest_judge_by_paper
+                            else None
+                        ),
+                        "reading_status": (
+                            self._reading_status_to_dict(status_by_paper[pid])
+                            if pid in status_by_paper
+                            else None
+                        ),
+                        "latest_feedback_action": latest_feedback_action or None,
+                        "feedback_summary": feedback_summary_by_paper.get(pid, {}),
+                        "matched_terms": matched_terms,
+                        "keyword_score": keyword_score,
+                        "feed_score": round(feed_score, 4),
+                    }
+                )
+
+            scored_rows.sort(
+                key=lambda row: (
+                    float(row.get("feed_score") or 0.0),
+                    float(((row.get("latest_judge") or {}).get("overall") or 0.0)),
+                    str(((row.get("paper") or {}).get("created_at") or "")),
+                ),
+                reverse=True,
+            )
+
+            total = len(scored_rows)
+            start = max(0, int(offset))
+            end = start + max(1, int(limit))
+            return {"items": scored_rows[start:end], "total": total}
 
     def ingest_repo_enrichment_rows(
         self,

@@ -820,6 +820,15 @@ class SavedPapersResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class TrackFeedResponse(BaseModel):
+    user_id: str
+    track_id: int
+    total: int
+    limit: int
+    offset: int
+    items: List[Dict[str, Any]]
+
+
 class PaperDetailResponse(BaseModel):
     detail: Dict[str, Any]
 
@@ -846,11 +855,44 @@ def update_paper_status(paper_id: str, req: PaperReadingStatusRequest):
 @router.get("/research/papers/saved", response_model=SavedPapersResponse)
 def list_saved_papers(
     user_id: str = "default",
+    track_id: Optional[int] = None,
     sort_by: str = Query("saved_at"),
     limit: int = Query(200, ge=1, le=1000),
 ):
-    items = _research_store.list_saved_papers(user_id=user_id, sort_by=sort_by, limit=limit)
+    items = _research_store.list_saved_papers(
+        user_id=user_id,
+        track_id=track_id,
+        sort_by=sort_by,
+        limit=limit,
+    )
     return SavedPapersResponse(user_id=user_id, items=items)
+
+
+@router.get("/research/tracks/{track_id}/feed", response_model=TrackFeedResponse)
+def get_track_feed(
+    track_id: int,
+    user_id: str = "default",
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    track = _research_store.get_track(user_id=user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    payload = _research_store.list_track_feed(
+        user_id=user_id,
+        track_id=track_id,
+        limit=limit,
+        offset=offset,
+    )
+    return TrackFeedResponse(
+        user_id=user_id,
+        track_id=track_id,
+        total=int(payload.get("total") or 0),
+        limit=limit,
+        offset=offset,
+        items=payload.get("items") or [],
+    )
 
 
 @router.get("/research/papers/{paper_id}", response_model=PaperDetailResponse)
