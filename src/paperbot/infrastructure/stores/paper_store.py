@@ -719,10 +719,14 @@ class PaperStore:
 
         if USE_CANONICAL_FK:
             return self._get_user_library_canonical(
-                user_id, session_provider=self._provider,
-                track_id=track_id, actions=actions,
-                sort_by=sort_by, sort_order=sort_order,
-                limit=limit, offset=offset,
+                user_id,
+                session_provider=self._provider,
+                track_id=track_id,
+                actions=actions,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+                offset=offset,
             )
 
         with self._provider.session() as session:
@@ -907,6 +911,37 @@ class PaperStore:
             result = session.execute(stmt)
             session.commit()
             return result.rowcount > 0
+
+    def get_latest_judge_scores(self, paper_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Fetch latest judge score per paper id."""
+        ids = sorted({int(pid) for pid in paper_ids if int(pid) > 0})
+        if not ids:
+            return {}
+
+        with self._provider.session() as session:
+            rows = (
+                session.execute(
+                    select(PaperJudgeScoreModel)
+                    .where(PaperJudgeScoreModel.paper_id.in_(ids))
+                    .order_by(desc(PaperJudgeScoreModel.scored_at), desc(PaperJudgeScoreModel.id))
+                )
+                .scalars()
+                .all()
+            )
+
+            latest: Dict[int, Dict[str, Any]] = {}
+            for row in rows:
+                pid = int(row.paper_id)
+                if pid in latest:
+                    continue
+                latest[pid] = {
+                    "overall": float(row.overall or 0.0),
+                    "recommendation": str(row.recommendation or ""),
+                    "one_line_summary": str(row.one_line_summary or ""),
+                    "judge_model": str(row.judge_model or ""),
+                    "scored_at": row.scored_at.isoformat() if row.scored_at else None,
+                }
+            return latest
 
     def create_harvest_run(
         self,

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Check, ExternalLink, Heart, Loader2, Save, ThumbsDown } from "lucide-react"
 
 import { cn, safeHref } from "@/lib/utils"
@@ -16,6 +16,13 @@ export type Paper = {
   citation_count?: number
   authors?: string[]
   url?: string
+  latest_judge?: {
+    overall?: number
+    recommendation?: string
+    one_line_summary?: string
+    judge_model?: string
+  }
+  is_saved?: boolean
 }
 
 interface PaperCardProps {
@@ -39,7 +46,11 @@ export function PaperCard({
   isLoading = false,
   className,
 }: PaperCardProps) {
-  const [isSaved, setIsSaved] = useState(false)
+  const [isSaved, setIsSaved] = useState(Boolean(paper.is_saved))
+
+  useEffect(() => {
+    setIsSaved(Boolean(paper.is_saved))
+  }, [paper.is_saved])
   const [isLiked, setIsLiked] = useState(false)
   const [isDisliked, setIsDisliked] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -47,6 +58,9 @@ export function PaperCard({
   const authorText = paper.authors?.slice(0, 3).join(", ") || "Unknown authors"
   const hasMoreAuthors = (paper.authors?.length || 0) > 3
   const safeUrl = safeHref(paper.url)
+  const judge = paper.latest_judge
+  const judgeOverall = Number(judge?.overall || 0)
+  const judgeRec = String(judge?.recommendation || "").replace(/_/g, " ")
 
   const handleSave = async () => {
     if (!onSave || isSaved) return
@@ -154,6 +168,19 @@ export function PaperCard({
               {reason}
             </Badge>
           ))}
+        </div>
+      )}
+
+      {judge && judgeOverall > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          <Badge variant="secondary" className="text-xs">
+            Judge {judgeOverall.toFixed(1)}
+          </Badge>
+          {judgeRec && (
+            <Badge variant="outline" className="text-xs capitalize">
+              {judgeRec}
+            </Badge>
+          )}
         </div>
       )}
 

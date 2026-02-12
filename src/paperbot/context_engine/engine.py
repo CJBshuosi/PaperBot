@@ -358,6 +358,7 @@ class ContextEngine:
         *,
         research_store: Optional[SqlAlchemyResearchStore] = None,
         memory_store: Optional[SqlAlchemyMemoryStore] = None,
+        paper_store: Optional[Any] = None,
         paper_searcher: Optional[Any] = None,
         search_service: Optional[Any] = None,
         track_router: Optional[TrackRouter] = None,
@@ -365,6 +366,7 @@ class ContextEngine:
     ):
         self.research_store = research_store or SqlAlchemyResearchStore()
         self.memory_store = memory_store or SqlAlchemyMemoryStore()
+        self.paper_store = paper_store
         self.paper_searcher = paper_searcher
         self.search_service = search_service
         self.config = config or ContextEngineConfig()
@@ -373,6 +375,39 @@ class ContextEngine:
             memory_store=self.memory_store,
             config=self.config.track_router,
         )
+
+    def _attach_latest_judge(self, papers: List[Dict[str, Any]]) -> None:
+        ids: List[int] = []
+        for paper in papers:
+            pid = str(paper.get("paper_id") or "").strip()
+            if pid.isdigit():
+                ids.append(int(pid))
+        if not ids:
+            return
+
+        if self.paper_store is None:
+            from paperbot.infrastructure.stores.paper_store import PaperStore
+
+            self.paper_store = PaperStore(auto_create_schema=False)
+
+        judge_map = self.paper_store.get_latest_judge_scores(ids)
+        for paper in papers:
+            pid = str(paper.get("paper_id") or "").strip()
+            if pid.isdigit() and int(pid) in judge_map:
+                paper["latest_judge"] = judge_map[int(pid)]
+
+    @staticmethod
+    def _attach_feedback_flags(
+        papers: List[Dict[str, Any]], *, saved_ids: set[str], liked_ids: set[str]
+    ) -> None:
+        for paper in papers:
+            pid = str(paper.get("paper_id") or "").strip()
+            if not pid:
+                continue
+            if pid in saved_ids:
+                paper["is_saved"] = True
+            if pid in liked_ids:
+                paper["is_liked"] = True
 
     async def build_context_pack(
         self,
@@ -556,7 +591,9 @@ class ContextEngine:
                         f"Searching papers with query='{merged_query}', limit={fetch_limit}",
                         file=LogFiles.HARVEST,
                     )
-                    resp = await asyncio.to_thread(searcher.search_papers, merged_query, fetch_limit)
+                    resp = await asyncio.to_thread(
+                        searcher.search_papers, merged_query, fetch_limit
+                    )
                     papers_count = len(getattr(resp, "papers", []) or [])
                     Logger.info(f"Search returned {papers_count} papers", file=LogFiles.HARVEST)
 
@@ -597,6 +634,20 @@ class ContextEngine:
                         seen_titles.add(tkey)
                     filtered.append(p)
 
+                try:
+                    self._attach_latest_judge(filtered)
+                except Exception as exc:
+                    Logger.warning(
+                        f"Failed to attach latest judge scores: {exc}",
+                        file=LogFiles.HARVEST,
+                    )
+
+                self._attach_feedback_flags(
+                    filtered,
+                    saved_ids=set(saved_ids),
+                    liked_ids=set(liked_ids),
+                )
+
                 for p in filtered:
                     pid = str(p.get("paper_id") or "").strip()
                     if not pid:
@@ -627,6 +678,7 @@ class ContextEngine:
                 )
             except Exception as e:
                 import traceback
+
                 tb = traceback.format_exc()
                 Logger.error(f"Error fetching papers: {e}\n{tb}", file=LogFiles.HARVEST)
                 papers = []
@@ -678,4 +730,21 @@ class ContextEngine:
         }
 
     async def close(self) -> None:
+        if self.search_service is not None:
+            close_fn = getattr(self.search_service, "close", None)
+            if callable(close_fn):
+                try:
+                    maybe_coro = close_fn()
+                    if asyncio.iscoroutine(maybe_coro):
+                        await maybe_coro
+                except Exception:
+                    pass
+
+        if self.paper_store is not None:
+            close_fn = getattr(self.paper_store, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
         return None

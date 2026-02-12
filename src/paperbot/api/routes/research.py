@@ -935,6 +935,7 @@ async def build_context(req: ContextRequest):
     engine = ContextEngine(
         research_store=_research_store,
         memory_store=_memory_store,
+        paper_store=_get_paper_store(),
         search_service=search_service,
         track_router=_track_router,
         config=ContextEngineConfig(
