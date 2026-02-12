@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from paperbot.infrastructure.stores.models import Base, PipelineSessionModel
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
@@ -83,6 +83,23 @@ class PipelineSessionStore:
             ).scalar_one_or_none()
             return self._to_dict(row) if row else None
 
+    def list_sessions(
+        self,
+        *,
+        workflow: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[Dict[str, Any]]:
+        with self._provider.session() as session:
+            stmt = select(PipelineSessionModel)
+            if workflow:
+                stmt = stmt.where(PipelineSessionModel.workflow == str(workflow)[:64])
+            if status:
+                stmt = stmt.where(PipelineSessionModel.status == str(status)[:32])
+            stmt = stmt.order_by(desc(PipelineSessionModel.updated_at)).limit(max(1, int(limit)))
+            rows = session.execute(stmt).scalars().all()
+            return [self._to_dict(row) for row in rows]
+
     def save_checkpoint(
         self,
         *,
@@ -153,6 +170,44 @@ class PipelineSessionStore:
             state["error"] = str(error or "")
             row.status = "failed"
             row.state_json = json.dumps(state, ensure_ascii=False)
+            row.updated_at = _utcnow()
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return self._to_dict(row)
+
+    def update_status(
+        self,
+        *,
+        session_id: str,
+        status: str,
+        checkpoint: Optional[str] = None,
+        state_patch: Optional[Dict[str, Any]] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        sid = (session_id or "").strip()
+        if not sid:
+            return None
+
+        with self._provider.session() as session:
+            row = session.execute(
+                select(PipelineSessionModel).where(PipelineSessionModel.session_id == sid)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+
+            row.status = (status or row.status or "running")[:32]
+            if checkpoint:
+                row.checkpoint = str(checkpoint)[:64]
+
+            if state_patch:
+                merged = _safe_json_dict(row.state_json)
+                merged.update(state_patch)
+                row.state_json = json.dumps(merged, ensure_ascii=False)
+
+            if result is not None:
+                row.result_json = json.dumps(result, ensure_ascii=False)
+
             row.updated_at = _utcnow()
             session.add(row)
             session.commit()

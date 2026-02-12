@@ -4,6 +4,7 @@ import Link from "next/link"
 import { BookOpen, Library, LayoutPanelLeft, SearchCheck, Settings2 } from "lucide-react"
 
 import { SplitPanels } from "@/components/layout/SplitPanels"
+import { ApprovalQueuePanel } from "@/components/research/ApprovalQueuePanel"
 import ResearchPageNew from "@/components/research/ResearchPageNew"
 import SavedPapersList from "@/components/research/SavedPapersList"
 import { Badge } from "@/components/ui/badge"
@@ -53,6 +54,7 @@ function RailPanel() {
 function DetailPanel() {
   return (
     <div className="p-3 space-y-3">
+      <ApprovalQueuePanel />
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">

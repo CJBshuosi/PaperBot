@@ -46,6 +46,8 @@ from paperbot.utils.text_processing import extract_github_url
 router = APIRouter()
 _paper_search_service: Optional[PaperSearchService] = None
 _pipeline_session_store = PipelineSessionStore()
+# Test compatibility hook: unit tests can monkeypatch this to inject a fake workflow.
+PapersCoolTopicSearchWorkflow = None
 
 _ALLOWED_REPORT_BASE = os.path.abspath("./reports")
 
@@ -80,6 +82,38 @@ def _get_paper_search_service() -> PaperSearchService:
     if _paper_search_service is None:
         _paper_search_service = make_default_search_service(registry=PaperStore())
     return _paper_search_service
+
+
+async def _run_topic_search(
+    *,
+    queries: List[str],
+    sources: List[str],
+    branches: List[str],
+    top_k_per_query: int,
+    show_per_branch: int,
+    min_score: float,
+) -> Dict[str, Any]:
+    if callable(PapersCoolTopicSearchWorkflow):
+        workflow = PapersCoolTopicSearchWorkflow()
+        return workflow.run(
+            queries=queries,
+            sources=sources,
+            branches=branches,
+            top_k_per_query=top_k_per_query,
+            show_per_branch=show_per_branch,
+            min_score=min_score,
+        )
+
+    return await run_unified_topic_search(
+        queries=queries,
+        sources=sources,
+        branches=branches,
+        top_k_per_query=top_k_per_query,
+        show_per_branch=show_per_branch,
+        min_score=min_score,
+        search_service=_get_paper_search_service(),
+        persist=False,
+    )
 
 
 class PapersCoolSearchRequest(BaseModel):
@@ -127,6 +161,10 @@ class DailyPaperRequest(BaseModel):
         default=None, description="Resume token for long-running pipeline"
     )
     resume: bool = Field(False, description="Resume from latest persisted checkpoint")
+    require_approval: bool = Field(
+        False,
+        description="Pause before registry ingest and require manual approve/reject",
+    )
 
 
 class DailyPaperResponse(BaseModel):
@@ -139,6 +177,14 @@ class DailyPaperResponse(BaseModel):
 
 class PipelineSessionResponse(BaseModel):
     session: Dict[str, Any]
+
+
+class ApprovalQueueResponse(BaseModel):
+    items: List[Dict[str, Any]]
+
+
+class ApprovalDecisionRequest(BaseModel):
+    reason: str = ""
 
 
 class PapersCoolAnalyzeRequest(BaseModel):
@@ -175,15 +221,13 @@ async def topic_search(req: PapersCoolSearchRequest):
         raise HTTPException(status_code=400, detail="queries is required")
 
     try:
-        result = await run_unified_topic_search(
+        result = await _run_topic_search(
             queries=cleaned_queries,
             sources=req.sources,
             branches=req.branches,
             top_k_per_query=req.top_k_per_query,
             show_per_branch=req.show_per_branch,
             min_score=req.min_score,
-            search_service=_get_paper_search_service(),
-            persist=False,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"topic search failed: {exc}") from exc
@@ -231,6 +275,29 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         yield StreamEvent(type="result", data=payload)
         return
 
+    if (
+        req.resume
+        and session.get("status") == "pending_approval"
+        and isinstance(session.get("result"), dict)
+    ):
+        cached_result = dict(session.get("result") or {})
+        payload = {
+            "report": cached_result.get("report") or {},
+            "markdown": cached_result.get("markdown") or "",
+            "markdown_path": cached_result.get("markdown_path"),
+            "json_path": cached_result.get("json_path"),
+            "notify_result": cached_result.get("notify_result"),
+            "session_id": session_id,
+            "resumed": True,
+            "approval_status": "pending_approval",
+        }
+        yield StreamEvent(
+            type="approval_required",
+            data={"phase": "approval", "session_id": session_id, "status": "pending_approval"},
+        )
+        yield StreamEvent(type="result", data=payload)
+        return
+
     # Phase 1 — Search
     effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
     if req.resume and isinstance(session_state.get("search_result"), dict):
@@ -243,15 +310,13 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         yield StreamEvent(
             type="progress", data={"phase": "search", "message": "Searching papers..."}
         )
-        search_result = await run_unified_topic_search(
+        search_result = await _run_topic_search(
             queries=cleaned_queries,
             sources=req.sources,
             branches=req.branches,
             top_k_per_query=effective_top_k,
             show_per_branch=req.show_per_branch,
             min_score=req.min_score,
-            search_service=_get_paper_search_service(),
-            persist=False,
         )
         _pipeline_session_store.save_checkpoint(
             session_id=session_id,
@@ -548,6 +613,36 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         state={"search_result": search_result, "report": report},
     )
 
+    if req.require_approval:
+        preview_markdown = render_daily_paper_markdown(report)
+        pending_payload = {
+            "report": report,
+            "markdown": preview_markdown,
+            "markdown_path": None,
+            "json_path": None,
+            "notify_result": None,
+            "session_id": session_id,
+            "resumed": False,
+            "approval_status": "pending_approval",
+        }
+        _pipeline_session_store.update_status(
+            session_id=session_id,
+            status="pending_approval",
+            checkpoint="approval_pending",
+            state_patch={"search_result": search_result, "report": report},
+            result=pending_payload,
+        )
+        yield StreamEvent(
+            type="approval_required",
+            data={
+                "phase": "approval",
+                "session_id": session_id,
+                "status": "pending_approval",
+            },
+        )
+        yield StreamEvent(type="result", data=pending_payload)
+        return
+
     # Phase 5 — Persist + Notify
     yield StreamEvent(type="progress", data={"phase": "save", "message": "Saving to registry..."})
     try:
@@ -602,6 +697,7 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         "notify_result": notify_result,
         "session_id": session_id,
         "resumed": False,
+        "approval_status": "approved",
     }
     _pipeline_session_store.save_result(
         session_id=session_id, result=result_payload, status="completed"
@@ -616,8 +712,14 @@ async def generate_daily_report(req: DailyPaperRequest):
     if not cleaned_queries:
         raise HTTPException(status_code=400, detail="queries is required")
 
-    # Fast sync path when no LLM/Judge — avoids SSE overhead
-    if not req.enable_llm_analysis and not req.enable_judge:
+    # Fast sync path when no long-running step is requested — avoids SSE overhead
+    if (
+        not req.enable_llm_analysis
+        and not req.enable_judge
+        and not req.require_approval
+        and not req.resume
+        and not req.session_id
+    ):
         return await _sync_daily_report(req, cleaned_queries)
 
     # SSE streaming path for long-running operations
@@ -636,19 +738,161 @@ async def get_daily_session(session_id: str):
     return PipelineSessionResponse(session=session)
 
 
+@router.get("/research/paperscool/approvals", response_model=ApprovalQueueResponse)
+async def list_pending_approvals(limit: int = 20):
+    rows = _pipeline_session_store.list_sessions(
+        workflow="paperscool_daily",
+        status="pending_approval",
+        limit=max(1, min(int(limit), 200)),
+    )
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        report = result.get("report") if isinstance(result.get("report"), dict) else {}
+        stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
+        items.append(
+            {
+                "session_id": row.get("session_id"),
+                "status": row.get("status"),
+                "checkpoint": row.get("checkpoint"),
+                "updated_at": row.get("updated_at"),
+                "title": report.get("title") or "DailyPaper Digest",
+                "query_count": int(stats.get("query_count") or 0),
+                "unique_items": int(stats.get("unique_items") or 0),
+            }
+        )
+    return ApprovalQueueResponse(items=items)
+
+
+def _finalize_approved_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    payload = session.get("payload") if isinstance(session.get("payload"), dict) else {}
+    state = session.get("state") if isinstance(session.get("state"), dict) else {}
+    result = session.get("result") if isinstance(session.get("result"), dict) else {}
+
+    report = state.get("report") if isinstance(state.get("report"), dict) else {}
+    if not report:
+        report = result.get("report") if isinstance(result.get("report"), dict) else {}
+    if not report:
+        raise HTTPException(status_code=400, detail="session has no report to approve")
+
+    try:
+        report["registry_ingest"] = ingest_daily_report_to_registry(report)
+    except Exception as exc:
+        report["registry_ingest"] = {"error": str(exc)}
+
+    if bool(payload.get("enable_judge")):
+        try:
+            report["judge_registry_ingest"] = persist_judge_scores_to_registry(report)
+        except Exception as exc:
+            report["judge_registry_ingest"] = {"error": str(exc)}
+
+    _enqueue_repo_enrichment_async(report)
+
+    markdown = render_daily_paper_markdown(report)
+    markdown_path = None
+    json_path = None
+    notify_result: Optional[Dict[str, Any]] = None
+
+    if bool(payload.get("save")):
+        reporter = DailyPaperReporter(
+            output_dir=_sanitize_output_dir(
+                str(payload.get("output_dir") or "./reports/dailypaper")
+            )
+        )
+        artifacts = reporter.write(
+            report=report,
+            markdown=markdown,
+            formats=normalize_output_formats(payload.get("formats") or ["both"]),
+            slug=payload.get("title") or report.get("title") or "DailyPaper Digest",
+        )
+        markdown_path = artifacts.markdown_path
+        json_path = artifacts.json_path
+
+    if bool(payload.get("notify")):
+        notify_service = DailyPushService.from_env()
+        notify_result = notify_service.push_dailypaper(
+            report=report,
+            markdown=markdown,
+            markdown_path=markdown_path,
+            json_path=json_path,
+            channels_override=payload.get("notify_channels") or None,
+            email_to_override=_validate_email_list(payload.get("notify_email_to") or []) or None,
+        )
+
+    return {
+        "report": report,
+        "markdown": markdown,
+        "markdown_path": markdown_path,
+        "json_path": json_path,
+        "notify_result": notify_result,
+        "session_id": session.get("session_id"),
+        "resumed": False,
+        "approval_status": "approved",
+    }
+
+
+@router.post(
+    "/research/paperscool/sessions/{session_id}/approve", response_model=PipelineSessionResponse
+)
+async def approve_daily_session(session_id: str):
+    session = _pipeline_session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.get("status") != "pending_approval":
+        raise HTTPException(status_code=409, detail="session is not pending approval")
+
+    final_payload = _finalize_approved_session(session)
+    _pipeline_session_store.update_status(
+        session_id=session_id,
+        status="completed",
+        checkpoint="result",
+        state_patch={"approved_at": True},
+        result=final_payload,
+    )
+    updated = _pipeline_session_store.get_session(session_id)
+    return PipelineSessionResponse(session=updated or {})
+
+
+@router.post(
+    "/research/paperscool/sessions/{session_id}/reject", response_model=PipelineSessionResponse
+)
+async def reject_daily_session(session_id: str, req: ApprovalDecisionRequest):
+    session = _pipeline_session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.get("status") != "pending_approval":
+        raise HTTPException(status_code=409, detail="session is not pending approval")
+
+    current_result = session.get("result") if isinstance(session.get("result"), dict) else {}
+    rejected_result = {
+        **current_result,
+        "session_id": session_id,
+        "approval_status": "rejected",
+        "rejected_reason": req.reason or "",
+    }
+
+    _pipeline_session_store.update_status(
+        session_id=session_id,
+        status="rejected",
+        checkpoint="approval_rejected",
+        state_patch={"reject_reason": req.reason or ""},
+        result=rejected_result,
+    )
+    updated = _pipeline_session_store.get_session(session_id)
+    return PipelineSessionResponse(session=updated or {})
+
+
 async def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
     """Original synchronous path for fast requests (no LLM/Judge)."""
     effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
     try:
-        search_result = await run_unified_topic_search(
+        search_result = await _run_topic_search(
             queries=cleaned_queries,
             sources=req.sources,
             branches=req.branches,
             top_k_per_query=effective_top_k,
             show_per_branch=req.show_per_branch,
             min_score=req.min_score,
-            search_service=_get_paper_search_service(),
-            persist=False,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"daily search failed: {exc}") from exc
