@@ -14,6 +14,12 @@ from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
 from paperbot.utils.logging_config import Logger, LogFiles
 
+# Optional: PaperSearchService for unified search
+try:
+    from paperbot.application.services.paper_search_service import PaperSearchService
+except ImportError:  # pragma: no cover
+    PaperSearchService = None  # type: ignore
+
 _TOKEN_RX = re.compile(r"[a-zA-Z0-9_+.-]+")
 
 
@@ -353,12 +359,14 @@ class ContextEngine:
         research_store: Optional[SqlAlchemyResearchStore] = None,
         memory_store: Optional[SqlAlchemyMemoryStore] = None,
         paper_searcher: Optional[Any] = None,
+        search_service: Optional[Any] = None,
         track_router: Optional[TrackRouter] = None,
         config: Optional[ContextEngineConfig] = None,
     ):
         self.research_store = research_store or SqlAlchemyResearchStore()
         self.memory_store = memory_store or SqlAlchemyMemoryStore()
         self.paper_searcher = paper_searcher
+        self.search_service = search_service
         self.config = config or ContextEngineConfig()
         self.track_router = track_router or TrackRouter(
             research_store=self.research_store,
@@ -510,44 +518,70 @@ class ContextEngine:
         )
         if not self.config.offline and self.config.paper_limit > 0:
             try:
-                searcher = self.paper_searcher
-                if searcher is None:
-                    from paperbot.utils.search import SemanticScholarSearch  # local import
-
-                    searcher = SemanticScholarSearch()
-                    Logger.info("Initialized SemanticScholarSearch", file=LogFiles.HARVEST)
-
                 fetch_limit = max(30, int(self.config.paper_limit) * 3)
-                Logger.info(
-                    f"Searching papers with query='{merged_query}', limit={fetch_limit}",
-                    file=LogFiles.HARVEST,
-                )
-                resp = await asyncio.to_thread(searcher.search_papers, merged_query, fetch_limit)
-                papers_count = len(getattr(resp, "papers", []) or [])
-                Logger.info(f"Search returned {papers_count} papers", file=LogFiles.HARVEST)
 
-                raw: List[Dict[str, Any]] = []
-                for p in getattr(resp, "papers", []) or []:
-                    authors = []
-                    for a in getattr(p, "authors", []) or []:
-                        if isinstance(a, dict):
-                            name = str(a.get("name") or "").strip()
-                            if name:
-                                authors.append(name)
-                    raw.append(
-                        PaperMeta(
-                            paper_id=str(getattr(p, "paper_id", "") or ""),
-                            title=str(getattr(p, "title", "") or ""),
-                            abstract=getattr(p, "abstract", None),
-                            year=getattr(p, "year", None),
-                            venue=getattr(p, "venue", None),
-                            citation_count=int(getattr(p, "citation_count", 0) or 0),
-                            authors=authors,
-                            url=getattr(p, "url", None),
-                            fields_of_study=list(getattr(p, "fields_of_study", []) or []),
-                            publication_date=getattr(p, "publication_date", None),
-                        ).to_dict()
+                # Prefer PaperSearchService if available
+                if self.search_service is not None:
+                    Logger.info(
+                        f"Using PaperSearchService for query='{merged_query}'",
+                        file=LogFiles.HARVEST,
                     )
+                    search_result = await self.search_service.search(
+                        merged_query,
+                        sources=["semantic_scholar"],
+                        max_results=fetch_limit,
+                        persist=True,
+                    )
+                    raw = [p.to_dict() for p in search_result.papers]
+                    # Inject paper_id from canonical_id or first identity
+                    for p_dict, p_obj in zip(raw, search_result.papers):
+                        pid = str(p_obj.canonical_id or "")
+                        if not pid:
+                            pid = p_obj.get_identity("semantic_scholar") or ""
+                        p_dict["paper_id"] = pid
+                    Logger.info(
+                        f"PaperSearchService returned {len(raw)} papers",
+                        file=LogFiles.HARVEST,
+                    )
+                else:
+                    # Legacy path: direct SemanticScholarSearch
+                    searcher = self.paper_searcher
+                    if searcher is None:
+                        from paperbot.utils.search import SemanticScholarSearch
+
+                        searcher = SemanticScholarSearch()
+                        Logger.info("Initialized SemanticScholarSearch", file=LogFiles.HARVEST)
+
+                    Logger.info(
+                        f"Searching papers with query='{merged_query}', limit={fetch_limit}",
+                        file=LogFiles.HARVEST,
+                    )
+                    resp = await asyncio.to_thread(searcher.search_papers, merged_query, fetch_limit)
+                    papers_count = len(getattr(resp, "papers", []) or [])
+                    Logger.info(f"Search returned {papers_count} papers", file=LogFiles.HARVEST)
+
+                    raw = []
+                    for p in getattr(resp, "papers", []) or []:
+                        authors = []
+                        for a in getattr(p, "authors", []) or []:
+                            if isinstance(a, dict):
+                                name = str(a.get("name") or "").strip()
+                                if name:
+                                    authors.append(name)
+                        raw.append(
+                            PaperMeta(
+                                paper_id=str(getattr(p, "paper_id", "") or ""),
+                                title=str(getattr(p, "title", "") or ""),
+                                abstract=getattr(p, "abstract", None),
+                                year=getattr(p, "year", None),
+                                venue=getattr(p, "venue", None),
+                                citation_count=int(getattr(p, "citation_count", 0) or 0),
+                                authors=authors,
+                                url=getattr(p, "url", None),
+                                fields_of_study=list(getattr(p, "fields_of_study", []) or []),
+                                publication_date=getattr(p, "publication_date", None),
+                            ).to_dict()
+                        )
 
                 # Feedback filtering + dedup
                 seen_titles: set[str] = set()

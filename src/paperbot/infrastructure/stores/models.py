@@ -466,6 +466,11 @@ class PaperFeedbackModel(Base):
     )
     action: Mapped[str] = mapped_column(String(16), index=True)  # like/dislike/skip/save/cite
 
+    # Canonical FK (dual-write migration — will replace paper_id + paper_ref_id)
+    canonical_paper_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+
     weight: Mapped[float] = mapped_column(Float, default=0.0)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -744,6 +749,7 @@ class PaperModel(Base):
     judge_scores = relationship("PaperJudgeScoreModel", back_populates="paper")
     reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
     repo_rows = relationship("PaperRepoModel", back_populates="paper")
+    identifiers = relationship("PaperIdentifierModel", back_populates="paper", cascade="all, delete-orphan")
 
     def get_authors(self) -> list:
         try:
@@ -777,6 +783,25 @@ class PaperModel(Base):
 
     def set_sources(self, sources: list) -> None:
         self.sources_json = json.dumps(sources or [], ensure_ascii=False)
+
+
+class PaperIdentifierModel(Base):
+    """Maps (source, external_id) → papers.id for unified identity resolution."""
+
+    __tablename__ = "paper_identifiers"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_paper_identifiers_source_eid"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    external_id: Mapped[str] = mapped_column(String(256), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    paper = relationship("PaperModel", back_populates="identifiers")
 
 
 class HarvestRunModel(Base):
