@@ -32,9 +32,25 @@ def test_model_endpoint_crud_routes(tmp_path: Path, monkeypatch):
         assert created.status_code == 200
         endpoint_id = created.json()["item"]["id"]
 
+        created2 = client.post(
+            "/api/model-endpoints",
+            json={
+                "name": "AltProvider",
+                "vendor": "openai_compatible",
+                "base_url": "https://alt.example/v1",
+                "api_key_env": "ALT_API_KEY",
+                "models": ["alt/model-x"],
+                "task_types": ["default"],
+                "enabled": True,
+                "is_default": False,
+            },
+        )
+        assert created2.status_code == 200
+        endpoint2_id = created2.json()["item"]["id"]
+
         listed = client.get("/api/model-endpoints")
         assert listed.status_code == 200
-        assert len(listed.json()["items"]) == 1
+        assert len(listed.json()["items"]) == 2
 
         updated = client.patch(
             f"/api/model-endpoints/{endpoint_id}",
@@ -47,8 +63,23 @@ def test_model_endpoint_crud_routes(tmp_path: Path, monkeypatch):
         assert tested.status_code == 200
         assert tested.json()["ok"] is True
 
+        activated = client.post(f"/api/model-endpoints/{endpoint2_id}/activate")
+        assert activated.status_code == 200
+        assert activated.json()["item"]["id"] == endpoint2_id
+        assert activated.json()["item"]["is_default"] is True
+
+        listed_after_activate = client.get("/api/model-endpoints")
+        assert listed_after_activate.status_code == 200
+        items = listed_after_activate.json()["items"]
+        defaults = [item for item in items if item["is_default"]]
+        assert len(defaults) == 1
+        assert defaults[0]["id"] == endpoint2_id
+
         deleted = client.delete(f"/api/model-endpoints/{endpoint_id}")
         assert deleted.status_code == 200
+
+        deleted2 = client.delete(f"/api/model-endpoints/{endpoint2_id}")
+        assert deleted2.status_code == 200
 
         listed_again = client.get("/api/model-endpoints")
         assert listed_again.status_code == 200

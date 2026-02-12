@@ -73,6 +73,10 @@ class EndpointCapabilitiesResponse(BaseModel):
     task_types: List[str]
 
 
+class EndpointActivateResponse(BaseModel):
+    item: Dict[str, Any]
+
+
 def _build_model_config(endpoint: Dict[str, Any]) -> ModelConfig:
     models = [str(x).strip() for x in (endpoint.get("models") or []) if str(x).strip()]
     if not models:
@@ -128,6 +132,14 @@ def delete_model_endpoint(endpoint_id: int):
     if not ok:
         raise HTTPException(status_code=404, detail="model endpoint not found")
     return {"ok": True}
+
+
+@router.post("/model-endpoints/{endpoint_id}/activate", response_model=EndpointActivateResponse)
+def activate_model_endpoint(endpoint_id: int):
+    row = _store.activate_endpoint(endpoint_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="model endpoint not found")
+    return EndpointActivateResponse(item=row)
 
 
 @router.post("/model-endpoints/{endpoint_id}/test", response_model=EndpointTestResponse)
