@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from sqlalchemy import and_, desc, func, or_, select
 
@@ -56,8 +57,18 @@ def _anchor_level(score: float) -> str:
     return "background"
 
 
+def _safe_json_obj(text: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(text or "{}")
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {}
+
+
 class AnchorService:
-    """Discover anchor authors with intrinsic + track relevance scoring."""
+    """Discover anchor authors with intrinsic + relevance + network scoring."""
 
     def __init__(self, db_url: Optional[str] = None):
         self._provider = SessionProvider(db_url or get_db_url())
@@ -81,40 +92,17 @@ class AnchorService:
                 raise ValueError(f"track not found: {track_id}")
             keywords = _parse_keywords(track)
 
-            rows = session.execute(
-                select(
-                    AuthorModel,
-                    func.count(PaperAuthorModel.paper_id).label("paper_count"),
-                    func.sum(func.coalesce(PaperModel.citation_count, 0)).label("citation_sum"),
-                )
-                .join(PaperAuthorModel, PaperAuthorModel.author_id == AuthorModel.id)
-                .join(PaperModel, PaperModel.id == PaperAuthorModel.paper_id)
-                .where(
-                    or_(
-                        PaperModel.year.is_(None),
-                        and_(PaperModel.year >= year_from, PaperModel.year <= now_year),
-                    )
-                )
-                .group_by(AuthorModel.id)
-                .order_by(desc("citation_sum"), desc("paper_count"))
-                .limit(max(int(limit), 1) * 4)
-            ).all()
-
-            aggregates: list[_AuthorAggregate] = []
-            for author, paper_count, citation_sum in rows:
-                aggregates.append(
-                    _AuthorAggregate(
-                        author=author,
-                        paper_count=max(int(paper_count or 0), 0),
-                        citation_sum=max(int(citation_sum or 0), 0),
-                    )
-                )
-
+            aggregates = self._collect_author_aggregates(
+                session, year_from=year_from, now_year=now_year
+            )
             if not aggregates:
                 return []
 
+            aggregates = aggregates[: max(int(limit), 1) * 4]
+            citation_map = {int(item.author.id): int(item.citation_sum) for item in aggregates}
             max_paper_count = max(x.paper_count for x in aggregates) or 1
             max_citation_sum = max(x.citation_sum for x in aggregates) or 1
+            network_map = self._build_network_map(session, year_from=year_from, now_year=now_year)
 
             payload: list[dict] = []
             for item in aggregates:
@@ -189,9 +177,15 @@ class AnchorService:
                 )
 
                 relevance_score = 0.7 * keyword_match_rate + 0.3 * feedback_signal
-                network_score = 0.0
+                network_score = self._compute_network_score(
+                    author_id=int(item.author.id),
+                    network_map=network_map,
+                    citation_map=citation_map,
+                    max_citation_sum=max_citation_sum,
+                )
                 personalization_score = feedback_signal
-                anchor_score = 0.6 * intrinsic_score + 0.4 * relevance_score
+
+                anchor_score = 0.5 * intrinsic_score + 0.3 * relevance_score + 0.2 * network_score
                 level = _anchor_level(anchor_score)
 
                 item.author.anchor_score = float(round(anchor_score, 6))
@@ -227,6 +221,7 @@ class AnchorService:
                         "anchor_level": level,
                         "intrinsic_score": float(round(intrinsic_score, 4)),
                         "relevance_score": float(round(relevance_score, 4)),
+                        "network_score": float(round(network_score, 4)),
                         "paper_count": int(item.paper_count),
                         "citation_sum": int(item.citation_sum),
                         "keyword_match_rate": float(round(keyword_match_rate, 4)),
@@ -247,7 +242,154 @@ class AnchorService:
             session.commit()
 
         payload.sort(
-            key=lambda row: (row["anchor_score"], row["relevance_score"], row["paper_count"]),
+            key=lambda row: (
+                row["anchor_score"],
+                row["network_score"],
+                row["relevance_score"],
+                row["paper_count"],
+            ),
             reverse=True,
         )
         return payload[: max(int(limit), 1)]
+
+    def recompute_author_network_scores(self, *, window_years: int = 5) -> dict[str, int]:
+        now_year = datetime.utcnow().year
+        year_from = max(now_year - max(int(window_years), 1) + 1, 1970)
+
+        with self._provider.session() as session:
+            aggregates = self._collect_author_aggregates(
+                session, year_from=year_from, now_year=now_year
+            )
+            if not aggregates:
+                return {"authors": 0, "updated": 0}
+
+            citation_map = {int(item.author.id): int(item.citation_sum) for item in aggregates}
+            max_citation_sum = max((item.citation_sum for item in aggregates), default=1) or 1
+            network_map = self._build_network_map(session, year_from=year_from, now_year=now_year)
+
+            updated = 0
+            for item in aggregates:
+                author_id = int(item.author.id)
+                score = self._compute_network_score(
+                    author_id=author_id,
+                    network_map=network_map,
+                    citation_map=citation_map,
+                    max_citation_sum=max_citation_sum,
+                )
+                metadata = _safe_json_obj(item.author.metadata_json)
+                metadata["network_score"] = float(round(score, 6))
+                metadata["network_score_window_years"] = int(window_years)
+                metadata["network_score_updated_at"] = datetime.now(timezone.utc).isoformat()
+                item.author.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                updated += 1
+
+            session.commit()
+            return {"authors": len(aggregates), "updated": updated}
+
+    @staticmethod
+    def _collect_author_aggregates(
+        session,
+        *,
+        year_from: int,
+        now_year: int,
+    ) -> list[_AuthorAggregate]:
+        rows = session.execute(
+            select(
+                AuthorModel,
+                func.count(PaperAuthorModel.paper_id).label("paper_count"),
+                func.sum(func.coalesce(PaperModel.citation_count, 0)).label("citation_sum"),
+            )
+            .join(PaperAuthorModel, PaperAuthorModel.author_id == AuthorModel.id)
+            .join(PaperModel, PaperModel.id == PaperAuthorModel.paper_id)
+            .where(
+                or_(
+                    PaperModel.year.is_(None),
+                    and_(PaperModel.year >= year_from, PaperModel.year <= now_year),
+                )
+            )
+            .group_by(AuthorModel.id)
+            .order_by(desc("citation_sum"), desc("paper_count"))
+        ).all()
+
+        aggregates: list[_AuthorAggregate] = []
+        for author, paper_count, citation_sum in rows:
+            aggregates.append(
+                _AuthorAggregate(
+                    author=author,
+                    paper_count=max(int(paper_count or 0), 0),
+                    citation_sum=max(int(citation_sum or 0), 0),
+                )
+            )
+        return aggregates
+
+    @staticmethod
+    def _build_network_map(
+        session,
+        *,
+        year_from: int,
+        now_year: int,
+    ) -> dict[int, list[tuple[int, int]]]:
+        # Build coauthor graph via paper-level author co-occurrence.
+        paper_rows = session.execute(
+            select(PaperAuthorModel.paper_id, PaperAuthorModel.author_id)
+            .join(PaperModel, PaperModel.id == PaperAuthorModel.paper_id)
+            .where(
+                or_(
+                    PaperModel.year.is_(None),
+                    and_(PaperModel.year >= year_from, PaperModel.year <= now_year),
+                )
+            )
+        ).all()
+
+        authors_by_paper: dict[int, set[int]] = defaultdict(set)
+        all_authors: set[int] = set()
+        for paper_id, author_id in paper_rows:
+            if paper_id is None or author_id is None:
+                continue
+            pid = int(paper_id)
+            aid = int(author_id)
+            authors_by_paper[pid].add(aid)
+            all_authors.add(aid)
+
+        coauthor_counts: dict[tuple[int, int], int] = defaultdict(int)
+        for authors in authors_by_paper.values():
+            author_list = sorted(authors)
+            for i, left in enumerate(author_list):
+                for right in author_list[i + 1 :]:
+                    coauthor_counts[(left, right)] += 1
+                    coauthor_counts[(right, left)] += 1
+
+        network_map: dict[int, list[tuple[int, int]]] = defaultdict(list)
+        for (author_id, coauthor_id), collab_count in coauthor_counts.items():
+            network_map[int(author_id)].append((int(coauthor_id), int(collab_count)))
+
+        for author_id in all_authors:
+            network_map.setdefault(int(author_id), [])
+
+        return dict(network_map)
+
+    @staticmethod
+    def _compute_network_score(
+        *,
+        author_id: int,
+        network_map: dict[int, list[tuple[int, int]]],
+        citation_map: dict[int, int],
+        max_citation_sum: int,
+    ) -> float:
+        neighbors = network_map.get(int(author_id), [])
+        if not neighbors:
+            return 0.0
+
+        scores: list[float] = []
+        for neighbor_id, collab_count in neighbors:
+            neighbor_citations = float(citation_map.get(int(neighbor_id), 0)) / float(
+                max_citation_sum or 1
+            )
+            collab_weight = min(float(collab_count) / 3.0, 1.0)
+            scores.append(0.7 * neighbor_citations + 0.3 * collab_weight)
+
+        if not scores:
+            return 0.0
+
+        breadth_factor = 1.0 - math.exp(-float(len(neighbors)) / 3.0)
+        return max(min(float(sum(scores) / len(scores)) * breadth_factor, 1.0), 0.0)

@@ -5,10 +5,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from paperbot.application.services.anchor_service import AnchorService
 from paperbot.infrastructure.stores.author_store import AuthorStore
-from paperbot.infrastructure.stores.models import Base, PaperFeedbackModel, ResearchTrackModel
+from paperbot.infrastructure.stores.models import (
+    AuthorModel,
+    Base,
+    PaperFeedbackModel,
+    ResearchTrackModel,
+)
 from paperbot.infrastructure.stores.paper_store import PaperStore
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider
 
@@ -79,9 +85,26 @@ def test_anchor_service_discovers_and_scores_authors(tmp_path: Path):
         source_hint="arxiv",
     )
 
+    p4 = paper_store.upsert_paper(
+        paper={
+            "title": "Collaborative Transformer Systems",
+            "abstract": "attention systems co-design.",
+            "paper_id": "2402.00033",
+            "url": "https://arxiv.org/abs/2402.00033",
+            "year": 2025,
+            "citation_count": 600,
+            "authors": ["Alice Smith", "Carol Chen"],
+        },
+        source_hint="arxiv",
+    )
+
     author_store.replace_paper_authors(paper_id=int(p1["id"]), authors=["Alice Smith"])
     author_store.replace_paper_authors(paper_id=int(p2["id"]), authors=["Alice Smith"])
     author_store.replace_paper_authors(paper_id=int(p3["id"]), authors=["Bob Lee"])
+    author_store.replace_paper_authors(
+        paper_id=int(p4["id"]),
+        authors=["Alice Smith", "Carol Chen"],
+    )
 
     with provider.session() as session:
         session.add(
@@ -108,6 +131,7 @@ def test_anchor_service_discovers_and_scores_authors(tmp_path: Path):
     assert anchors[0]["anchor_score"] >= anchors[1]["anchor_score"]
     assert anchors[0]["relevance_score"] > 0
     assert anchors[0]["score_breakdown"]["total"] == anchors[0]["anchor_score"]
+    assert anchors[0]["score_breakdown"]["network"] > 0
     assert anchors[0]["evidence_status"] == "ok"
     assert anchors[0]["evidence_papers"]
 
@@ -117,3 +141,51 @@ def test_anchor_service_raises_for_unknown_track(tmp_path: Path):
     service = AnchorService(db_url=db_url)
     with pytest.raises(ValueError, match="track not found"):
         service.discover(track_id=999, user_id="default")
+
+
+def test_recompute_author_network_scores_updates_metadata(tmp_path: Path):
+    db_url = f"sqlite:///{tmp_path / 'anchor-network-recompute.db'}"
+    paper_store = PaperStore(db_url=db_url)
+    author_store = AuthorStore(db_url=db_url)
+    provider = SessionProvider(db_url)
+
+    p1 = paper_store.upsert_paper(
+        paper={
+            "title": "Joint Work A",
+            "paper_id": "2501.10001",
+            "url": "https://arxiv.org/abs/2501.10001",
+            "year": 2025,
+            "citation_count": 50,
+            "authors": ["A", "B"],
+        },
+        source_hint="arxiv",
+    )
+    p2 = paper_store.upsert_paper(
+        paper={
+            "title": "Joint Work B",
+            "paper_id": "2501.10002",
+            "url": "https://arxiv.org/abs/2501.10002",
+            "year": 2025,
+            "citation_count": 80,
+            "authors": ["B", "C"],
+        },
+        source_hint="arxiv",
+    )
+
+    author_store.replace_paper_authors(paper_id=int(p1["id"]), authors=["A", "B"])
+    author_store.replace_paper_authors(paper_id=int(p2["id"]), authors=["B", "C"])
+
+    service = AnchorService(db_url=db_url)
+    stats = service.recompute_author_network_scores(window_years=5)
+    assert stats["authors"] >= 3
+    assert stats["updated"] >= 3
+
+    with provider.session() as session:
+        rows = session.execute(select(AuthorModel)).scalars().all()
+        found = 0
+        for row in rows:
+            metadata = json.loads(row.metadata_json or "{}")
+            if "network_score" in metadata:
+                found += 1
+                assert metadata["network_score"] >= 0
+        assert found >= 3
