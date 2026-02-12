@@ -467,9 +467,7 @@ class PaperFeedbackModel(Base):
     action: Mapped[str] = mapped_column(String(16), index=True)  # like/dislike/skip/save/cite
 
     # Canonical FK (dual-write migration — will replace paper_id + paper_ref_id)
-    canonical_paper_id: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True, index=True
-    )
+    canonical_paper_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
 
     weight: Mapped[float] = mapped_column(Float, default=0.0)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
@@ -749,7 +747,9 @@ class PaperModel(Base):
     judge_scores = relationship("PaperJudgeScoreModel", back_populates="paper")
     reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
     repo_rows = relationship("PaperRepoModel", back_populates="paper")
-    identifiers = relationship("PaperIdentifierModel", back_populates="paper", cascade="all, delete-orphan")
+    identifiers = relationship(
+        "PaperIdentifierModel", back_populates="paper", cascade="all, delete-orphan"
+    )
 
     def get_authors(self) -> list:
         try:
@@ -802,6 +802,55 @@ class PaperIdentifierModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     paper = relationship("PaperModel", back_populates="identifiers")
+
+
+class ModelEndpointModel(Base):
+    """User-managed LLM provider endpoints for gateway routing."""
+
+    __tablename__ = "model_endpoints"
+    __table_args__ = (UniqueConstraint("name", name="uq_model_endpoints_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
+    vendor: Mapped[str] = mapped_column(String(32), default="openai_compatible", index=True)
+    base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    api_key_env: Mapped[str] = mapped_column(String(64), default="OPENAI_API_KEY")
+    models_json: Mapped[str] = mapped_column(Text, default="[]")
+    task_types_json: Mapped[str] = mapped_column(Text, default="[]")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    def get_models(self) -> list[str]:
+        try:
+            rows = json.loads(self.models_json or "[]")
+            if isinstance(rows, list):
+                return [str(x).strip() for x in rows if str(x).strip()]
+        except Exception:
+            pass
+        return []
+
+    def set_models(self, rows: Optional[list[str]]) -> None:
+        self.models_json = json.dumps(
+            [str(x).strip() for x in (rows or []) if str(x).strip()],
+            ensure_ascii=False,
+        )
+
+    def get_task_types(self) -> list[str]:
+        try:
+            rows = json.loads(self.task_types_json or "[]")
+            if isinstance(rows, list):
+                return [str(x).strip() for x in rows if str(x).strip()]
+        except Exception:
+            pass
+        return []
+
+    def set_task_types(self, rows: Optional[list[str]]) -> None:
+        self.task_types_json = json.dumps(
+            [str(x).strip() for x in (rows or []) if str(x).strip()],
+            ensure_ascii=False,
+        )
 
 
 class HarvestRunModel(Base):
