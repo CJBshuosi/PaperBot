@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -66,10 +67,13 @@ class EndpointTestRequest(BaseModel):
 
 class EndpointTestResponse(BaseModel):
     ok: bool
+    success: bool
     endpoint_id: int
     provider: Dict[str, Any]
     api_key_present: bool
+    latency_ms: int
     message: str
+    error: Optional[str] = None
 
 
 class EndpointCapabilitiesResponse(BaseModel):
@@ -169,6 +173,7 @@ def test_model_endpoint(endpoint_id: int, req: EndpointTestRequest):
         os.getenv(api_key_env)
     )
 
+    t0 = time.monotonic()
     try:
         cfg = _build_model_config(endpoint)
         router = ModelRouter(RouterConfig(models={"__test__": cfg}, fallback_model="__test__"))
@@ -187,8 +192,10 @@ def test_model_endpoint(endpoint_id: int, req: EndpointTestRequest):
             )
             message = f"Remote check success: {(pong or '').strip()[:80]}"
 
+        latency_ms = int((time.monotonic() - t0) * 1000)
         return EndpointTestResponse(
             ok=True,
+            success=True,
             endpoint_id=endpoint_id,
             provider={
                 "provider_name": info.provider_name,
@@ -196,7 +203,10 @@ def test_model_endpoint(endpoint_id: int, req: EndpointTestRequest):
                 "api_base": info.api_base,
             },
             api_key_present=api_key_present,
+            latency_ms=latency_ms,
             message=message,
+            error=None,
         )
     except Exception as exc:
+        latency_ms = int((time.monotonic() - t0) * 1000)
         raise HTTPException(status_code=400, detail=f"test failed: {exc}") from exc

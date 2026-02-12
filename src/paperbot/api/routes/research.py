@@ -1120,6 +1120,13 @@ class WorkflowMetricsResponse(BaseModel):
     summary: Dict[str, Any]
 
 
+class EvidenceCoverageResponse(BaseModel):
+    coverage_rate: float
+    total_claims: int
+    total_with_evidence: int
+    trend: List[Dict[str, Any]]
+
+
 @router.get("/research/metrics/workflows", response_model=WorkflowMetricsResponse)
 def get_workflow_metrics_summary(
     days: int = Query(7, ge=1, le=90),
@@ -1132,6 +1139,37 @@ def get_workflow_metrics_summary(
         track_id=track_id,
     )
     return WorkflowMetricsResponse(summary=summary)
+
+
+@router.get("/research/metrics/evidence-coverage", response_model=EvidenceCoverageResponse)
+def get_evidence_coverage(
+    days: int = Query(7, ge=1, le=90),
+    workflow: Optional[str] = None,
+    track_id: Optional[int] = None,
+):
+    summary = _get_workflow_metric_store().summarize(
+        days=days,
+        workflow=workflow,
+        track_id=track_id,
+    )
+    totals = summary.get("totals", {})
+    total_claims = int(totals.get("claim_count") or 0)
+    total_with_evidence = int(totals.get("evidence_count") or 0)
+    coverage_rate = float(totals.get("coverage_rate") or 0.0)
+
+    trend = []
+    for day_bucket in summary.get("by_day", []):
+        trend.append({
+            "date": day_bucket.get("date", ""),
+            "rate": float(day_bucket.get("coverage_rate") or 0.0),
+        })
+
+    return EvidenceCoverageResponse(
+        coverage_rate=coverage_rate,
+        total_claims=total_claims,
+        total_with_evidence=total_with_evidence,
+        trend=trend,
+    )
 
 
 @router.post("/research/context", response_model=ContextResponse)
