@@ -123,3 +123,24 @@ class FilterStep:
         rec = str(judge.get("recommendation") or "").strip().lower()
         if rec and rec not in self._keep:
             paper["_filtered_out"] = True
+
+
+class StructuredCardStep:
+    """Extract structured card (method/dataset/conclusion/limitations) via LLM."""
+
+    def __init__(self, *, llm_service=None):
+        from paperbot.application.services.llm_service import get_llm_service
+
+        self._llm = llm_service or get_llm_service()
+
+    async def process(self, paper: Dict[str, Any], context: EnrichmentContext) -> None:
+        if paper.get("structured_card"):
+            return
+
+        title = str(paper.get("title") or "")
+        abstract = str(paper.get("snippet") or paper.get("abstract") or "")
+        if not abstract:
+            return
+
+        card = self._llm.extract_structured_card(title=title, abstract=abstract)
+        paper["structured_card"] = card

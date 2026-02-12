@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Check, ChevronDown, ChevronRight, ExternalLink, Heart, Loader2, Save, ThumbsDown } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, ExternalLink, FlaskConical, Database, CheckCircle, AlertTriangle, Heart, Loader2, Save, ThumbsDown } from "lucide-react"
 
 import { cn, safeHref } from "@/lib/utils"
 import { ReasoningBlock, ToolActionsGroup } from "@/components/ai-elements"
@@ -24,6 +24,12 @@ export type Paper = {
     evidence_quotes?: Array<{ text: string; source_url?: string; page_hint?: string }>
   }
   is_saved?: boolean
+  structured_card?: {
+    method?: string
+    dataset?: string
+    conclusion?: string
+    limitations?: string
+  }
 }
 
 interface PaperCardProps {
@@ -56,6 +62,9 @@ export function PaperCard({
   const [isDisliked, setIsDisliked] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [evidenceOpen, setEvidenceOpen] = useState(false)
+  const [cardOpen, setCardOpen] = useState(false)
+  const [cardLoading, setCardLoading] = useState(false)
+  const [structuredCard, setStructuredCard] = useState(paper.structured_card || null)
 
   const authorText = paper.authors?.slice(0, 3).join(", ") || "Unknown authors"
   const hasMoreAuthors = (paper.authors?.length || 0) > 3
@@ -97,6 +106,27 @@ export function PaperCard({
       setIsLiked(false)
     } finally {
       setActionLoading(null)
+    }
+  }
+
+  const handleToggleCard = async () => {
+    if (cardOpen) {
+      setCardOpen(false)
+      return
+    }
+    setCardOpen(true)
+    if (structuredCard) return
+    setCardLoading(true)
+    try {
+      const res = await fetch(`/api/research/papers/${encodeURIComponent(paper.paper_id)}/card`)
+      if (res.ok) {
+        const data = await res.json()
+        setStructuredCard(data.structured_card || null)
+      }
+    } catch {
+      // silently fail
+    } finally {
+      setCardLoading(false)
     }
   }
 
@@ -162,6 +192,56 @@ export function PaperCard({
           {paper.abstract}
         </p>
       )}
+
+      {/* Structured Card */}
+      <div>
+        <button
+          type="button"
+          onClick={handleToggleCard}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {cardOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          Structured Card
+        </button>
+        {cardOpen && (
+          <div className="mt-1.5 space-y-1.5">
+            {cardLoading ? (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> Extracting...
+              </div>
+            ) : structuredCard ? (
+              <div className="grid gap-1.5 text-xs">
+                {structuredCard.method && (
+                  <div className="flex items-start gap-1.5">
+                    <FlaskConical className="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" />
+                    <div><span className="font-medium">Method:</span> {structuredCard.method}</div>
+                  </div>
+                )}
+                {structuredCard.dataset && (
+                  <div className="flex items-start gap-1.5">
+                    <Database className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-500" />
+                    <div><span className="font-medium">Dataset:</span> {structuredCard.dataset}</div>
+                  </div>
+                )}
+                {structuredCard.conclusion && (
+                  <div className="flex items-start gap-1.5">
+                    <CheckCircle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-emerald-500" />
+                    <div><span className="font-medium">Conclusion:</span> {structuredCard.conclusion}</div>
+                  </div>
+                )}
+                {structuredCard.limitations && (
+                  <div className="flex items-start gap-1.5">
+                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500" />
+                    <div><span className="font-medium">Limitations:</span> {structuredCard.limitations}</div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No structured card available.</p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Recommendation reasons */}
       {reasons && reasons.length > 0 && (

@@ -1061,6 +1061,60 @@ def get_track_feed(
     )
 
 
+@router.get("/research/papers/export")
+def export_papers(
+    user_id: str = "default",
+    track_id: Optional[int] = None,
+    format: str = Query("bibtex", pattern="^(bibtex|ris|markdown|csl_json)$"),
+):
+    items = _research_store.list_saved_papers(
+        user_id=user_id, track_id=track_id, limit=1000
+    )
+    papers = [item["paper"] for item in items if item.get("paper")]
+
+    if not papers:
+        raise HTTPException(status_code=404, detail="No saved papers found")
+
+    if format == "bibtex":
+        raw_keys = [_make_citation_key(p.get("authors") or [], p.get("year")) for p in papers]
+        keys = _dedup_citation_keys(raw_keys)
+        body = "\n\n".join(_paper_to_bibtex(p, k) for p, k in zip(papers, keys))
+        return Response(
+            content=body,
+            media_type="application/x-bibtex",
+            headers={"Content-Disposition": "attachment; filename=papers.bib"},
+        )
+
+    if format == "ris":
+        body = "\n\n".join(_paper_to_ris(p) for p in papers)
+        return Response(
+            content=body,
+            media_type="application/x-research-info-systems",
+            headers={"Content-Disposition": "attachment; filename=papers.ris"},
+        )
+
+    if format == "csl_json":
+        import json as _json
+
+        csl_items = [_paper_to_csl_json(p) for p in papers]
+        body = _json.dumps(csl_items, ensure_ascii=False, indent=2)
+        return Response(
+            content=body,
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=papers.csl.json"},
+        )
+
+    # markdown
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    header = f"---\nexported: {now_iso}\ncount: {len(papers)}\n---\n\n# Saved Papers\n"
+    body = header + "\n\n".join(_paper_to_markdown(p) for p in papers)
+    return Response(
+        content=body,
+        media_type="text/markdown",
+        headers={"Content-Disposition": "attachment; filename=papers.md"},
+    )
+
+
 @router.get("/research/papers/{paper_id}", response_model=PaperDetailResponse)
 def get_paper_detail(paper_id: str, user_id: str = "default"):
     detail = _research_store.get_paper_detail(paper_id=paper_id, user_id=user_id)
@@ -1742,44 +1796,151 @@ def _paper_to_markdown(paper: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-@router.get("/research/papers/export")
-def export_papers(
-    user_id: str = "default",
-    track_id: Optional[int] = None,
-    format: str = Query("bibtex", pattern="^(bibtex|ris|markdown)$"),
-):
+def _paper_to_csl_json(paper: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a paper dict to CSL-JSON format (Zotero native import)."""
+    authors_raw = paper.get("authors") or []
+    csl_authors = []
+    for name in authors_raw:
+        parts = name.strip().split()
+        if len(parts) >= 2:
+            csl_authors.append({"family": parts[-1], "given": " ".join(parts[:-1])})
+        elif parts:
+            csl_authors.append({"family": parts[0], "given": ""})
+
+    item: Dict[str, Any] = {
+        "type": "article-journal",
+        "title": paper.get("title") or "",
+        "author": csl_authors,
+    }
+    if paper.get("year"):
+        item["issued"] = {"date-parts": [[paper["year"]]]}
+    if paper.get("venue"):
+        item["container-title"] = paper["venue"]
+    if paper.get("doi"):
+        item["DOI"] = paper["doi"]
+    if paper.get("url"):
+        item["URL"] = paper["url"]
+    if paper.get("abstract"):
+        item["abstract"] = paper["abstract"]
+    return item
+
+
+
+
+# ---------------------------------------------------------------------------
+# Structured Card (LLM-extracted method/dataset/conclusion/limitations)
+# ---------------------------------------------------------------------------
+
+_llm_service: Optional["LLMService"] = None
+
+
+def _get_llm_service() -> "LLMService":
+    from paperbot.application.services.llm_service import LLMService, get_llm_service
+
+    global _llm_service
+    if _llm_service is None:
+        _llm_service = get_llm_service()
+    return _llm_service
+
+
+class StructuredCardResponse(BaseModel):
+    paper_id: str
+    structured_card: Dict[str, Any]
+
+
+@router.get("/research/papers/{paper_id}/card", response_model=StructuredCardResponse)
+def get_structured_card(paper_id: str, user_id: str = "default"):
+    detail = _research_store.get_paper_detail(paper_id=paper_id, user_id=user_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    # Check if already cached in DB
+    paper_store = _get_paper_store()
+    db_paper = paper_store.get_paper_by_source_id_any(paper_id)
+    if db_paper and db_paper.structured_card_json:
+        import json as _json
+
+        try:
+            card = _json.loads(db_paper.structured_card_json)
+            return StructuredCardResponse(paper_id=paper_id, structured_card=card)
+        except Exception:
+            pass
+
+    # Extract via LLM
+    title = str(detail.get("title") or "")
+    abstract = str(detail.get("abstract") or "")
+    if not abstract:
+        return StructuredCardResponse(
+            paper_id=paper_id,
+            structured_card={"method": "", "dataset": "N/A", "conclusion": "", "limitations": "Not stated"},
+        )
+
+    llm = _get_llm_service()
+    card = llm.extract_structured_card(title=title, abstract=abstract)
+
+    # Cache in DB if we have a paper record
+    if db_paper:
+        try:
+            import json as _json
+
+            paper_store.update_structured_card(db_paper.id, _json.dumps(card, ensure_ascii=False))
+        except Exception:
+            pass
+
+    return StructuredCardResponse(paper_id=paper_id, structured_card=card)
+
+
+# ---------------------------------------------------------------------------
+# Related Work draft generation
+# ---------------------------------------------------------------------------
+
+
+class RelatedWorkRequest(BaseModel):
+    user_id: str = "default"
+    track_id: Optional[int] = None
+    topic: str = Field(..., min_length=1)
+    paper_ids: Optional[List[str]] = None
+    limit: int = Field(20, ge=1, le=50)
+
+
+class RelatedWorkResponse(BaseModel):
+    markdown: str
+    citations: List[Dict[str, Any]]
+
+
+@router.post("/research/papers/related-work", response_model=RelatedWorkResponse)
+def generate_related_work(req: RelatedWorkRequest):
     items = _research_store.list_saved_papers(
-        user_id=user_id, track_id=track_id, limit=1000
+        user_id=req.user_id, track_id=req.track_id, limit=req.limit
     )
     papers = [item["paper"] for item in items if item.get("paper")]
+
+    if req.paper_ids:
+        id_set = set(req.paper_ids)
+        papers = [p for p in papers if str(p.get("id") or "") in id_set or str(p.get("paper_id") or "") in id_set]
 
     if not papers:
         raise HTTPException(status_code=404, detail="No saved papers found")
 
-    if format == "bibtex":
-        raw_keys = [_make_citation_key(p.get("authors") or [], p.get("year")) for p in papers]
-        keys = _dedup_citation_keys(raw_keys)
-        body = "\n\n".join(_paper_to_bibtex(p, k) for p, k in zip(papers, keys))
-        return Response(
-            content=body,
-            media_type="application/x-bibtex",
-            headers={"Content-Disposition": "attachment; filename=papers.bib"},
-        )
+    llm = _get_llm_service()
+    markdown = llm.generate_related_work(papers=papers, topic=req.topic)
 
-    if format == "ris":
-        body = "\n\n".join(_paper_to_ris(p) for p in papers)
-        return Response(
-            content=body,
-            media_type="application/x-research-info-systems",
-            headers={"Content-Disposition": "attachment; filename=papers.ris"},
-        )
+    # Extract citation keys from the generated text
+    citations: List[Dict[str, Any]] = []
+    for p in papers:
+        authors = p.get("authors") or []
+        year = p.get("year")
+        lastname = "Unknown"
+        if authors:
+            parts = authors[0].strip().split()
+            if parts:
+                lastname = parts[-1]
+        key = f"{lastname}{year or 'nd'}"
+        citations.append({
+            "key": key,
+            "title": p.get("title") or "",
+            "authors": authors,
+            "year": year,
+        })
 
-    # markdown
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    header = f"---\nexported: {now_iso}\ncount: {len(papers)}\n---\n\n# Saved Papers\n"
-    body = header + "\n\n".join(_paper_to_markdown(p) for p in papers)
-    return Response(
-        content=body,
-        media_type="text/markdown",
-        headers={"Content-Disposition": "attachment; filename=papers.md"},
-    )
+    return RelatedWorkResponse(markdown=markdown, citations=citations)

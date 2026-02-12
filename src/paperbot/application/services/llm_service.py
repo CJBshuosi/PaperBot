@@ -171,6 +171,33 @@ class LLMService:
             ),
         )
 
+    def extract_structured_card(self, title: str, abstract: str) -> Dict[str, Any]:
+        prompt = self._prompts.get("structured_card")
+        raw = self.complete(
+            task_type="extraction",
+            system=prompt.system,
+            user=prompt.user.format(title=title or "", abstract=abstract or ""),
+        )
+        parsed = _safe_parse_json(raw)
+        if parsed is None:
+            return {"method": "", "dataset": "N/A", "conclusion": "", "limitations": "Not stated"}
+        return {
+            "method": str(parsed.get("method") or ""),
+            "dataset": str(parsed.get("dataset") or "N/A"),
+            "conclusion": str(parsed.get("conclusion") or ""),
+            "limitations": str(parsed.get("limitations") or "Not stated"),
+        }
+
+    def generate_related_work(self, papers: List[Dict[str, Any]], topic: str) -> str:
+        prompt = self._prompts.get("related_work")
+        formatted = _format_papers_for_related_work(papers)
+        return self.complete(
+            task_type="default",
+            system=prompt.system,
+            user=prompt.user.format(topic=topic or "", papers_formatted=formatted),
+            use_cache=False,
+        )
+
     def _cache_key(self, *, task_type: str, system: str, user: str, kwargs: Dict[str, Any]) -> str:
         payload = json.dumps(
             {
@@ -267,6 +294,25 @@ def _format_papers_for_prompt(papers: Sequence[Dict[str, Any]], limit: int = 12)
             )
         )
     return "\n".join(rows)
+
+
+def _format_papers_for_related_work(papers: Sequence[Dict[str, Any]], limit: int = 20) -> str:
+    rows: List[str] = []
+    for idx, paper in enumerate(list(papers)[: max(1, int(limit))], start=1):
+        authors = paper.get("authors") or []
+        author_str = authors[0].split()[-1] if authors else "Unknown"
+        year = paper.get("year") or "n.d."
+        cite_key = f"[{author_str}{year}]"
+        rows.append(
+            "{idx}. {cite_key} {title}\n   Authors: {authors}\n   Abstract: {abstract}".format(
+                idx=idx,
+                cite_key=cite_key,
+                title=paper.get("title") or "Untitled",
+                authors=", ".join(authors[:5]) or "Unknown",
+                abstract=(paper.get("snippet") or paper.get("abstract") or "")[:300],
+            )
+        )
+    return "\n\n".join(rows)
 
 
 def _safe_parse_json(raw: str) -> Optional[Dict[str, Any]]:

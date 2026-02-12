@@ -16,6 +16,9 @@
 | **深度评审** | 模拟同行评审（初筛→深度批评→决策），输出 Summary/Strengths/Weaknesses/Novelty Score |
 | **Paper2Code** | 论文到代码骨架（Planning→Analysis→Generation→Verification），自愈调试，Docker/E2B 沙箱执行 |
 | **个性化研究** | Research Track 管理、记忆 Inbox（LLM/规则抽取）、Context Engine 路由与推荐 |
+| **文献卡片** | Structured Card（LLM 提取 method/dataset/conclusion/limitations），懒加载 + DB 缓存 |
+| **导出增强** | BibTeX/RIS/Markdown/CSL-JSON（Zotero 原生导入），Next.js proxy route 修复 |
+| **写作辅助** | Related Work 草稿生成（基于 saved papers + topic），[AuthorYear] 引用格式，一键复制 |
 | **每日推送** | DailyPaper 生成后自动推送摘要到 Email/Slack/钉钉，支持 API 手动触发和 ARQ Cron 定时推送 |
 | **Model Provider** | 多 LLM 提供商管理（OpenAI/Anthropic/OpenRouter/Ollama），API Key Keychain 安全存储，任务级路由，连接测试 |
 | **Deadline Radar** | 会议截止日期追踪，CCF 分级过滤，Research Track 关键词匹配 |
@@ -33,7 +36,7 @@
 | 深度评审 | 🟡 基本可用 | `/review` | `review` | 模拟同行评审流程完整；输出质量取决于 LLM 后端配置 |
 | Paper2Code | 🟡 基本可用 | `/gen-code` | `gen-code` | 编排 + RAG + CodeMemory 完整；需配置 Docker 或 E2B 沙箱运行验证 |
 | 记忆系统 | 🔴 早期 | `/research/memory/*` | — | Schema + Extractor + Parsers 骨架已搭建；LLM 抽取与检索回路待完善 |
-| Context Engine | 🔴 早期 | `/research/context` | — | Track Router + Engine 框架已有；推荐策略与 Embedding 集成待落地 |
+| Context Engine | 🟡 基本可用 | `/research/context` | — | Track Router + Engine 框架 + 本地 DB 搜索回退（外部 API 限流时自动降级） |
 | Model Provider | ✅ 可用 | `/api/model-endpoints/*` | — | 多提供商 CRUD + 连接测试 + 任务路由 + Keychain 安全存储 |
 | Deadline Radar | ✅ 可用 | `/research/deadlines/radar` | — | CCF 会议截止日期追踪，Track 关键词匹配 |
 | Paper Library | ✅ 可用 | `/api/papers/library` | — | 论文收藏/保存/反馈，Enrichment Pipeline 自动补全元数据 |
@@ -306,6 +309,9 @@ arq paperbot.infrastructure.queue.arq_worker.WorkerSettings
 | `/api/research/memory/*` | GET/POST | 记忆系统（Inbox/审核/检索） |
 | `/api/research/papers/feedback` | POST | 论文反馈（like/dislike/save） |
 | `/api/research/papers/saved` | GET | 已保存论文列表 |
+| `/api/research/papers/export` | GET | 导出论文（bibtex/ris/markdown/csl_json） |
+| `/api/research/papers/{id}/card` | GET | Structured Card（LLM 提取，DB 缓存） |
+| `/api/research/papers/related-work` | POST | Related Work 草稿生成 |
 | `/api/research/deadlines/radar` | GET | 会议截止日期雷达（CCF 分级 + Track 匹配） |
 | `/api/research/context` | POST | ContextPack 构建（含 Track Router） |
 | `/api/model-endpoints` | GET/POST | LLM 提供商列表/创建 |

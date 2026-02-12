@@ -754,6 +754,9 @@ class PaperModel(Base):
         Text, default="[]"
     )  # All sources that returned this paper
 
+    # Structured card (LLM-extracted method/dataset/conclusion/limitations)
+    structured_card_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Timestamps
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
@@ -804,6 +807,17 @@ class PaperModel(Base):
 
     def set_sources(self, sources: list) -> None:
         self.sources_json = json.dumps(sources or [], ensure_ascii=False)
+
+    def get_structured_card(self) -> Optional[Dict[str, Any]]:
+        try:
+            if self.structured_card_json:
+                return json.loads(self.structured_card_json)
+        except Exception:
+            pass
+        return None
+
+    def set_structured_card(self, card: Dict[str, Any]) -> None:
+        self.structured_card_json = json.dumps(card or {}, ensure_ascii=False)
 
 
 class PaperIdentifierModel(Base):

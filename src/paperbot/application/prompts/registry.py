@@ -8,6 +8,10 @@ from paperbot.application.prompts.paper_analysis import (
     PAPER_SUMMARY_USER,
     RELEVANCE_ASSESS_SYSTEM,
     RELEVANCE_ASSESS_USER,
+    RELATED_WORK_SYSTEM,
+    RELATED_WORK_USER,
+    STRUCTURED_CARD_SYSTEM,
+    STRUCTURED_CARD_USER,
 )
 from paperbot.application.prompts.trend_detection import (
     DAILY_INSIGHT_SYSTEM,
@@ -46,6 +50,16 @@ class PromptRegistry:
                 name="daily_insight",
                 system=DAILY_INSIGHT_SYSTEM,
                 user=DAILY_INSIGHT_USER,
+            ),
+            "structured_card": PromptTemplate(
+                name="structured_card",
+                system=STRUCTURED_CARD_SYSTEM,
+                user=STRUCTURED_CARD_USER,
+            ),
+            "related_work": PromptTemplate(
+                name="related_work",
+                system=RELATED_WORK_SYSTEM,
+                user=RELATED_WORK_USER,
             ),
         }
 

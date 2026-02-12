@@ -590,6 +590,33 @@ class ContextEngine:
                     )
                     raw = []
 
+                # Local DB fallback when external search returns no results
+                if not raw and self.paper_store is not None:
+                    Logger.info(
+                        f"External search returned 0 results, falling back to local DB for query='{merged_query}'",
+                        file=LogFiles.HARVEST,
+                    )
+                    try:
+                        from paperbot.infrastructure.stores.paper_store import paper_to_dict
+
+                        local_papers, _ = self.paper_store.search_papers(
+                            query=merged_query, limit=fetch_limit, sort_by="citation_count"
+                        )
+                        raw = []
+                        for p in local_papers:
+                            d = paper_to_dict(p)
+                            d["paper_id"] = str(d.get("id") or "")
+                            raw.append(d)
+                        Logger.info(
+                            f"Local DB fallback returned {len(raw)} papers",
+                            file=LogFiles.HARVEST,
+                        )
+                    except Exception as local_exc:
+                        Logger.warning(
+                            f"Local DB fallback failed: {local_exc}",
+                            file=LogFiles.HARVEST,
+                        )
+
                 # Feedback filtering + dedup
                 seen_titles: set[str] = set()
                 filtered: List[Dict[str, Any]] = []

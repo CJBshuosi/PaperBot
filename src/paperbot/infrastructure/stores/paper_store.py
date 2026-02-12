@@ -1051,6 +1051,42 @@ class PaperStore:
         except Exception:
             pass
 
+    def get_paper_by_source_id_any(self, source_id: str) -> Optional[PaperModel]:
+        """Look up a paper by any source ID (semantic_scholar, arxiv, openalex, or internal id)."""
+        with self._provider.session() as session:
+            # Try internal numeric ID first
+            try:
+                int_id = int(source_id)
+                result = session.execute(
+                    select(PaperModel).where(PaperModel.id == int_id, PaperModel.deleted_at.is_(None))
+                ).scalar_one_or_none()
+                if result:
+                    return result
+            except (ValueError, TypeError):
+                pass
+
+            # Try all source ID columns
+            result = session.execute(
+                select(PaperModel).where(
+                    PaperModel.deleted_at.is_(None),
+                    or_(
+                        PaperModel.semantic_scholar_id == source_id,
+                        PaperModel.arxiv_id == source_id,
+                        PaperModel.openalex_id == source_id,
+                    ),
+                )
+            ).scalar_one_or_none()
+            return result
+
+    def update_structured_card(self, paper_id: int, card_json: str) -> None:
+        """Cache structured card JSON on a paper record."""
+        with self._provider.session() as session:
+            paper = session.get(PaperModel, paper_id)
+            if paper:
+                paper.structured_card_json = card_json
+                paper.updated_at = _utcnow()
+                session.commit()
+
 
 # Backward-compatible alias: older workflows/tests import SqlAlchemyPaperStore.
 SqlAlchemyPaperStore = PaperStore

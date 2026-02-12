@@ -1,0 +1,17 @@
+export const runtime = "nodejs"
+
+import { apiBaseUrl, proxyJson } from "@/app/api/research/_base"
+
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ paperId: string }> },
+) {
+  const { paperId } = await params
+  const url = new URL(req.url)
+  const qs = url.searchParams.toString()
+  return proxyJson(
+    req,
+    `${apiBaseUrl()}/api/research/papers/${encodeURIComponent(paperId)}/card${qs ? `?${qs}` : ""}`,
+    "GET",
+  )
+}
