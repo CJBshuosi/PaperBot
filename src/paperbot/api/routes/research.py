@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,6 +16,7 @@ from paperbot.context_engine.track_router import TrackRouter
 from paperbot.infrastructure.api_clients.semantic_scholar import SemanticScholarClient
 from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
+from paperbot.infrastructure.stores.workflow_metric_store import WorkflowMetricStore
 from paperbot.memory.eval.collector import MemoryMetricCollector
 from paperbot.memory.extractor import extract_memories
 from paperbot.memory.schema import MemoryCandidate, NormalizedMessage
@@ -26,6 +28,7 @@ _research_store = SqlAlchemyResearchStore()
 _memory_store = SqlAlchemyMemoryStore()
 _track_router = TrackRouter(research_store=_research_store, memory_store=_memory_store)
 _metric_collector: Optional[MemoryMetricCollector] = None
+_workflow_metric_store: Optional[WorkflowMetricStore] = None
 _paper_store: Optional["PaperStore"] = None
 _paper_search_service: Optional["PaperSearchService"] = None
 
@@ -95,6 +98,13 @@ def _get_metric_collector() -> MemoryMetricCollector:
     if _metric_collector is None:
         _metric_collector = MemoryMetricCollector()
     return _metric_collector
+
+
+def _get_workflow_metric_store() -> WorkflowMetricStore:
+    global _workflow_metric_store
+    if _workflow_metric_store is None:
+        _workflow_metric_store = WorkflowMetricStore()
+    return _workflow_metric_store
 
 
 def _get_paper_store() -> "PaperStore":
@@ -1105,10 +1115,31 @@ class ContextResponse(BaseModel):
     context_pack: Dict[str, Any]
 
 
+class WorkflowMetricsResponse(BaseModel):
+    summary: Dict[str, Any]
+
+
+@router.get("/research/metrics/workflows", response_model=WorkflowMetricsResponse)
+def get_workflow_metrics_summary(
+    days: int = Query(7, ge=1, le=90),
+    workflow: Optional[str] = None,
+    track_id: Optional[int] = None,
+):
+    summary = _get_workflow_metric_store().summarize(
+        days=days,
+        workflow=workflow,
+        track_id=track_id,
+    )
+    return WorkflowMetricsResponse(summary=summary)
+
+
 @router.post("/research/context", response_model=ContextResponse)
 async def build_context(req: ContextRequest):
     set_trace_id()  # Initialize trace_id for this request
     Logger.info("Received build context request", file=LogFiles.HARVEST)
+
+    started = time.perf_counter()
+    metric_store = _get_workflow_metric_store()
 
     if req.activate_track_id is not None:
         Logger.info("Activating research track", file=LogFiles.HARVEST)
@@ -1162,7 +1193,38 @@ async def build_context(req: ContextRequest):
         Logger.info(
             f"Context pack built successfully, found {paper_count} papers", file=LogFiles.HARVEST
         )
+        evidence_count = sum(1 for p in (pack.get("paper_recommendations") or []) if p.get("url"))
+        metric_store.record_metric(
+            workflow="research_context",
+            stage=req.stage,
+            status="completed",
+            track_id=req.track_id,
+            claim_count=paper_count,
+            evidence_count=evidence_count,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            detail={
+                "paper_limit": int(req.paper_limit),
+                "memory_limit": int(req.memory_limit),
+                "offline": bool(req.offline),
+                "sources": list(req.sources or []),
+            },
+        )
         return ContextResponse(context_pack=pack)
+    except Exception as exc:
+        metric_store.record_metric(
+            workflow="research_context",
+            stage=req.stage,
+            status="failed",
+            track_id=req.track_id,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            detail={
+                "error": str(exc),
+                "paper_limit": int(req.paper_limit),
+                "memory_limit": int(req.memory_limit),
+                "offline": bool(req.offline),
+            },
+        )
+        raise
     finally:
         await engine.close()
 

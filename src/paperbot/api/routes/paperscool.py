@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import time
 from threading import Thread
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -41,11 +42,13 @@ from paperbot.application.workflows.unified_topic_search import (
 from paperbot.infrastructure.stores.paper_store import PaperStore
 from paperbot.infrastructure.stores.pipeline_session_store import PipelineSessionStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
+from paperbot.infrastructure.stores.workflow_metric_store import WorkflowMetricStore
 from paperbot.utils.text_processing import extract_github_url
 
 router = APIRouter()
 _paper_search_service: Optional[PaperSearchService] = None
 _pipeline_session_store = PipelineSessionStore()
+_workflow_metric_store: Optional[WorkflowMetricStore] = None
 # Test compatibility hook: unit tests can monkeypatch this to inject a fake workflow.
 PapersCoolTopicSearchWorkflow = None
 
@@ -82,6 +85,24 @@ def _get_paper_search_service() -> PaperSearchService:
     if _paper_search_service is None:
         _paper_search_service = make_default_search_service(registry=PaperStore())
     return _paper_search_service
+
+
+def _get_workflow_metric_store() -> WorkflowMetricStore:
+    global _workflow_metric_store
+    if _workflow_metric_store is None:
+        _workflow_metric_store = WorkflowMetricStore()
+    return _workflow_metric_store
+
+
+def _count_report_claims_and_evidence(report: Dict[str, Any]) -> tuple[int, int]:
+    claims = 0
+    evidences = 0
+    for query in report.get("queries") or []:
+        for item in query.get("top_items") or []:
+            claims += 1
+            if item.get("url") or item.get("pdf_url") or item.get("external_url"):
+                evidences += 1
+    return claims, evidences
 
 
 async def _run_topic_search(
@@ -237,6 +258,10 @@ async def topic_search(req: PapersCoolSearchRequest):
 async def _dailypaper_stream(req: DailyPaperRequest):
     """SSE generator for the full DailyPaper pipeline."""
     cleaned_queries = [q.strip() for q in req.queries if (q or "").strip()]
+    started = time.perf_counter()
+    phase_ms: Dict[str, float] = {}
+    phase_start = started
+    metric_store = _get_workflow_metric_store()
 
     session = _pipeline_session_store.start_session(
         workflow="paperscool_daily",
@@ -334,6 +359,8 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             "session_id": session_id,
         },
     )
+    phase_ms["search"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+    phase_start = time.perf_counter()
 
     # Phase 2 — Build Report
     if req.resume and isinstance(session_state.get("report"), dict):
@@ -362,6 +389,8 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             "session_id": session_id,
         },
     )
+    phase_ms["build"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+    phase_start = time.perf_counter()
 
     query_items: List[Dict[str, Any]] = []
     paper_query_map: Dict[int, str] = {}
@@ -612,9 +641,12 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         checkpoint="enriched",
         state={"search_result": search_result, "report": report},
     )
+    phase_ms["enrich"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+    phase_start = time.perf_counter()
 
     if req.require_approval:
         preview_markdown = render_daily_paper_markdown(report)
+        claims, evidences = _count_report_claims_and_evidence(report)
         pending_payload = {
             "report": report,
             "markdown": preview_markdown,
@@ -641,6 +673,19 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             },
         )
         yield StreamEvent(type="result", data=pending_payload)
+        metric_store.record_metric(
+            workflow="paperscool_daily",
+            stage="approval_pending",
+            status="pending_approval",
+            claim_count=claims,
+            evidence_count=evidences,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            detail={
+                "session_id": session_id,
+                "phase_ms": phase_ms,
+                "resume": bool(req.resume),
+            },
+        )
         return
 
     # Phase 5 — Persist + Notify
@@ -689,6 +734,8 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             email_to_override=_validate_email_list(req.notify_email_to) or None,
         )
 
+    phase_ms["persist"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+
     result_payload = {
         "report": report,
         "markdown": markdown,
@@ -703,6 +750,22 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         session_id=session_id, result=result_payload, status="completed"
     )
 
+    claims, evidences = _count_report_claims_and_evidence(report)
+    metric_store.record_metric(
+        workflow="paperscool_daily",
+        stage="result",
+        status="completed",
+        claim_count=claims,
+        evidence_count=evidences,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        detail={
+            "session_id": session_id,
+            "phase_ms": phase_ms,
+            "enable_judge": bool(req.enable_judge),
+            "enable_llm_analysis": bool(req.enable_llm_analysis),
+        },
+    )
+
     yield StreamEvent(type="result", data=result_payload)
 
 
@@ -712,6 +775,9 @@ async def generate_daily_report(req: DailyPaperRequest):
     if not cleaned_queries:
         raise HTTPException(status_code=400, detail="queries is required")
 
+    started = time.perf_counter()
+    metric_store = _get_workflow_metric_store()
+
     # Fast sync path when no long-running step is requested — avoids SSE overhead
     if (
         not req.enable_llm_analysis
@@ -720,7 +786,29 @@ async def generate_daily_report(req: DailyPaperRequest):
         and not req.resume
         and not req.session_id
     ):
-        return await _sync_daily_report(req, cleaned_queries)
+        try:
+            payload = await _sync_daily_report(req, cleaned_queries)
+            report = payload.report if isinstance(payload, DailyPaperResponse) else {}
+            claims, evidences = _count_report_claims_and_evidence(report)
+            metric_store.record_metric(
+                workflow="paperscool_daily",
+                stage="sync_result",
+                status="completed",
+                claim_count=claims,
+                evidence_count=evidences,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                detail={"mode": "sync"},
+            )
+            return payload
+        except Exception as exc:
+            metric_store.record_metric(
+                workflow="paperscool_daily",
+                stage="sync_result",
+                status="failed",
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                detail={"mode": "sync", "error": str(exc)},
+            )
+            raise
 
     # SSE streaming path for long-running operations
     return StreamingResponse(
@@ -842,12 +930,21 @@ async def approve_daily_session(session_id: str):
         raise HTTPException(status_code=409, detail="session is not pending approval")
 
     final_payload = _finalize_approved_session(session)
+    claims, evidences = _count_report_claims_and_evidence(final_payload.get("report") or {})
     _pipeline_session_store.update_status(
         session_id=session_id,
         status="completed",
         checkpoint="result",
         state_patch={"approved_at": True},
         result=final_payload,
+    )
+    _get_workflow_metric_store().record_metric(
+        workflow="paperscool_daily",
+        stage="approval_finalize",
+        status="completed",
+        claim_count=claims,
+        evidence_count=evidences,
+        detail={"session_id": session_id, "mode": "approval"},
     )
     updated = _pipeline_session_store.get_session(session_id)
     return PipelineSessionResponse(session=updated or {})
@@ -877,6 +974,12 @@ async def reject_daily_session(session_id: str, req: ApprovalDecisionRequest):
         checkpoint="approval_rejected",
         state_patch={"reject_reason": req.reason or ""},
         result=rejected_result,
+    )
+    _get_workflow_metric_store().record_metric(
+        workflow="paperscool_daily",
+        stage="approval_finalize",
+        status="rejected",
+        detail={"session_id": session_id, "reason": req.reason or ""},
     )
     updated = _pipeline_session_store.get_session(session_id)
     return PipelineSessionResponse(session=updated or {})
@@ -1196,6 +1299,8 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
 
 
 async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
+    started = time.perf_counter()
+    metric_store = _get_workflow_metric_store()
     report = copy.deepcopy(req.report)
     llm_service = get_llm_service()
 
@@ -1353,6 +1458,20 @@ async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
         yield StreamEvent(type="judge_done", data=report["judge"])
 
     markdown = render_daily_paper_markdown(report)
+    claims, evidences = _count_report_claims_and_evidence(report)
+    metric_store.record_metric(
+        workflow="paperscool_analyze",
+        stage="result",
+        status="completed",
+        claim_count=claims,
+        evidence_count=evidences,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        detail={
+            "run_judge": bool(req.run_judge),
+            "run_trends": bool(req.run_trends),
+            "run_insight": bool(req.run_insight),
+        },
+    )
     yield StreamEvent(type="result", data={"report": report, "markdown": markdown})
 
 
