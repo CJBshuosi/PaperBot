@@ -102,6 +102,11 @@ def _count_report_claims_and_evidence(report: Dict[str, Any]) -> tuple[int, int]
             claims += 1
             if item.get("url") or item.get("pdf_url") or item.get("external_url"):
                 evidences += 1
+            judge = item.get("judge")
+            if isinstance(judge, dict):
+                eq = judge.get("evidence_quotes")
+                if isinstance(eq, list) and eq:
+                    evidences += len(eq)
     return claims, evidences
 
 
