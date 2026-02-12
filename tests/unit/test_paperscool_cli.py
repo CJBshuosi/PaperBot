@@ -3,38 +3,40 @@ import json
 from paperbot.presentation.cli import main as cli_main
 
 
-class _FakeWorkflow:
-    def run(self, *, queries, sources, branches, top_k_per_query, show_per_branch):
-        return {
-            "source": "papers.cool",
-            "fetched_at": "2026-02-09T00:00:00+00:00",
-            "sources": sources,
-            "queries": [
-                {
-                    "raw_query": queries[0],
-                    "normalized_query": "icl compression",
-                    "tokens": ["icl", "compression"],
-                    "total_hits": 1,
-                    "items": [],
-                }
-            ],
+_FAKE_SEARCH_RESULT = {
+    "source": "papers.cool",
+    "fetched_at": "2026-02-09T00:00:00+00:00",
+    "sources": ["papers_cool"],
+    "queries": [
+        {
+            "raw_query": "ICL压缩",
+            "normalized_query": "icl compression",
+            "tokens": ["icl", "compression"],
+            "total_hits": 1,
             "items": [],
-            "summary": {
-                "unique_items": 1,
-                "total_query_hits": 1,
-                "top_titles": ["UniICL"],
-                "source_breakdown": {sources[0]: 1},
-                "query_highlights": [
-                    {
-                        "raw_query": queries[0],
-                        "normalized_query": "icl compression",
-                        "hit_count": 1,
-                        "top_title": "UniICL",
-                        "top_keywords": ["icl", "compression"],
-                    }
-                ],
-            },
         }
+    ],
+    "items": [],
+    "summary": {
+        "unique_items": 1,
+        "total_query_hits": 1,
+        "top_titles": ["UniICL"],
+        "source_breakdown": {"papers_cool": 1},
+        "query_highlights": [
+            {
+                "raw_query": "ICL压缩",
+                "normalized_query": "icl compression",
+                "hit_count": 1,
+                "top_title": "UniICL",
+                "top_keywords": ["icl", "compression"],
+            }
+        ],
+    },
+}
+
+
+async def _fake_unified_search(**kwargs):
+    return _FAKE_SEARCH_RESULT
 
 
 def test_cli_topic_search_parser_flags():
@@ -66,7 +68,7 @@ def test_cli_topic_search_parser_flags():
 
 
 def test_cli_topic_search_json_output(monkeypatch, capsys):
-    monkeypatch.setattr(cli_main, "_create_topic_search_workflow", lambda: _FakeWorkflow())
+    monkeypatch.setattr(cli_main, "run_unified_topic_search", _fake_unified_search)
 
     exit_code = cli_main.run_cli(["topic-search", "-q", "ICL压缩", "--json"])
     captured = capsys.readouterr()
@@ -78,7 +80,7 @@ def test_cli_topic_search_json_output(monkeypatch, capsys):
 
 
 def test_cli_daily_paper_json_output(monkeypatch, capsys):
-    monkeypatch.setattr(cli_main, "_create_topic_search_workflow", lambda: _FakeWorkflow())
+    monkeypatch.setattr(cli_main, "run_unified_topic_search", _fake_unified_search)
 
     exit_code = cli_main.run_cli(["daily-paper", "-q", "ICL压缩", "--json"])
     captured = capsys.readouterr()
@@ -109,7 +111,7 @@ def test_cli_daily_paper_parser_with_llm_flags():
 
 
 def test_cli_daily_paper_json_output_with_llm(monkeypatch, capsys):
-    monkeypatch.setattr(cli_main, "_create_topic_search_workflow", lambda: _FakeWorkflow())
+    monkeypatch.setattr(cli_main, "run_unified_topic_search", _fake_unified_search)
     monkeypatch.setattr(
         cli_main,
         "enrich_daily_paper_report",
@@ -153,7 +155,7 @@ def test_cli_daily_paper_parser_with_judge_flags():
 
 
 def test_cli_daily_paper_json_output_with_judge(monkeypatch, capsys):
-    monkeypatch.setattr(cli_main, "_create_topic_search_workflow", lambda: _FakeWorkflow())
+    monkeypatch.setattr(cli_main, "run_unified_topic_search", _fake_unified_search)
 
     def _fake_judge(report, max_items_per_query, n_runs, judge_token_budget=0):
         report = dict(report)

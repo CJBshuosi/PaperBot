@@ -119,17 +119,6 @@ async def _run_topic_search(
     show_per_branch: int,
     min_score: float,
 ) -> Dict[str, Any]:
-    if callable(PapersCoolTopicSearchWorkflow):
-        workflow = PapersCoolTopicSearchWorkflow()
-        return workflow.run(
-            queries=queries,
-            sources=sources,
-            branches=branches,
-            top_k_per_query=top_k_per_query,
-            show_per_branch=show_per_branch,
-            min_score=min_score,
-        )
-
     return await run_unified_topic_search(
         queries=queries,
         sources=sources,
