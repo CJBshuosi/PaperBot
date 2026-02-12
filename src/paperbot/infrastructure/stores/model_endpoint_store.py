@@ -4,10 +4,16 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from loguru import logger
 from sqlalchemy import delete, desc, select
 
+from paperbot.infrastructure.stores.keychain import KeychainStore
 from paperbot.infrastructure.stores.models import Base, ModelEndpointModel
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
+from paperbot.utils.secret import decrypt as _decrypt_secret
+from paperbot.utils.secret import encrypt as _encrypt_secret
+
+_KEYCHAIN_MARKER = "__keychain__"
 
 _ALLOWED_VENDORS = {
     "openai",
@@ -128,8 +134,12 @@ class ModelEndpointStore:
                 api_key_text = str(payload.get("api_key") or "").strip()
                 if not api_key_text:
                     row.api_key_value = None
+                    KeychainStore.delete_key(name)
                 elif not api_key_text.startswith("***"):
-                    row.api_key_value = api_key_text
+                    if KeychainStore.store_key(name, api_key_text):
+                        row.api_key_value = _KEYCHAIN_MARKER
+                    else:
+                        row.api_key_value = _encrypt_secret(api_key_text)
             row.enabled = bool(payload.get("enabled", row.enabled))
             row.is_default = bool(payload.get("is_default", row.is_default))
             row.set_models(normalized_models)
@@ -164,6 +174,7 @@ class ModelEndpointStore:
             if row is None:
                 return False
             deleted_default = bool(row.is_default)
+            endpoint_name = row.name
             session.execute(
                 delete(ModelEndpointModel).where(ModelEndpointModel.id == int(endpoint_id))
             )
@@ -179,6 +190,7 @@ class ModelEndpointStore:
                     session.add(replacement)
 
             session.commit()
+            KeychainStore.delete_key(endpoint_name)
             return True
 
     def activate_endpoint(self, endpoint_id: int) -> Optional[Dict[str, Any]]:
@@ -205,7 +217,13 @@ class ModelEndpointStore:
     def _to_dict(row: ModelEndpointModel, *, include_secrets: bool = False) -> Dict[str, Any]:
         models = row.get_models()
         task_types = row.get_task_types()
-        key_raw = str(row.api_key_value or "").strip()
+        stored = str(row.api_key_value or "").strip()
+        if stored == _KEYCHAIN_MARKER:
+            key_raw = KeychainStore.get_key(row.name) or ""
+            key_source = "keychain"
+        else:
+            key_raw = _decrypt_secret(stored)
+            key_source = "db" if key_raw else ""
         key_present = bool(key_raw) or bool(os.getenv(row.api_key_env or ""))
         key_display = key_raw if include_secrets else _mask_secret(key_raw)
         return {
@@ -220,6 +238,7 @@ class ModelEndpointStore:
             "enabled": bool(row.enabled),
             "is_default": bool(row.is_default),
             "api_key_present": key_present,
+            "key_source": key_source,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }

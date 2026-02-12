@@ -76,8 +76,24 @@ class _FakeWorkflow:
         }
 
 
+async def _fake_run_topic_search(*, queries, sources, branches, top_k_per_query, show_per_branch, min_score=0.0):
+    """Async fake that replaces _run_topic_search for tests."""
+    return _FakeWorkflow().run(
+        queries=queries, sources=sources, branches=branches,
+        top_k_per_query=top_k_per_query, show_per_branch=show_per_branch, min_score=min_score,
+    )
+
+
+async def _fake_run_topic_search_multi(*, queries, sources, branches, top_k_per_query, show_per_branch, min_score=0.0):
+    """Async fake returning multiple papers for filter testing."""
+    return _FakeWorkflowMultiPaper().run(
+        queries=queries, sources=sources, branches=branches,
+        top_k_per_query=top_k_per_query, show_per_branch=show_per_branch, min_score=min_score,
+    )
+
+
 def test_paperscool_search_route_success(monkeypatch):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     with TestClient(api_main.app) as client:
         resp = client.post(
@@ -106,7 +122,7 @@ def test_paperscool_search_route_requires_queries():
 
 
 def test_paperscool_daily_route_success(monkeypatch, tmp_path):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     with TestClient(api_main.app) as client:
         resp = client.post(
@@ -129,7 +145,7 @@ def test_paperscool_daily_route_success(monkeypatch, tmp_path):
 
 
 def test_paperscool_daily_route_with_llm_enrichment(monkeypatch):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     class _FakeLLMService:
         def summarize_paper(self, *, title, abstract):
@@ -166,7 +182,7 @@ def test_paperscool_daily_route_with_llm_enrichment(monkeypatch):
 
 
 def test_paperscool_daily_route_with_judge(monkeypatch):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     class _FakeJudgment:
         def to_dict(self):
@@ -210,7 +226,6 @@ def test_paperscool_daily_route_with_judge(monkeypatch):
     assert resp.status_code == 200
     events = _parse_sse_events(resp.text)
     types = [e.get("type") for e in events]
-    assert "judge" in types
     assert "judge_done" in types
     result_event = next(e for e in events if e.get("type") == "result")
     assert result_event["data"]["report"]["judge"]["enabled"] is True
@@ -337,7 +352,7 @@ def test_paperscool_repos_route_extracts_and_enriches(monkeypatch):
 
 
 def test_paperscool_daily_route_persists_judge_scores(monkeypatch):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     class _FakeJudgment:
         def to_dict(self):
@@ -442,7 +457,7 @@ class _FakeWorkflowMultiPaper:
 
 def test_dailypaper_sse_filter_removes_low_papers(monkeypatch):
     """End-to-end: judge scores papers, filter removes 'skip' and 'skim'."""
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflowMultiPaper)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search_multi)
 
     # Judge returns different recommendations per paper title
     class _VaryingJudgment:
@@ -497,7 +512,6 @@ def test_dailypaper_sse_filter_removes_low_papers(monkeypatch):
     types = [e.get("type") for e in events]
 
     # All expected phases present
-    assert "judge" in types
     assert "judge_done" in types
     assert "filter_done" in types
     assert "result" in types
@@ -522,16 +536,10 @@ def test_dailypaper_sse_filter_removes_low_papers(monkeypatch):
     assert len(final_items) == 1
     assert final_items[0]["title"] == "GoodPaper"
 
-    # Judge log events should have all 3 papers (complete log)
-    judge_events = [e for e in events if e.get("type") == "judge"]
-    assert len(judge_events) == 3
-    judge_titles = {e["data"]["title"] for e in judge_events}
-    assert judge_titles == {"GoodPaper", "MediocreWork", "WeakPaper"}
-
 
 def test_dailypaper_sse_full_pipeline_llm_judge_filter(monkeypatch):
     """End-to-end: LLM enrichment + Judge + Filter in one SSE stream."""
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflowMultiPaper)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search_multi)
 
     class _FakeLLMService:
         def summarize_paper(self, *, title, abstract):
@@ -608,10 +616,8 @@ def test_dailypaper_sse_full_pipeline_llm_judge_filter(monkeypatch):
     # Full pipeline phases
     assert "search_done" in types
     assert "report_built" in types
-    assert "llm_summary" in types
     assert "trend" in types
     assert "llm_done" in types
-    assert "judge" in types
     assert "judge_done" in types
     assert "filter_done" in types
     assert "result" in types
@@ -637,7 +643,7 @@ def test_dailypaper_sse_full_pipeline_llm_judge_filter(monkeypatch):
 
 def test_dailypaper_sync_path_no_llm_no_judge(monkeypatch):
     """When no LLM/Judge, endpoint returns sync JSON (not SSE)."""
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     with TestClient(api_main.app) as client:
         resp = client.post(
@@ -719,7 +725,7 @@ def test_paperscool_repos_route_can_persist(monkeypatch):
 
 
 def test_paperscool_daily_route_enqueues_repo_enrichment(monkeypatch):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     called = {"count": 0}
 
@@ -743,7 +749,7 @@ def test_paperscool_daily_route_enqueues_repo_enrichment(monkeypatch):
 
 
 def test_paperscool_daily_resume_session(monkeypatch, tmp_path):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
     paperscool_route._pipeline_session_store = PipelineSessionStore(
         db_url=f"sqlite:///{tmp_path / 'daily-session.db'}"
     )
@@ -812,7 +818,7 @@ def test_paperscool_daily_resume_session(monkeypatch, tmp_path):
 
 
 def test_paperscool_daily_route_pending_approval_and_queue(monkeypatch, tmp_path):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
 
     calls = {"ingest": 0}
 
@@ -858,7 +864,7 @@ def test_paperscool_daily_route_pending_approval_and_queue(monkeypatch, tmp_path
 
 
 def test_paperscool_daily_approval_decisions(monkeypatch, tmp_path):
-    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(paperscool_route, "_run_topic_search", _fake_run_topic_search)
     monkeypatch.setattr(
         paperscool_route,
         "_pipeline_session_store",

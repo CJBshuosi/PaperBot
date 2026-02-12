@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from paperbot.context_engine.track_router import TrackRouter, TrackRouterConfig
-from paperbot.domain.paper import PaperMeta
 from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
 from paperbot.utils.logging_config import Logger, LogFiles
@@ -360,7 +359,6 @@ class ContextEngine:
         research_store: Optional[SqlAlchemyResearchStore] = None,
         memory_store: Optional[SqlAlchemyMemoryStore] = None,
         paper_store: Optional[Any] = None,
-        paper_searcher: Optional[Any] = None,
         search_service: Optional[Any] = None,
         track_router: Optional[TrackRouter] = None,
         config: Optional[ContextEngineConfig] = None,
@@ -368,7 +366,6 @@ class ContextEngine:
         self.research_store = research_store or SqlAlchemyResearchStore()
         self.memory_store = memory_store or SqlAlchemyMemoryStore()
         self.paper_store = paper_store
-        self.paper_searcher = paper_searcher
         self.search_service = search_service
         self.config = config or ContextEngineConfig()
         self.track_router = track_router or TrackRouter(
@@ -586,46 +583,12 @@ class ContextEngine:
                         file=LogFiles.HARVEST,
                     )
                 else:
-                    # Legacy path: direct SemanticScholarSearch
-                    searcher = self.paper_searcher
-                    if searcher is None:
-                        from paperbot.utils.search import SemanticScholarSearch
-
-                        searcher = SemanticScholarSearch()
-                        Logger.info("Initialized SemanticScholarSearch", file=LogFiles.HARVEST)
-
-                    Logger.info(
-                        f"Searching papers with query='{merged_query}', limit={fetch_limit}",
+                    Logger.warning(
+                        "No search_service provided — skipping paper search. "
+                        "Pass a PaperSearchService instance to ContextEngine.",
                         file=LogFiles.HARVEST,
                     )
-                    resp = await asyncio.to_thread(
-                        searcher.search_papers, merged_query, fetch_limit
-                    )
-                    papers_count = len(getattr(resp, "papers", []) or [])
-                    Logger.info(f"Search returned {papers_count} papers", file=LogFiles.HARVEST)
-
                     raw = []
-                    for p in getattr(resp, "papers", []) or []:
-                        authors = []
-                        for a in getattr(p, "authors", []) or []:
-                            if isinstance(a, dict):
-                                name = str(a.get("name") or "").strip()
-                                if name:
-                                    authors.append(name)
-                        raw.append(
-                            PaperMeta(
-                                paper_id=str(getattr(p, "paper_id", "") or ""),
-                                title=str(getattr(p, "title", "") or ""),
-                                abstract=getattr(p, "abstract", None),
-                                year=getattr(p, "year", None),
-                                venue=getattr(p, "venue", None),
-                                citation_count=int(getattr(p, "citation_count", 0) or 0),
-                                authors=authors,
-                                url=getattr(p, "url", None),
-                                fields_of_study=list(getattr(p, "fields_of_study", []) or []),
-                                publication_date=getattr(p, "publication_date", None),
-                            ).to_dict()
-                        )
 
                 # Feedback filtering + dedup
                 seen_titles: set[str] = set()

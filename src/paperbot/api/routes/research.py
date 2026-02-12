@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
@@ -1119,6 +1120,13 @@ class WorkflowMetricsResponse(BaseModel):
     summary: Dict[str, Any]
 
 
+class EvidenceCoverageResponse(BaseModel):
+    coverage_rate: float
+    total_claims: int
+    total_with_evidence: int
+    trend: List[Dict[str, Any]]
+
+
 @router.get("/research/metrics/workflows", response_model=WorkflowMetricsResponse)
 def get_workflow_metrics_summary(
     days: int = Query(7, ge=1, le=90),
@@ -1131,6 +1139,37 @@ def get_workflow_metrics_summary(
         track_id=track_id,
     )
     return WorkflowMetricsResponse(summary=summary)
+
+
+@router.get("/research/metrics/evidence-coverage", response_model=EvidenceCoverageResponse)
+def get_evidence_coverage(
+    days: int = Query(7, ge=1, le=90),
+    workflow: Optional[str] = None,
+    track_id: Optional[int] = None,
+):
+    summary = _get_workflow_metric_store().summarize(
+        days=days,
+        workflow=workflow,
+        track_id=track_id,
+    )
+    totals = summary.get("totals", {})
+    total_claims = int(totals.get("claim_count") or 0)
+    total_with_evidence = int(totals.get("evidence_count") or 0)
+    coverage_rate = float(totals.get("coverage_rate") or 0.0)
+
+    trend = []
+    for day_bucket in summary.get("by_day", []):
+        trend.append({
+            "date": day_bucket.get("date", ""),
+            "rate": float(day_bucket.get("coverage_rate") or 0.0),
+        })
+
+    return EvidenceCoverageResponse(
+        coverage_rate=coverage_rate,
+        total_claims=total_claims,
+        total_with_evidence=total_with_evidence,
+        trend=trend,
+    )
 
 
 @router.post("/research/context", response_model=ContextResponse)
@@ -1607,4 +1646,140 @@ async def scholar_trends(req: ScholarTrendsRequest):
         ],
         recent_papers=recent_papers[:10],
         trend_summary=trend_summary,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Paper export (BibTeX / RIS / Markdown)
+# ---------------------------------------------------------------------------
+
+def _make_citation_key(authors: List[str], year: Optional[int]) -> str:
+    """first_author_lastname + year, e.g. 'smith2025'."""
+    lastname = "unknown"
+    if authors:
+        parts = authors[0].strip().split()
+        if parts:
+            lastname = re.sub(r"[^a-zA-Z]", "", parts[-1]).lower() or "unknown"
+    return f"{lastname}{year or 'nd'}"
+
+
+def _dedup_citation_keys(keys: List[str]) -> List[str]:
+    """Append a/b/c suffixes when keys collide."""
+    seen: Dict[str, int] = {}
+    result: List[str] = []
+    for k in keys:
+        count = seen.get(k, 0)
+        seen[k] = count + 1
+        result.append(k if count == 0 else f"{k}{chr(ord('a') + count)}")
+    return result
+
+
+def _escape_bibtex(value: str) -> str:
+    return value.replace("{", "\\{").replace("}", "\\}")
+
+
+def _paper_to_bibtex(paper: Dict[str, Any], key: str) -> str:
+    entry_type = "article" if paper.get("doi") else "misc"
+    lines = [f"@{entry_type}{{{key},"]
+    lines.append(f"  title = {{{_escape_bibtex(paper.get('title') or '')}}},")
+    authors = paper.get("authors") or []
+    if authors:
+        lines.append(f"  author = {{{_escape_bibtex(' and '.join(authors))}}},")
+    if paper.get("year"):
+        lines.append(f"  year = {{{paper['year']}}},")
+    if paper.get("venue"):
+        field = "journal" if paper.get("doi") else "booktitle"
+        lines.append(f"  {field} = {{{_escape_bibtex(paper['venue'])}}},")
+    if paper.get("doi"):
+        lines.append(f"  doi = {{{paper['doi']}}},")
+    if paper.get("url"):
+        lines.append(f"  url = {{{paper['url']}}},")
+    if paper.get("arxiv_id"):
+        lines.append(f"  eprint = {{{paper['arxiv_id']}}},")
+        lines.append("  archiveprefix = {arXiv},")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _paper_to_ris(paper: Dict[str, Any]) -> str:
+    venue = (paper.get("venue") or "").lower()
+    is_conf = any(kw in venue for kw in ("conf", "proc", "sympos", "workshop"))
+    lines = [f"TY  - {'CONF' if is_conf else 'JOUR'}"]
+    lines.append(f"TI  - {paper.get('title') or ''}")
+    for author in paper.get("authors") or []:
+        lines.append(f"AU  - {author}")
+    if paper.get("year"):
+        lines.append(f"PY  - {paper['year']}")
+    if paper.get("venue"):
+        lines.append(f"JO  - {paper['venue']}")
+    if paper.get("doi"):
+        lines.append(f"DO  - {paper['doi']}")
+    if paper.get("url"):
+        lines.append(f"UR  - {paper['url']}")
+    if paper.get("arxiv_id"):
+        lines.append(f"AN  - {paper['arxiv_id']}")
+    lines.append("ER  - ")
+    return "\n".join(lines)
+
+
+def _paper_to_markdown(paper: Dict[str, Any]) -> str:
+    authors = ", ".join(paper.get("authors") or ["Unknown"])
+    title = paper.get("title") or "Untitled"
+    year = paper.get("year") or "n.d."
+    venue = paper.get("venue") or ""
+    parts = [f"- **{title}**", f"  {authors} ({year})"]
+    if venue:
+        parts.append(f"  *{venue}*")
+    links: List[str] = []
+    if paper.get("url"):
+        links.append(f"[URL]({paper['url']})")
+    if paper.get("doi"):
+        links.append(f"[DOI](https://doi.org/{paper['doi']})")
+    if paper.get("arxiv_id"):
+        links.append(f"[arXiv](https://arxiv.org/abs/{paper['arxiv_id']})")
+    if links:
+        parts.append(f"  {' | '.join(links)}")
+    return "\n".join(parts)
+
+
+@router.get("/research/papers/export")
+def export_papers(
+    user_id: str = "default",
+    track_id: Optional[int] = None,
+    format: str = Query("bibtex", pattern="^(bibtex|ris|markdown)$"),
+):
+    items = _research_store.list_saved_papers(
+        user_id=user_id, track_id=track_id, limit=1000
+    )
+    papers = [item["paper"] for item in items if item.get("paper")]
+
+    if not papers:
+        raise HTTPException(status_code=404, detail="No saved papers found")
+
+    if format == "bibtex":
+        raw_keys = [_make_citation_key(p.get("authors") or [], p.get("year")) for p in papers]
+        keys = _dedup_citation_keys(raw_keys)
+        body = "\n\n".join(_paper_to_bibtex(p, k) for p, k in zip(papers, keys))
+        return Response(
+            content=body,
+            media_type="application/x-bibtex",
+            headers={"Content-Disposition": "attachment; filename=papers.bib"},
+        )
+
+    if format == "ris":
+        body = "\n\n".join(_paper_to_ris(p) for p in papers)
+        return Response(
+            content=body,
+            media_type="application/x-research-info-systems",
+            headers={"Content-Disposition": "attachment; filename=papers.ris"},
+        )
+
+    # markdown
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    header = f"---\nexported: {now_iso}\ncount: {len(papers)}\n---\n\n# Saved Papers\n"
+    body = header + "\n\n".join(_paper_to_markdown(p) for p in papers)
+    return Response(
+        content=body,
+        media_type="text/markdown",
+        headers={"Content-Disposition": "attachment; filename=papers.md"},
     )

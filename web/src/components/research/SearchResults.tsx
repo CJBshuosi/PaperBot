@@ -24,6 +24,8 @@ const SOURCE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "semantic_scholar", label: "S2" },
   { value: "arxiv", label: "arXiv" },
   { value: "openalex", label: "OpenAlex" },
+  { value: "papers_cool", label: "papers.cool" },
+  { value: "hf_daily", label: "HF Daily" },
 ]
 
 function PaperCardSkeleton() {

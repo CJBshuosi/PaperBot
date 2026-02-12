@@ -33,6 +33,77 @@ def test_paper_judge_single_parses_scores_and_overall():
     assert result.overall == 4.2
     assert result.recommendation == "must_read"
     assert result.judge_model == "judge-model"
+    assert result.evidence_quotes == []
+
+
+def test_paper_judge_parses_evidence_quotes():
+    payload = {
+        "relevance": {"score": 4, "rationale": "related"},
+        "novelty": {"score": 3, "rationale": "ok"},
+        "rigor": {"score": 4, "rationale": "solid"},
+        "impact": {"score": 3, "rationale": "moderate"},
+        "clarity": {"score": 4, "rationale": "clear"},
+        "overall": 3.6,
+        "one_line_summary": "decent paper",
+        "recommendation": "worth_reading",
+        "evidence_quotes": [
+            {"text": "We propose a novel method", "source_url": "https://arxiv.org/abs/1234", "page_hint": "Section 3"},
+            {"text": "Results show 20% improvement", "source_url": "", "page_hint": "Table 2"},
+        ],
+    }
+    judge = PaperJudge(llm_service=_FakeLLMService(payload))
+    result = judge.judge_single(paper={"title": "x", "snippet": "y"}, query="methods")
+
+    assert len(result.evidence_quotes) == 2
+    assert result.evidence_quotes[0]["text"] == "We propose a novel method"
+    assert result.evidence_quotes[0]["source_url"] == "https://arxiv.org/abs/1234"
+    assert result.evidence_quotes[1]["page_hint"] == "Table 2"
+
+    d = result.to_dict()
+    assert "evidence_quotes" in d
+    assert len(d["evidence_quotes"]) == 2
+
+
+def test_paper_judge_evidence_quotes_defaults_empty_on_missing():
+    payload = {
+        "relevance": {"score": 3, "rationale": "ok"},
+        "novelty": {"score": 3, "rationale": "ok"},
+        "rigor": {"score": 3, "rationale": "ok"},
+        "impact": {"score": 3, "rationale": "ok"},
+        "clarity": {"score": 3, "rationale": "ok"},
+        "overall": 3.0,
+        "one_line_summary": "average",
+        "recommendation": "skim",
+    }
+    judge = PaperJudge(llm_service=_FakeLLMService(payload))
+    result = judge.judge_single(paper={"title": "x", "snippet": "y"}, query="q")
+
+    assert result.evidence_quotes == []
+    assert result.to_dict()["evidence_quotes"] == []
+
+
+def test_paper_judge_evidence_quotes_skips_invalid_entries():
+    payload = {
+        "relevance": {"score": 3, "rationale": "ok"},
+        "novelty": {"score": 3, "rationale": "ok"},
+        "rigor": {"score": 3, "rationale": "ok"},
+        "impact": {"score": 3, "rationale": "ok"},
+        "clarity": {"score": 3, "rationale": "ok"},
+        "overall": 3.0,
+        "one_line_summary": "test",
+        "recommendation": "skim",
+        "evidence_quotes": [
+            {"text": "valid quote", "source_url": "", "page_hint": ""},
+            "not a dict",
+            {"text": "", "source_url": "url"},
+            {"no_text_key": "value"},
+        ],
+    }
+    judge = PaperJudge(llm_service=_FakeLLMService(payload))
+    result = judge.judge_single(paper={"title": "x", "snippet": "y"}, query="q")
+
+    assert len(result.evidence_quotes) == 1
+    assert result.evidence_quotes[0]["text"] == "valid quote"
 
 
 def test_paper_judge_calibration_uses_median():

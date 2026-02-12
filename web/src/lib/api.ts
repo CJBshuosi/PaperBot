@@ -1,5 +1,4 @@
 import {
-    Activity,
     Paper,
     PaperDetails,
     Scholar,
@@ -7,8 +6,8 @@ import {
     Stats,
     WikiConcept,
     TrendingTopic,
-    PipelineTask,
-    ReadingQueueItem,
+    TimelineItem,
+    SavedPaper,
     LLMUsageSummary,
     DeadlineRadarItem,
 } from "./types"
@@ -61,50 +60,20 @@ export async function fetchStats(): Promise<Stats> {
     }
 }
 
-export async function fetchActivities(): Promise<Activity[]> {
-    return [
-        {
-            id: "act-1",
-            type: "published",
-            timestamp: "Dec 3, 2025 · 12:00 PM",
-            scholar: {
-                name: "Dawn Song",
-                avatar: "https://avatar.vercel.sh/dawn.png",
-                affiliation: "UC Berkeley"
-            },
-            paper: {
-                title: "Large Language Models for Academic Research: A Comprehensive Review",
-                venue: "NeurIPS",
-                year: "2024",
-                citations: 127,
-                tags: ["Security", "LLM"],
-                abstract_snippet: "This paper provides a comprehensive review of recent advancements in large language models (LLMs) specifically tailored for academic research applications.",
-                is_influential: true
-            }
-        },
-        {
-            id: "act-2",
-            type: "milestone",
-            timestamp: "2h ago",
-            milestone: {
-                title: "Citation Milestone Reached: 1,000 Citations",
-                description: "Your tracked scholar, Andrew Ng, has reached a total of 1,000 citations across all publications.",
-                current_value: 1000,
-                trend: "up"
-            }
-        },
-        {
-            id: "act-3",
-            type: "conference",
-            timestamp: "5h ago",
-            conference: {
-                name: "ICML 2025",
-                location: "Vancouver, Canada",
-                date: "July 2025",
-                deadline_countdown: "5 days, 14 hours"
-            }
-        }
-    ]
+export async function fetchActivities(): Promise<TimelineItem[]> {
+    try {
+        const papers = await fetchPapers()
+        const items: TimelineItem[] = papers.slice(0, 10).map((p, i) => ({
+            id: `tl-${i}`,
+            kind: p.status === "Saved" ? "save" as const : "harvest" as const,
+            title: p.title,
+            subtitle: p.venue,
+            timestamp: "recently",
+        }))
+        return items
+    } catch {
+        return []
+    }
 }
 
 export async function fetchTrendingTopics(): Promise<TrendingTopic[]> {
@@ -120,28 +89,32 @@ export async function fetchTrendingTopics(): Promise<TrendingTopic[]> {
     ]
 }
 
-export async function fetchPipelineTasks(): Promise<PipelineTask[]> {
-    return [
-        { id: "1", paper_title: "Attention Is All You Need", status: "testing", progress: 80, started_at: "5m ago" },
-        { id: "2", paper_title: "ResNet: Deep Residual Learning", status: "building", progress: 45, started_at: "12m ago" },
-        { id: "3", paper_title: "BERT Pretraining", status: "failed", progress: 100, started_at: "1h ago" }
-    ]
-}
-
-export async function fetchReadingQueue(): Promise<ReadingQueueItem[]> {
-    return [
-        { id: "1", paper_id: "attention-is-all-you-need", title: "Attention Is All You Need", estimated_time: "15 min", priority: 1 },
-        { id: "2", paper_id: "bert-pretraining", title: "BERT Pretraining", estimated_time: "20 min", priority: 2 },
-        { id: "3", paper_id: "resnet", title: "ResNet Paper", estimated_time: "10 min", priority: 3 }
-    ]
+export async function fetchSavedPapers(): Promise<SavedPaper[]> {
+    try {
+        const papers = await fetchPapers()
+        return papers
+            .filter((p) => p.status === "Saved")
+            .slice(0, 5)
+            .map((p) => ({
+                id: p.id,
+                paper_id: p.id,
+                title: p.title,
+                authors: p.authors,
+                saved_at: "recently",
+            }))
+    } catch {
+        return []
+    }
 }
 
 export async function fetchLLMUsage(days: number = 7): Promise<LLMUsageSummary> {
     try {
         const qs = new URLSearchParams({ days: String(days) })
-        const res = await fetch(`${API_BASE_URL}/model-endpoints/usage?${qs.toString()}`, {
-            cache: "no-store",
-        })
+        // Use Next.js proxy route for SSR compatibility
+        const url = typeof window === "undefined"
+            ? `${API_BASE_URL}/model-endpoints/usage?${qs.toString()}`
+            : `/api/model-endpoints/usage?${qs.toString()}`
+        const res = await fetch(url, { cache: "no-store" })
         if (!res.ok) throw new Error("usage endpoint unavailable")
         const payload = await res.json() as { summary?: LLMUsageSummary }
         if (payload.summary) {
