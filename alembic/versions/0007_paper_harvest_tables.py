@@ -42,11 +42,20 @@ def _get_indexes(table: str) -> set[str]:
     return idx
 
 
+def _get_columns(table: str) -> set[str]:
+    cols = set()
+    for c in _insp().get_columns(table):
+        cols.add(str(c.get("name") or ""))
+    return cols
+
+
 def _create_index(name: str, table: str, cols: list[str]) -> None:
     if _is_offline():
         op.create_index(name, table, cols)
         return
     if name in _get_indexes(table):
+        return
+    if not set(cols).issubset(_get_columns(table)):
         return
     op.create_index(name, table, cols)
 
