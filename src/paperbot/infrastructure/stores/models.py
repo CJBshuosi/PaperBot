@@ -347,6 +347,27 @@ class MemoryEvalMetricModel(Base):
     detail_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class WorkflowEvalMetricModel(Base):
+    """Evaluation metrics for research workflow observability and evidence coverage."""
+
+    __tablename__ = "workflow_eval_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    workflow: Mapped[str] = mapped_column(String(64), index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="completed", index=True)
+    track_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+
+    claim_count: Mapped[int] = mapped_column(Integer, default=0)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    coverage_rate: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    elapsed_ms: Mapped[float] = mapped_column(Float, default=0.0)
+
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class ResearchTrackModel(Base):
     """
     User research direction / track.
