@@ -34,6 +34,8 @@ _paper_store: Optional["PaperStore"] = None
 _paper_search_service: Optional["PaperSearchService"] = None
 _anchor_service: Optional["AnchorService"] = None
 
+ENABLE_ANCHOR_AUTHORS = os.getenv("PAPERBOT_ENABLE_ANCHOR_AUTHORS", "true").lower() == "true"
+
 _DEADLINE_RADAR_DATA: List[Dict[str, Any]] = [
     {
         "name": "KDD 2026",
@@ -141,6 +143,15 @@ def _get_anchor_service() -> "AnchorService":
     if _anchor_service is None:
         _anchor_service = AnchorService()
     return _anchor_service
+
+
+def _ensure_anchor_feature_enabled() -> None:
+    if ENABLE_ANCHOR_AUTHORS:
+        return
+    raise HTTPException(
+        status_code=503,
+        detail="Anchor author feature is disabled by PAPERBOT_ENABLE_ANCHOR_AUTHORS",
+    )
 
 
 def _schedule_embedding_precompute(
@@ -1158,6 +1169,8 @@ def discover_track_anchors(
     window_days: int = Query(365, ge=30, le=3650),
     personalized: bool = Query(True),
 ):
+    _ensure_anchor_feature_enabled()
+
     track = _research_store.get_track(user_id=user_id, track_id=track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -1189,6 +1202,8 @@ def discover_track_anchors(
     response_model=AnchorActionResponse,
 )
 def set_anchor_action(track_id: int, author_id: int, req: AnchorActionRequest):
+    _ensure_anchor_feature_enabled()
+
     track = _research_store.get_track(user_id=req.user_id, track_id=track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -1223,6 +1238,8 @@ def set_anchor_action(track_id: int, author_id: int, req: AnchorActionRequest):
 
 @router.get("/research/tracks/{track_id}/anchors/actions", response_model=AnchorActionListResponse)
 def list_anchor_actions(track_id: int, user_id: str = "default"):
+    _ensure_anchor_feature_enabled()
+
     track = _research_store.get_track(user_id=user_id, track_id=track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")

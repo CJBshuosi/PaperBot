@@ -121,3 +121,24 @@ def test_anchor_action_rejects_invalid_action(tmp_path: Path, monkeypatch):
 
     # request model validation happens before handler.
     assert resp.status_code == 422
+
+
+def test_anchor_routes_respect_feature_flag(tmp_path: Path, monkeypatch):
+    db_url = f"sqlite:///{tmp_path / 'anchor-flag.db'}"
+    store = SqlAlchemyResearchStore(db_url=db_url)
+    track = store.create_track(
+        user_id="u-anchor", name="LLM", keywords=["attention"], activate=True
+    )
+
+    monkeypatch.setattr(research_route, "_research_store", store)
+    monkeypatch.setattr(research_route, "_anchor_service", AnchorService(db_url=db_url))
+    monkeypatch.setattr(research_route, "ENABLE_ANCHOR_AUTHORS", False)
+
+    with TestClient(api_main.app) as client:
+        resp = client.get(
+            f"/api/research/tracks/{int(track['id'])}/anchors/discover",
+            params={"user_id": "u-anchor"},
+        )
+
+    assert resp.status_code == 503
+    assert "PAPERBOT_ENABLE_ANCHOR_AUTHORS" in resp.json()["detail"]
