@@ -107,6 +107,8 @@ def test_anchor_service_discovers_and_scores_authors(tmp_path: Path):
     assert anchors[0]["anchor_level"] in {"core", "active", "emerging"}
     assert anchors[0]["anchor_score"] >= anchors[1]["anchor_score"]
     assert anchors[0]["relevance_score"] > 0
+    assert anchors[0]["score_breakdown"]["total"] == anchors[0]["anchor_score"]
+    assert anchors[0]["evidence_status"] == "ok"
     assert anchors[0]["evidence_papers"]
 
 

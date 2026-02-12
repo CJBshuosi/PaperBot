@@ -39,6 +39,15 @@ type AnchorAuthor = {
   anchor_level: string
   intrinsic_score: number
   relevance_score: number
+  score_breakdown?: {
+    intrinsic: number
+    relevance: number
+    network: number
+    personalization: number
+    total: number
+  }
+  evidence_status?: "ok" | "missing"
+  evidence_note?: string | null
   evidence_papers: Array<{
     paper_id: number
     title: string
@@ -583,7 +592,7 @@ export default function ResearchPageNew() {
                           </div>
                         ) : (
                           <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                            No evidence papers available yet.
+                            {anchor.evidence_note || "No evidence papers available yet."}
                           </div>
                         )}
                       </div>

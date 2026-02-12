@@ -189,6 +189,8 @@ class AnchorService:
                 )
 
                 relevance_score = 0.7 * keyword_match_rate + 0.3 * feedback_signal
+                network_score = 0.0
+                personalization_score = feedback_signal
                 anchor_score = 0.6 * intrinsic_score + 0.4 * relevance_score
                 level = _anchor_level(anchor_score)
 
@@ -208,6 +210,12 @@ class AnchorService:
                     }
                     for p in evidence
                 ]
+                evidence_status = "ok" if evidence_rows else "missing"
+                evidence_note = (
+                    None
+                    if evidence_rows
+                    else "No direct evidence papers found in current window; consider broadening keywords or window_days."
+                )
 
                 payload.append(
                     {
@@ -223,6 +231,15 @@ class AnchorService:
                         "citation_sum": int(item.citation_sum),
                         "keyword_match_rate": float(round(keyword_match_rate, 4)),
                         "feedback_signal": float(round(feedback_signal, 4)),
+                        "score_breakdown": {
+                            "intrinsic": float(round(intrinsic_score, 4)),
+                            "relevance": float(round(relevance_score, 4)),
+                            "network": float(round(network_score, 4)),
+                            "personalization": float(round(personalization_score, 4)),
+                            "total": float(round(anchor_score, 4)),
+                        },
+                        "evidence_status": evidence_status,
+                        "evidence_note": evidence_note,
                         "evidence_papers": evidence_rows,
                     }
                 )
