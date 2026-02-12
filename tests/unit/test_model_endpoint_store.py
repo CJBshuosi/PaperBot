@@ -6,7 +6,7 @@ from paperbot.infrastructure.stores.model_endpoint_store import ModelEndpointSto
 
 
 def test_activate_endpoint_switches_default(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path / store-activate.db}"
+    db_url = f"sqlite:///{tmp_path / 'store-activate.db'}"
     store = ModelEndpointStore(db_url=db_url)
 
     p1 = store.upsert_endpoint(
@@ -42,7 +42,7 @@ def test_activate_endpoint_switches_default(tmp_path: Path):
 
 
 def test_delete_default_reassigns_new_default(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path / store-delete.db}"
+    db_url = f"sqlite:///{tmp_path / 'store-delete.db'}"
     store = ModelEndpointStore(db_url=db_url)
 
     p1 = store.upsert_endpoint(
@@ -75,7 +75,7 @@ def test_delete_default_reassigns_new_default(tmp_path: Path):
 
 
 def test_masked_api_key_write_back_keeps_existing_secret(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path / store-mask.db}"
+    db_url = f"sqlite:///{tmp_path / 'store-mask.db'}"
     store = ModelEndpointStore(db_url=db_url)
 
     created = store.upsert_endpoint(

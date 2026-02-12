@@ -50,28 +50,38 @@ export function LLMUsageChart({ data }: LLMUsageChartProps) {
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">LLM Token Usage ({data.window_days} Days)</CardTitle>
+      <CardHeader className="py-3 px-4">
+        <CardTitle className="text-sm font-medium">
+          LLM Usage ({data.window_days}d)
+        </CardTitle>
+        <div className="flex gap-3 text-xs text-muted-foreground">
+          <span>{(data.totals?.total_tokens || 0).toLocaleString()} tokens</span>
+          <span>${Number(data.totals?.total_cost_usd || 0).toFixed(2)}</span>
+        </div>
       </CardHeader>
-      <CardContent>
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={chartRows}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="date" fontSize={12} />
-            <YAxis fontSize={12} tickFormatter={(v) => `${Math.round(Number(v) / 1000)}k`} />
-            <Tooltip formatter={(value) => `${Number(value).toLocaleString()} tokens`} />
-            <Legend formatter={(value) => formatProviderLabel(value)} />
-            {providerKeys.map((provider, index) => (
-              <Bar
-                key={provider}
-                dataKey={provider}
-                name={provider}
-                fill={BAR_COLORS[index % BAR_COLORS.length]}
-                stackId="providers"
-              />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
+      <CardContent className="px-2 py-2">
+        {chartRows.length > 0 ? (
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={chartRows}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" fontSize={11} />
+              <YAxis fontSize={11} tickFormatter={(v) => `${Math.round(Number(v) / 1000)}k`} />
+              <Tooltip formatter={(value) => `${Number(value).toLocaleString()} tokens`} />
+              <Legend formatter={(value) => formatProviderLabel(value)} />
+              {providerKeys.map((provider, index) => (
+                <Bar
+                  key={provider}
+                  dataKey={provider}
+                  name={provider}
+                  fill={BAR_COLORS[index % BAR_COLORS.length]}
+                  stackId="providers"
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <p className="text-xs text-muted-foreground py-4 text-center">No usage data yet.</p>
+        )}
       </CardContent>
     </Card>
   )

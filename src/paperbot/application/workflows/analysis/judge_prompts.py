@@ -50,7 +50,10 @@ def build_paper_judge_user_prompt(*, query: str, paper: Dict[str, Any], rubric: 
         f"    {dims_json},\n"
         '    "overall": <weighted float 1.0-5.0>,\n'
         '    "one_line_summary": "<one sentence takeaway>",\n'
-        '    "recommendation": "<must_read|worth_reading|skim|skip>"\n'
+        '    "recommendation": "<must_read|worth_reading|skim|skip>",\n'
+        '    "evidence_quotes": [\n'
+        '        {"text": "<exact quote from abstract/paper>", "source_url": "<url if available>", "page_hint": "<section or page>"}\n'
+        "    ]\n"
         "}\n"
     )
 

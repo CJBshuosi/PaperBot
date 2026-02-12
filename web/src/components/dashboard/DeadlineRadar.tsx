@@ -18,55 +18,44 @@ export function DeadlineRadar({ items }: DeadlineRadarProps) {
           Deadline Radar
         </CardTitle>
       </CardHeader>
-      <CardContent className="px-4 py-2 space-y-2">
+      <CardContent className="px-4 py-2 space-y-1.5">
         {!items.length ? (
-          <p className="text-xs text-muted-foreground">No upcoming deadlines in selected window.</p>
+          <p className="text-xs text-muted-foreground">No upcoming deadlines.</p>
         ) : (
-          items.map((item) => (
-            <div key={`${item.name}-${item.deadline}`} className="rounded-md border p-2.5 space-y-2">
+          items.slice(0, 5).map((item) => (
+            <div key={`${item.name}-${item.deadline}`} className="rounded-md border p-2 space-y-1.5">
               <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-sm font-medium leading-tight">{item.name}</p>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium leading-tight truncate">{item.name}</p>
                   <p className="text-xs text-muted-foreground">
                     {item.field} · D-{item.days_left}
                   </p>
                 </div>
-                <Badge variant="secondary" className="text-xs">
+                <Badge variant="secondary" className="text-xs shrink-0">
                   CCF {item.ccf_level}
                 </Badge>
               </div>
 
-              {!!item.matched_tracks?.length && (
-                <div className="flex flex-wrap gap-1.5">
-                  {item.matched_tracks.slice(0, 2).map((track) => (
-                    <Link
-                      key={`${item.name}-${track.track_id}`}
-                      href={`/research?track_id=${track.track_id}`}
-                      className="inline-flex"
-                    >
-                      <Badge variant="outline" className="text-xs hover:bg-muted cursor-pointer">
-                        Track: {track.track_name}
-                      </Badge>
-                    </Link>
-                  ))}
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                <Link
-                  href={`/workflows?query=${encodeURIComponent(item.workflow_query)}&source=deadline`}
-                  className="text-xs font-medium text-primary hover:underline"
-                >
-                  Open in Workflows
-                </Link>
+              <div className="flex flex-wrap gap-1.5">
+                {item.matched_tracks?.slice(0, 2).map((track) => (
+                  <Link
+                    key={`${item.name}-${track.track_id}`}
+                    href={`/research?track_id=${track.track_id}`}
+                    className="inline-flex"
+                  >
+                    <Badge variant="outline" className="text-xs hover:bg-muted cursor-pointer">
+                      {track.track_name}
+                    </Badge>
+                  </Link>
+                ))}
                 {item.url && (
                   <Link
                     href={item.url}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-xs text-muted-foreground hover:underline inline-flex items-center gap-1"
+                    className="text-xs text-muted-foreground hover:underline inline-flex items-center gap-0.5"
                   >
-                    Official CFP <ExternalLink className="h-3 w-3" />
+                    CFP <ExternalLink className="h-3 w-3" />
                   </Link>
                 )}
               </div>

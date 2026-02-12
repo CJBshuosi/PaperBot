@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Check, ExternalLink, Heart, Loader2, Save, ThumbsDown } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, ExternalLink, Heart, Loader2, Save, ThumbsDown } from "lucide-react"
 
 import { cn, safeHref } from "@/lib/utils"
 import { ReasoningBlock, ToolActionsGroup } from "@/components/ai-elements"
@@ -21,6 +21,7 @@ export type Paper = {
     recommendation?: string
     one_line_summary?: string
     judge_model?: string
+    evidence_quotes?: Array<{ text: string; source_url?: string; page_hint?: string }>
   }
   is_saved?: boolean
 }
@@ -54,6 +55,7 @@ export function PaperCard({
   const [isLiked, setIsLiked] = useState(false)
   const [isDisliked, setIsDisliked] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [evidenceOpen, setEvidenceOpen] = useState(false)
 
   const authorText = paper.authors?.slice(0, 3).join(", ") || "Unknown authors"
   const hasMoreAuthors = (paper.authors?.length || 0) > 3
@@ -61,6 +63,7 @@ export function PaperCard({
   const judge = paper.latest_judge
   const judgeOverall = Number(judge?.overall || 0)
   const judgeRec = String(judge?.recommendation || "").replace(/_/g, " ")
+  const evidenceQuotes = judge?.evidence_quotes || []
 
   const handleSave = async () => {
     if (!onSave || isSaved) return
@@ -174,6 +177,46 @@ export function PaperCard({
             <Badge variant="outline" className="text-xs capitalize">
               {judgeRec}
             </Badge>
+          )}
+        </div>
+      )}
+
+      {/* Evidence quotes */}
+      {judge && judgeOverall > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setEvidenceOpen(!evidenceOpen)}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {evidenceOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            Evidence {evidenceQuotes.length > 0 ? `(${evidenceQuotes.length})` : ""}
+          </button>
+          {evidenceOpen && (
+            <div className="mt-1.5 space-y-2">
+              {evidenceQuotes.length > 0 ? (
+                evidenceQuotes.map((eq, i) => (
+                  <div key={i} className="border-l-2 border-muted-foreground/30 pl-3 text-xs text-muted-foreground">
+                    <p className="italic">{eq.text}</p>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      {eq.source_url && (
+                        <a
+                          href={safeHref(eq.source_url) || "#"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline"
+                        >
+                          source
+                        </a>
+                      )}
+                      {eq.page_hint && <span>p. {eq.page_hint}</span>}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <Badge variant="outline" className="text-[10px] text-muted-foreground">No evidence</Badge>
+              )}
+            </div>
           )}
         </div>
       )}

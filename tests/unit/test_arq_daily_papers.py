@@ -28,26 +28,14 @@ def test_build_daily_paper_cron_jobs_enabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_daily_papers_job_generates_report_and_feed(tmp_path, monkeypatch):
-    class _FakeWorkflow:
-        def run(self, *, queries, sources, branches, top_k_per_query, show_per_branch):
-            return {
-                "source": "papers.cool",
-                "sources": sources,
-                "queries": [
-                    {
-                        "raw_query": queries[0],
-                        "normalized_query": "icl compression",
-                        "total_hits": 1,
-                        "items": [
-                            {
-                                "title": "UniICL",
-                                "url": "https://papers.cool/venue/2025.acl-long.24@ACL",
-                                "score": 9.9,
-                                "matched_queries": ["icl compression"],
-                            }
-                        ],
-                    }
-                ],
+    _fake_search_result = {
+        "source": "papers.cool",
+        "sources": ["papers_cool"],
+        "queries": [
+            {
+                "raw_query": "ICL压缩",
+                "normalized_query": "icl compression",
+                "total_hits": 1,
                 "items": [
                     {
                         "title": "UniICL",
@@ -56,16 +44,29 @@ async def test_daily_papers_job_generates_report_and_feed(tmp_path, monkeypatch)
                         "matched_queries": ["icl compression"],
                     }
                 ],
-                "summary": {
-                    "unique_items": 1,
-                    "total_query_hits": 1,
-                },
             }
+        ],
+        "items": [
+            {
+                "title": "UniICL",
+                "url": "https://papers.cool/venue/2025.acl-long.24@ACL",
+                "score": 9.9,
+                "matched_queries": ["icl compression"],
+            }
+        ],
+        "summary": {
+            "unique_items": 1,
+            "total_query_hits": 1,
+        },
+    }
 
-    import paperbot.application.workflows.paperscool_topic_search as topic_mod
+    import paperbot.application.workflows.unified_topic_search as uts_mod
     from paperbot.infrastructure.queue import arq_worker
 
-    monkeypatch.setattr(topic_mod, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    async def _fake_run_unified(**kwargs):
+        return _fake_search_result
+
+    monkeypatch.setattr(uts_mod, "run_unified_topic_search", _fake_run_unified)
 
     result = await arq_worker.daily_papers_job(
         ctx={},

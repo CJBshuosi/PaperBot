@@ -39,6 +39,11 @@ class PaperJudgment:
     recommendation: str
     judge_model: str = ""
     judge_cost_tier: int = 0
+    evidence_quotes: List[Dict[str, str]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.evidence_quotes is None:
+            self.evidence_quotes = []
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,6 +57,7 @@ class PaperJudgment:
             "recommendation": self.recommendation,
             "judge_model": self.judge_model,
             "judge_cost_tier": int(self.judge_cost_tier),
+            "evidence_quotes": list(self.evidence_quotes),
         }
 
 
@@ -108,6 +114,7 @@ class PaperJudge:
         payload["overall"] = self._weighted_overall(dim_medians)
         payload["one_line_summary"] = judgments[0].one_line_summary
         payload["recommendation"] = pick_recommendation([j.recommendation for j in judgments])
+        payload["evidence_quotes"] = judgments[0].evidence_quotes
 
         provider_info = {
             "model_name": judgments[0].judge_model,
@@ -191,6 +198,8 @@ class PaperJudge:
         if not one_line_summary:
             one_line_summary = self._fallback_summary(dims)
 
+        evidence_quotes = self._parse_evidence_quotes(payload.get("evidence_quotes"))
+
         return PaperJudgment(
             relevance=dims["relevance"],
             novelty=dims["novelty"],
@@ -202,7 +211,26 @@ class PaperJudge:
             recommendation=recommendation,
             judge_model=str(provider_info.get("model_name") or ""),
             judge_cost_tier=int(provider_info.get("cost_tier") or 0),
+            evidence_quotes=evidence_quotes,
         )
+
+    @staticmethod
+    def _parse_evidence_quotes(raw: Any) -> List[Dict[str, str]]:
+        if not isinstance(raw, list):
+            return []
+        result: List[Dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            result.append({
+                "text": text,
+                "source_url": str(item.get("source_url") or ""),
+                "page_hint": str(item.get("page_hint") or ""),
+            })
+        return result
 
     def _weighted_overall(self, scores: Dict[str, int]) -> float:
         weights = self._rubric.weights()

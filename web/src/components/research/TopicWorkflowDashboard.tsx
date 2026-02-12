@@ -7,6 +7,7 @@ import {
   BookOpenIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  DownloadIcon,
   FilterIcon,
   Loader2Icon,
   MailIcon,
@@ -1737,9 +1738,29 @@ export default function TopicWorkflowDashboard({ initialQueries }: TopicWorkflow
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm">DailyPaper Report</CardTitle>
-                    <div className="flex gap-2 text-xs text-muted-foreground">
-                      {dailyResult.markdown_path && <span>MD: {dailyResult.markdown_path}</span>}
-                      {dailyResult.json_path && <span>JSON: {dailyResult.json_path}</span>}
+                    <div className="flex items-center gap-2">
+                      {dailyResult.markdown && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 gap-1 text-xs"
+                          onClick={() => {
+                            const blob = new Blob([dailyResult.markdown || ""], { type: "text/markdown" })
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement("a")
+                            a.href = url
+                            a.download = `dailypaper-${dailyResult.report.date || "report"}.md`
+                            a.click()
+                            URL.revokeObjectURL(url)
+                          }}
+                        >
+                          <DownloadIcon className="size-3.5" /> Download .md
+                        </Button>
+                      )}
+                      <div className="flex gap-2 text-xs text-muted-foreground">
+                        {dailyResult.markdown_path && <span>MD: {dailyResult.markdown_path}</span>}
+                        {dailyResult.json_path && <span>JSON: {dailyResult.json_path}</span>}
+                      </div>
                     </div>
                   </div>
                 </CardHeader>
