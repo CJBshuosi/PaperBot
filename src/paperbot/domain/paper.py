@@ -3,9 +3,13 @@
 论文相关领域模型。
 """
 
+import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+
+from paperbot.domain.identity import PaperIdentity
 
 
 @dataclass
@@ -173,3 +177,61 @@ class CodeMeta:
             last_commit_date=data.get("last_commit_date"),
             reproducibility_score=data.get("reproducibility_score"),
         )
+
+
+def _compute_title_hash(title: str) -> str:
+    normalized = (title or "").lower()
+    normalized = re.sub(r"[^\w\s]", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+@dataclass
+class PaperCandidate:
+    """Normalized paper from any external source (Anti-Corruption Layer output)."""
+
+    title: str
+    abstract: str = ""
+    authors: List[str] = field(default_factory=list)
+    year: Optional[int] = None
+    venue: Optional[str] = None
+    citation_count: int = 0
+    url: Optional[str] = None
+    pdf_url: Optional[str] = None
+    keywords: List[str] = field(default_factory=list)
+    fields_of_study: List[str] = field(default_factory=list)
+    publication_date: Optional[str] = None
+    identities: List[PaperIdentity] = field(default_factory=list)
+    title_hash: str = ""
+    canonical_id: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not self.title_hash and self.title:
+            self.title_hash = _compute_title_hash(self.title)
+
+    def get_identity(self, source: str) -> Optional[str]:
+        for ident in self.identities:
+            if ident.source == source:
+                return ident.external_id
+        return None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "title": self.title,
+            "abstract": self.abstract,
+            "authors": self.authors,
+            "year": self.year,
+            "venue": self.venue,
+            "citation_count": self.citation_count,
+            "url": self.url,
+            "pdf_url": self.pdf_url,
+            "keywords": self.keywords,
+            "fields_of_study": self.fields_of_study,
+            "publication_date": self.publication_date,
+            "identities": [
+                {"source": i.source, "external_id": i.external_id}
+                for i in self.identities
+            ],
+            "title_hash": self.title_hash,
+            "canonical_id": self.canonical_id,
+        }

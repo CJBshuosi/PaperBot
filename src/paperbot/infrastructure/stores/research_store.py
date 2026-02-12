@@ -423,6 +423,7 @@ class SqlAlchemyResearchStore:
                 track_id=track_id,
                 paper_id=(paper_id or "").strip(),
                 paper_ref_id=resolved_paper_ref_id,
+                canonical_paper_id=resolved_paper_ref_id,  # dual-write
                 action=(action or "").strip(),
                 weight=float(weight or 0.0),
                 ts=now,
@@ -1379,7 +1380,6 @@ class SqlAlchemyResearchStore:
                 select(PaperModel).where(
                     or_(
                         PaperModel.url.in_(url_candidates),
-                        PaperModel.external_url.in_(url_candidates),
                         PaperModel.pdf_url.in_(url_candidates),
                     )
                 )

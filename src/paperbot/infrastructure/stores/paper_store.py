@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -9,16 +10,20 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from sqlalchemy import Integer, String, cast, desc, func, or_, select
 
 from paperbot.domain.harvest import HarvestedPaper, HarvestSource
+from paperbot.domain.identity import PaperIdentity
 from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
 from paperbot.infrastructure.stores.models import (
     Base,
     HarvestRunModel,
     PaperFeedbackModel,
+    PaperIdentifierModel,
     PaperJudgeScoreModel,
     PaperModel,
 )
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
 from paperbot.utils.logging_config import LogFiles, Logger
+
+USE_CANONICAL_FK = os.getenv("PAPERBOT_USE_CANONICAL_FK", "false").lower() == "true"
 
 
 def _utcnow() -> datetime:
@@ -230,7 +235,47 @@ class PaperStore:
 
             payload = self._paper_to_dict(row)
             payload["_created"] = created
+
+            # Dual-write: also populate paper_identifiers
+            self._sync_identifiers(session, row)
+
             return payload
+
+    @staticmethod
+    def _sync_identifiers(session, row: PaperModel) -> None:
+        """Write known external IDs to paper_identifiers (idempotent)."""
+        pairs: list[tuple[str, str]] = []
+        if row.semantic_scholar_id:
+            pairs.append(("semantic_scholar", row.semantic_scholar_id))
+        if row.arxiv_id:
+            pairs.append(("arxiv", row.arxiv_id))
+        if row.openalex_id:
+            pairs.append(("openalex", row.openalex_id))
+        if row.doi:
+            pairs.append(("doi", row.doi))
+
+        for source, eid in pairs:
+            existing = session.execute(
+                select(PaperIdentifierModel).where(
+                    PaperIdentifierModel.source == source,
+                    PaperIdentifierModel.external_id == eid,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    PaperIdentifierModel(
+                        paper_id=row.id,
+                        source=source,
+                        external_id=eid,
+                        created_at=_utcnow(),
+                    )
+                )
+            elif existing.paper_id != row.id:
+                existing.paper_id = row.id
+        try:
+            session.flush()
+        except Exception:
+            session.rollback()
 
     def upsert_many(
         self,
@@ -406,6 +451,14 @@ class PaperStore:
                     new_count += 1
 
             Logger.info("Committing transaction to database", file=LogFiles.HARVEST)
+            session.flush()
+
+            # Dual-write identifiers for all papers in this batch
+            for paper in papers:
+                existing = self._find_existing(session, paper)
+                if existing:
+                    self._sync_identifiers(session, existing)
+
             session.commit()
 
         Logger.info(
@@ -664,6 +717,14 @@ class PaperStore:
         if actions is None:
             actions = ["save"]
 
+        if USE_CANONICAL_FK:
+            return self._get_user_library_canonical(
+                user_id, session_provider=self._provider,
+                track_id=track_id, actions=actions,
+                sort_by=sort_by, sort_order=sort_order,
+                limit=limit, offset=offset,
+            )
+
         with self._provider.session() as session:
             # Join papers with feedback, then deduplicate by paper.id
             # paper_feedback.paper_id can be either:
@@ -758,6 +819,68 @@ class PaperStore:
                     action=row[1].action,
                 )
                 for row in paginated_results
+            ], total
+
+    def _get_user_library_canonical(
+        self,
+        user_id: str,
+        *,
+        session_provider,
+        track_id: Optional[int] = None,
+        actions: List[str],
+        sort_by: str,
+        sort_order: str,
+        limit: int,
+        offset: int,
+    ) -> Tuple[List[LibraryPaper], int]:
+        """Single FK JOIN path using paper_feedback.canonical_paper_id."""
+        with session_provider.session() as session:
+            stmt = (
+                select(PaperModel, PaperFeedbackModel)
+                .join(
+                    PaperFeedbackModel,
+                    PaperModel.id == PaperFeedbackModel.canonical_paper_id,
+                )
+                .where(
+                    PaperFeedbackModel.user_id == user_id,
+                    PaperFeedbackModel.action.in_(actions),
+                    PaperFeedbackModel.canonical_paper_id.is_not(None),
+                    PaperModel.deleted_at.is_(None),
+                )
+            )
+            if track_id is not None:
+                stmt = stmt.where(PaperFeedbackModel.track_id == track_id)
+
+            all_results = session.execute(stmt).all()
+
+            paper_map: Dict[int, Tuple[PaperModel, PaperFeedbackModel]] = {}
+            for row in all_results:
+                paper, feedback = row[0], row[1]
+                if paper.id not in paper_map or feedback.ts > paper_map[paper.id][1].ts:
+                    paper_map[paper.id] = (paper, feedback)
+
+            unique_results = list(paper_map.values())
+            min_ts = datetime.min.replace(tzinfo=timezone.utc)
+            if sort_by == "saved_at":
+                unique_results.sort(
+                    key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc")
+                )
+            elif sort_by == "citation_count":
+                unique_results.sort(
+                    key=lambda x: x[0].citation_count or 0, reverse=(sort_order.lower() == "desc")
+                )
+            else:
+                unique_results.sort(
+                    key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc")
+                )
+
+            total = len(unique_results)
+            paginated = unique_results[offset : offset + limit]
+            return [
+                LibraryPaper(
+                    paper=row[0], saved_at=row[1].ts, track_id=row[1].track_id, action=row[1].action
+                )
+                for row in paginated
             ], total
 
     def remove_from_library(self, user_id: str, paper_id: int) -> bool:
