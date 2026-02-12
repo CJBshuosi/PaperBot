@@ -84,9 +84,17 @@ export function SplitPanels({ storageKey, rail, list, detail, className }: Split
 
   useEffect(() => {
     if (isMobile) return
-    if (collapsed.rail) railPanelRef.current?.collapse()
-    if (collapsed.list) listPanelRef.current?.collapse()
-    if (collapsed.detail) detailPanelRef.current?.collapse()
+    // Defer collapse until panels are fully mounted and constraints registered.
+    const frame = requestAnimationFrame(() => {
+      try {
+        if (collapsed.rail) railPanelRef.current?.collapse()
+        if (collapsed.list) listPanelRef.current?.collapse()
+        if (collapsed.detail) detailPanelRef.current?.collapse()
+      } catch {
+        // Panel constraints may not be ready yet on first render.
+      }
+    })
+    return () => cancelAnimationFrame(frame)
   }, [collapsed, isMobile, railPanelRef, listPanelRef, detailPanelRef])
 
   const setCollapsedState = (key: PanelKey, value: boolean) => {
@@ -152,10 +160,10 @@ export function SplitPanels({ storageKey, rail, list, detail, className }: Split
         <ResizablePanel
           id="rail"
           panelRef={railPanelRef}
-          defaultSize={20}
-          minSize={12}
+          defaultSize="20"
+          minSize="12"
           collapsible
-          collapsedSize={0}
+          collapsedSize="0"
           onResize={({ inPixels }) => setCollapsedState("rail", inPixels < 2)}
           className="min-h-0 overflow-auto"
         >
@@ -167,10 +175,10 @@ export function SplitPanels({ storageKey, rail, list, detail, className }: Split
         <ResizablePanel
           id="list"
           panelRef={listPanelRef}
-          defaultSize={50}
-          minSize={24}
+          defaultSize="50"
+          minSize="24"
           collapsible
-          collapsedSize={0}
+          collapsedSize="0"
           onResize={({ inPixels }) => setCollapsedState("list", inPixels < 2)}
           className="min-h-0 overflow-auto"
         >
@@ -182,10 +190,10 @@ export function SplitPanels({ storageKey, rail, list, detail, className }: Split
         <ResizablePanel
           id="detail"
           panelRef={detailPanelRef}
-          defaultSize={30}
-          minSize={18}
+          defaultSize="30"
+          minSize="18"
           collapsible
-          collapsedSize={0}
+          collapsedSize="0"
           onResize={({ inPixels }) => setCollapsedState("detail", inPixels < 2)}
           className="min-h-0 overflow-auto"
         >
