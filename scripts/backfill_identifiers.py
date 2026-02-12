@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from sqlalchemy import select  # noqa: E402
+from paperbot.application.services.identity_resolver import IdentityResolver  # noqa: E402
 from paperbot.infrastructure.stores.models import (  # noqa: E402
     Base,
     PaperFeedbackModel,
@@ -76,26 +78,51 @@ def backfill_identifiers(provider: SessionProvider) -> dict:
     return {"identifiers_created": created, "identifiers_skipped": skipped}
 
 
-def backfill_canonical_paper_id(provider: SessionProvider) -> dict:
-    """Populate paper_feedback.canonical_paper_id from paper_ref_id."""
+def backfill_canonical_paper_id(provider: SessionProvider, db_url: str) -> dict:
+    """Populate paper_feedback.canonical_paper_id from paper_ref_id / IdentityResolver."""
+    resolver = IdentityResolver(db_url=db_url)
     updated = 0
+    resolved_from_ref = 0
+    resolved_from_identity = 0
+    unresolved = 0
     with provider.session() as session:
         rows = (
             session.execute(
                 select(PaperFeedbackModel).where(
                     PaperFeedbackModel.canonical_paper_id.is_(None),
-                    PaperFeedbackModel.paper_ref_id.is_not(None),
                 )
             )
             .scalars()
             .all()
         )
         for row in rows:
-            row.canonical_paper_id = row.paper_ref_id
-            updated += 1
+            resolved_id = int(row.paper_ref_id) if row.paper_ref_id is not None else None
+            if resolved_id is None:
+                try:
+                    metadata = json.loads(row.metadata_json or "{}")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                except Exception:
+                    metadata = {}
+                resolved_id = resolver.resolve(str(row.paper_id or "").strip(), hints=metadata)
+
+            if resolved_id is not None:
+                row.canonical_paper_id = int(resolved_id)
+                updated += 1
+                if row.paper_ref_id is not None:
+                    resolved_from_ref += 1
+                else:
+                    resolved_from_identity += 1
+            else:
+                unresolved += 1
         session.commit()
 
-    return {"feedback_rows_updated": updated}
+    return {
+        "feedback_rows_updated": updated,
+        "resolved_from_paper_ref_id": resolved_from_ref,
+        "resolved_from_identity_resolver": resolved_from_identity,
+        "feedback_rows_unresolved": unresolved,
+    }
 
 
 def main() -> None:
@@ -112,7 +139,7 @@ def main() -> None:
     print(result1)
 
     print("=== Backfilling canonical_paper_id ===")
-    result2 = backfill_canonical_paper_id(provider)
+    result2 = backfill_canonical_paper_id(provider, db_url)
     print(result2)
 
     print("Done.")
