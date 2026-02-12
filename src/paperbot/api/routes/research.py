@@ -32,6 +32,7 @@ _metric_collector: Optional[MemoryMetricCollector] = None
 _workflow_metric_store: Optional[WorkflowMetricStore] = None
 _paper_store: Optional["PaperStore"] = None
 _paper_search_service: Optional["PaperSearchService"] = None
+_anchor_service: Optional["AnchorService"] = None
 
 _DEADLINE_RADAR_DATA: List[Dict[str, Any]] = [
     {
@@ -130,6 +131,16 @@ def _get_paper_search_service() -> "PaperSearchService":
             registry=_get_paper_store(),
         )
     return _paper_search_service
+
+
+def _get_anchor_service() -> "AnchorService":
+    """Lazy initialization of anchor author discovery service."""
+    from paperbot.application.services.anchor_service import AnchorService
+
+    global _anchor_service
+    if _anchor_service is None:
+        _anchor_service = AnchorService()
+    return _anchor_service
 
 
 def _schedule_embedding_precompute(
@@ -995,6 +1006,14 @@ class TrackFeedResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class AnchorDiscoverResponse(BaseModel):
+    user_id: str
+    track_id: int
+    limit: int
+    window_days: int
+    items: List[Dict[str, Any]]
+
+
 class PaperDetailResponse(BaseModel):
     detail: Dict[str, Any]
 
@@ -1112,6 +1131,37 @@ def export_papers(
         content=body,
         media_type="text/markdown",
         headers={"Content-Disposition": "attachment; filename=papers.md"},
+    )
+
+
+@router.get("/research/tracks/{track_id}/anchors/discover", response_model=AnchorDiscoverResponse)
+def discover_track_anchors(
+    track_id: int,
+    user_id: str = "default",
+    limit: int = Query(20, ge=1, le=100),
+    window_days: int = Query(365, ge=30, le=3650),
+):
+    track = _research_store.get_track(user_id=user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    window_years = max(int(window_days) // 365, 1)
+    try:
+        items = _get_anchor_service().discover(
+            track_id=track_id,
+            user_id=user_id,
+            limit=limit,
+            window_years=window_years,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return AnchorDiscoverResponse(
+        user_id=user_id,
+        track_id=track_id,
+        limit=limit,
+        window_days=window_days,
+        items=items,
     )
 
 
