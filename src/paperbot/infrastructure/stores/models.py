@@ -709,6 +709,56 @@ class PaperImpressionModel(Base):
     track = relationship("ResearchTrackModel")
 
 
+class AuthorModel(Base):
+    """Canonical author entity used by anchor-author workflows."""
+
+    __tablename__ = "authors"
+    __table_args__ = (
+        UniqueConstraint("author_id", name="uq_authors_author_id"),
+        UniqueConstraint("slug", name="uq_authors_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    author_id: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    slug: Mapped[str] = mapped_column(String(256), index=True)
+
+    h_index: Mapped[int] = mapped_column(Integer, default=0)
+    citation_count: Mapped[int] = mapped_column(Integer, default=0)
+    paper_count: Mapped[int] = mapped_column(Integer, default=0)
+    anchor_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    anchor_level: Mapped[str] = mapped_column(String(32), default="background", index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    paper_links = relationship("PaperAuthorModel", back_populates="author")
+
+
+class PaperAuthorModel(Base):
+    """Paper-author mapping with author order metadata."""
+
+    __tablename__ = "paper_authors"
+    __table_args__ = (
+        UniqueConstraint("paper_id", "author_id", name="uq_paper_authors_paper_author"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), index=True
+    )
+    author_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    author_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    is_corresponding: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    paper = relationship("PaperModel", back_populates="author_links")
+    author = relationship("AuthorModel", back_populates="paper_links")
+
+
 class PaperModel(Base):
     """Harvested paper metadata from multiple sources."""
 
@@ -773,6 +823,9 @@ class PaperModel(Base):
     repo_rows = relationship("PaperRepoModel", back_populates="paper")
     identifiers = relationship(
         "PaperIdentifierModel", back_populates="paper", cascade="all, delete-orphan"
+    )
+    author_links = relationship(
+        "PaperAuthorModel", back_populates="paper", cascade="all, delete-orphan"
     )
 
     def get_authors(self) -> list:
