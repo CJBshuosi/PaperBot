@@ -23,6 +23,7 @@ def test_model_endpoint_crud_routes(tmp_path: Path, monkeypatch):
                 "vendor": "openai_compatible",
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_key_env": "OPENROUTER_API_KEY",
+                "api_key": "sk-openrouter-123456789",
                 "models": ["deepseek/deepseek-r1"],
                 "task_types": ["reasoning", "summary"],
                 "enabled": True,
@@ -31,6 +32,7 @@ def test_model_endpoint_crud_routes(tmp_path: Path, monkeypatch):
         )
         assert created.status_code == 200
         endpoint_id = created.json()["item"]["id"]
+        assert created.json()["item"]["api_key"].startswith("***")
 
         created2 = client.post(
             "/api/model-endpoints",
@@ -39,6 +41,7 @@ def test_model_endpoint_crud_routes(tmp_path: Path, monkeypatch):
                 "vendor": "openai_compatible",
                 "base_url": "https://alt.example/v1",
                 "api_key_env": "ALT_API_KEY",
+                "api_key": "sk-alt-0987654321",
                 "models": ["alt/model-x"],
                 "task_types": ["default"],
                 "enabled": True,
@@ -54,7 +57,10 @@ def test_model_endpoint_crud_routes(tmp_path: Path, monkeypatch):
 
         updated = client.patch(
             f"/api/model-endpoints/{endpoint_id}",
-            json={"models": ["deepseek/deepseek-r1", "openai/gpt-4o-mini"]},
+            json={
+                "models": ["deepseek/deepseek-r1", "openai/gpt-4o-mini"],
+                "api_key": created.json()["item"]["api_key"],
+            },
         )
         assert updated.status_code == 200
         assert len(updated.json()["item"]["models"]) == 2

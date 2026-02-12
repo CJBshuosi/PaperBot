@@ -54,6 +54,7 @@ class ModelConfig:
     model: str
     cost_tier: int = 1
     api_key_env: str = "OPENAI_API_KEY"
+    api_key: Optional[str] = None
     base_url: Optional[str] = None
     max_tokens: int = 4096
 
@@ -150,7 +151,7 @@ class ModelRouter:
 
     def _create_provider(self, config: ModelConfig) -> LLMProvider:
         """根据配置创建 Provider"""
-        api_key = os.getenv(config.api_key_env, "")
+        api_key = str(config.api_key or "").strip() or os.getenv(config.api_key_env, "")
 
         if config.provider == "openai":
             from .providers.openai_provider import OpenAIProvider
@@ -207,7 +208,7 @@ class ModelRouter:
             from paperbot.infrastructure.stores.model_endpoint_store import ModelEndpointStore
 
             store = ModelEndpointStore(auto_create_schema=False)
-            rows = store.list_endpoints(enabled_only=True)
+            rows = store.list_endpoints(enabled_only=True, include_secrets=True)
         except Exception as exc:
             logger.warning("Model registry unavailable, fallback to env routing: %s", exc)
             return None
@@ -229,6 +230,7 @@ class ModelRouter:
                 model=model_list[0],
                 cost_tier=1,
                 api_key_env=str(row.get("api_key_env") or "OPENAI_API_KEY"),
+                api_key=(str(row.get("api_key") or "").strip() or None),
                 base_url=(str(row.get("base_url") or "").strip() or None),
             )
             if bool(row.get("is_default")) and fallback_name is None:

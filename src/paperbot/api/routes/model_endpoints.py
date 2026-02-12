@@ -31,6 +31,7 @@ class ModelEndpointCreateRequest(BaseModel):
     vendor: str = "openai_compatible"
     base_url: Optional[str] = None
     api_key_env: str = "OPENAI_API_KEY"
+    api_key: Optional[str] = None
     models: List[str] = Field(default_factory=list)
     task_types: List[str] = Field(default_factory=list)
     enabled: bool = True
@@ -42,6 +43,7 @@ class ModelEndpointUpdateRequest(BaseModel):
     vendor: Optional[str] = None
     base_url: Optional[str] = None
     api_key_env: Optional[str] = None
+    api_key: Optional[str] = None
     models: Optional[List[str]] = None
     task_types: Optional[List[str]] = None
     enabled: Optional[bool] = None
@@ -88,6 +90,7 @@ def _build_model_config(endpoint: Dict[str, Any]) -> ModelConfig:
         provider=provider,
         model=models[0],
         api_key_env=str(endpoint.get("api_key_env") or "OPENAI_API_KEY"),
+        api_key=(str(endpoint.get("api_key") or "").strip() or None),
         base_url=(str(endpoint.get("base_url") or "").strip() or None),
     )
 
@@ -144,12 +147,14 @@ def activate_model_endpoint(endpoint_id: int):
 
 @router.post("/model-endpoints/{endpoint_id}/test", response_model=EndpointTestResponse)
 def test_model_endpoint(endpoint_id: int, req: EndpointTestRequest):
-    endpoint = _store.get_endpoint(endpoint_id)
+    endpoint = _store.get_endpoint(endpoint_id, include_secrets=True)
     if not endpoint:
         raise HTTPException(status_code=404, detail="model endpoint not found")
 
     api_key_env = str(endpoint.get("api_key_env") or "OPENAI_API_KEY")
-    api_key_present = bool(os.getenv(api_key_env))
+    api_key_present = bool(str(endpoint.get("api_key") or "").strip()) or bool(
+        os.getenv(api_key_env)
+    )
 
     try:
         cfg = _build_model_config(endpoint)

@@ -815,6 +815,7 @@ class ModelEndpointModel(Base):
     vendor: Mapped[str] = mapped_column(String(32), default="openai_compatible", index=True)
     base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     api_key_env: Mapped[str] = mapped_column(String(64), default="OPENAI_API_KEY")
+    api_key_value: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     models_json: Mapped[str] = mapped_column(Text, default="[]")
     task_types_json: Mapped[str] = mapped_column(Text, default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)

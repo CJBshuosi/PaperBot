@@ -39,21 +39,25 @@ class ModelEndpointStore:
         if auto_create_schema:
             Base.metadata.create_all(self._provider.engine)
 
-    def list_endpoints(self, *, enabled_only: bool = False) -> List[Dict[str, Any]]:
+    def list_endpoints(
+        self, *, enabled_only: bool = False, include_secrets: bool = False
+    ) -> List[Dict[str, Any]]:
         with self._provider.session() as session:
             stmt = select(ModelEndpointModel)
             if enabled_only:
                 stmt = stmt.where(ModelEndpointModel.enabled.is_(True))
             stmt = stmt.order_by(desc(ModelEndpointModel.is_default), ModelEndpointModel.name)
             rows = session.execute(stmt).scalars().all()
-            return [self._to_dict(row) for row in rows]
+            return [self._to_dict(row, include_secrets=include_secrets) for row in rows]
 
-    def get_endpoint(self, endpoint_id: int) -> Optional[Dict[str, Any]]:
+    def get_endpoint(
+        self, endpoint_id: int, *, include_secrets: bool = False
+    ) -> Optional[Dict[str, Any]]:
         with self._provider.session() as session:
             row = session.execute(
                 select(ModelEndpointModel).where(ModelEndpointModel.id == int(endpoint_id))
             ).scalar_one_or_none()
-            return self._to_dict(row) if row else None
+            return self._to_dict(row, include_secrets=include_secrets) if row else None
 
     def upsert_endpoint(
         self,
@@ -120,6 +124,12 @@ class ModelEndpointStore:
                 str(payload.get("api_key_env") or row.api_key_env or "OPENAI_API_KEY").strip()
                 or "OPENAI_API_KEY"
             )
+            if "api_key" in payload:
+                api_key_text = str(payload.get("api_key") or "").strip()
+                if not api_key_text:
+                    row.api_key_value = None
+                elif not api_key_text.startswith("***"):
+                    row.api_key_value = api_key_text
             row.enabled = bool(payload.get("enabled", row.enabled))
             row.is_default = bool(payload.get("is_default", row.is_default))
             row.set_models(normalized_models)
@@ -192,16 +202,19 @@ class ModelEndpointStore:
             return self._to_dict(row)
 
     @staticmethod
-    def _to_dict(row: ModelEndpointModel) -> Dict[str, Any]:
+    def _to_dict(row: ModelEndpointModel, *, include_secrets: bool = False) -> Dict[str, Any]:
         models = row.get_models()
         task_types = row.get_task_types()
-        key_present = bool(os.getenv(row.api_key_env or ""))
+        key_raw = str(row.api_key_value or "").strip()
+        key_present = bool(key_raw) or bool(os.getenv(row.api_key_env or ""))
+        key_display = key_raw if include_secrets else _mask_secret(key_raw)
         return {
             "id": int(row.id),
             "name": row.name,
             "vendor": row.vendor,
             "base_url": row.base_url,
             "api_key_env": row.api_key_env,
+            "api_key": key_display,
             "models": models,
             "task_types": task_types,
             "enabled": bool(row.enabled),
@@ -216,3 +229,12 @@ class ModelEndpointStore:
             self._provider.engine.dispose()
         except Exception:
             pass
+
+
+def _mask_secret(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "***"
+    return f"***{text[-8:]}"
