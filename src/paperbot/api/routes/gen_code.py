@@ -2,15 +2,18 @@
 Paper2Code Generation API Route
 """
 
+import tempfile
+from pathlib import Path
+from typing import Optional
+
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
-from pathlib import Path
-import tempfile
+
+from paperbot.application.collaboration.message_schema import new_run_id, new_trace_id
+from paperbot.core.abstractions import AgentRunContext
 
 from ..streaming import StreamEvent, wrap_generator
-from paperbot.application.collaboration.message_schema import new_run_id, new_trace_id
 
 router = APIRouter()
 
@@ -24,7 +27,9 @@ class GenCodeRequest(BaseModel):
     output_dir: Optional[str] = None
 
 
-async def gen_code_stream(request: GenCodeRequest, *, event_log=None, run_id: str = "", trace_id: str = ""):
+async def gen_code_stream(
+    request: GenCodeRequest, *, event_log=None, run_id: str = "", trace_id: str = ""
+):
     """Stream code generation progress"""
     try:
         if not run_id:
@@ -32,18 +37,25 @@ async def gen_code_stream(request: GenCodeRequest, *, event_log=None, run_id: st
         if not trace_id:
             trace_id = new_trace_id()
 
+        runtime_context = AgentRunContext(
+            run_id=run_id,
+            trace_id=trace_id,
+            workflow="paper2code",
+            agent_name="ReproAgent",
+        )
+
         yield StreamEvent(
             type="progress",
             data={
                 "phase": "Initializing",
                 "message": "Setting up code generation...",
-                "run_id": run_id,
-                "trace_id": trace_id,
+                "run_id": runtime_context.run_id,
+                "trace_id": runtime_context.trace_id,
             },
         )
 
         # Import repro modules
-        from ...repro import ReproAgent, PaperContext
+        from ...repro import PaperContext, ReproAgent
 
         # Create paper context
         paper_context = PaperContext(
@@ -114,7 +126,7 @@ async def gen_code_stream(request: GenCodeRequest, *, event_log=None, run_id: st
         # Build result
         files = []
         for filename, content in result.generated_files.items():
-            lines = len(content.split('\n')) if content else 0
+            lines = len(content.split("\n")) if content else 0
             purpose = "Generated code"
             if "config" in filename.lower():
                 purpose = "Configuration"
@@ -127,11 +139,13 @@ async def gen_code_stream(request: GenCodeRequest, *, event_log=None, run_id: st
             elif "main" in filename.lower():
                 purpose = "Entry point"
 
-            files.append({
-                "name": filename,
-                "lines": lines,
-                "purpose": purpose,
-            })
+            files.append(
+                {
+                    "name": filename,
+                    "lines": lines,
+                    "purpose": purpose,
+                }
+            )
 
         yield StreamEvent(
             type="result",
@@ -140,12 +154,17 @@ async def gen_code_stream(request: GenCodeRequest, *, event_log=None, run_id: st
                 "outputDir": str(output_dir),
                 "files": files,
                 "blueprint": {
-                    "architectureType": result.blueprint.architecture_type if result.blueprint else "unknown",
+                    "architectureType": (
+                        result.blueprint.architecture_type if result.blueprint else "unknown"
+                    ),
                     "domain": result.blueprint.domain if result.blueprint else "unknown",
                 },
-                "verificationPassed": len(result.verification_results) > 0 and all(
-                    v.passed for v in result.verification_results
-                ) if result.verification_results else False,
+                "verificationPassed": (
+                    len(result.verification_results) > 0
+                    and all(v.passed for v in result.verification_results)
+                    if result.verification_results
+                    else False
+                ),
             },
         )
 
@@ -164,7 +183,12 @@ async def generate_code(request: GenCodeRequest, http_request: Request):
     run_id = new_run_id()
     trace_id = new_trace_id()
     return StreamingResponse(
-        wrap_generator(gen_code_stream(request, event_log=event_log, run_id=run_id, trace_id=trace_id)),
+        wrap_generator(
+            gen_code_stream(request, event_log=event_log, run_id=run_id, trace_id=trace_id),
+            workflow="gen_code",
+            run_id=run_id,
+            trace_id=trace_id,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

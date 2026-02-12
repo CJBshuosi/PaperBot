@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime, timezone
 import os
 import re
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -12,13 +12,13 @@ from sqlalchemy.exc import IntegrityError
 
 from paperbot.context_engine import ContextEngine, ContextEngineConfig
 from paperbot.context_engine.track_router import TrackRouter
-from paperbot.utils.logging_config import Logger, LogFiles, set_trace_id
-from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.api_clients.semantic_scholar import SemanticScholarClient
+from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
 from paperbot.memory.eval.collector import MemoryMetricCollector
 from paperbot.memory.extractor import extract_memories
 from paperbot.memory.schema import MemoryCandidate, NormalizedMessage
+from paperbot.utils.logging_config import LogFiles, Logger, set_trace_id
 
 router = APIRouter()
 
@@ -707,7 +707,9 @@ def add_paper_feedback(req: PaperFeedbackRequest):
 
     # If action is "save" and we have paper metadata, insert into papers table
     if req.action == "save" and req.paper_title:
-        Logger.info("Save action detected, inserting paper into papers table", file=LogFiles.HARVEST)
+        Logger.info(
+            "Save action detected, inserting paper into papers table", file=LogFiles.HARVEST
+        )
         try:
             from paperbot.domain.harvest import HarvestedPaper, HarvestSource
 
@@ -727,7 +729,9 @@ def add_paper_feedback(req: PaperFeedbackRequest):
                 source=source,
                 abstract=req.paper_abstract or "",
                 authors=req.paper_authors or [],
-                semantic_scholar_id=req.paper_id if source == HarvestSource.SEMANTIC_SCHOLAR else None,
+                semantic_scholar_id=(
+                    req.paper_id if source == HarvestSource.SEMANTIC_SCHOLAR else None
+                ),
                 arxiv_id=req.paper_id if source == HarvestSource.ARXIV else None,
                 openalex_id=req.paper_id if source == HarvestSource.OPENALEX else None,
                 year=req.paper_year,
@@ -744,7 +748,9 @@ def add_paper_feedback(req: PaperFeedbackRequest):
                 library_paper_id = result.id
                 # Store library_paper_id in metadata for joins, keep paper_id as external ID
                 meta["library_paper_id"] = library_paper_id
-                Logger.info(f"Paper saved to library with id={library_paper_id}", file=LogFiles.HARVEST)
+                Logger.info(
+                    f"Paper saved to library with id={library_paper_id}", file=LogFiles.HARVEST
+                )
         except Exception as e:
             Logger.warning(f"Failed to save paper to library: {e}", file=LogFiles.HARVEST)
 
@@ -803,6 +809,11 @@ class PaperDetailResponse(BaseModel):
     detail: Dict[str, Any]
 
 
+class PaperRepoListResponse(BaseModel):
+    paper_id: str
+    repos: List[Dict[str, Any]]
+
+
 @router.post("/research/papers/{paper_id}/status", response_model=PaperReadingStatusResponse)
 def update_paper_status(paper_id: str, req: PaperReadingStatusRequest):
     status = _research_store.set_paper_reading_status(
@@ -833,6 +844,14 @@ def get_paper_detail(paper_id: str, user_id: str = "default"):
     if not detail:
         raise HTTPException(status_code=404, detail="Paper not found in registry")
     return PaperDetailResponse(detail=detail)
+
+
+@router.get("/research/papers/{paper_id}/repos", response_model=PaperRepoListResponse)
+def get_paper_repos(paper_id: str):
+    repos = _research_store.list_paper_repos(paper_id=paper_id)
+    if repos is None:
+        raise HTTPException(status_code=404, detail="Paper not found in registry")
+    return PaperRepoListResponse(paper_id=paper_id, repos=repos)
 
 
 class RouterSuggestRequest(BaseModel):
@@ -914,7 +933,9 @@ async def build_context(req: ContextRequest):
             include_cross_track=req.include_cross_track,
         )
         paper_count = len(pack.get("paper_recommendations", []))
-        Logger.info(f"Context pack built successfully, found {paper_count} papers", file=LogFiles.HARVEST)
+        Logger.info(
+            f"Context pack built successfully, found {paper_count} papers", file=LogFiles.HARVEST
+        )
         return ContextResponse(context_pack=pack)
     finally:
         await engine.close()

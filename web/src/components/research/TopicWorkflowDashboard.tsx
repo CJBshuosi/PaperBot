@@ -47,7 +47,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { readSSE } from "@/lib/sse"
+import { normalizeSSEMessage, readSSE } from "@/lib/sse"
 import { useWorkflowStore } from "@/lib/stores/workflow-store"
 import type { DailyResult, WorkflowPhase } from "@/lib/stores/workflow-store"
 
@@ -930,7 +930,8 @@ export default function TopicWorkflowDashboard() {
       // SSE streaming path
       if (!res.body) throw new Error("No response body for SSE stream")
 
-      for await (const event of readSSE(res.body)) {
+      for await (const rawEvent of readSSE(res.body)) {
+        const event = normalizeSSEMessage(rawEvent, "paperscool_daily")
         if (event.type === "progress") {
           const d = (event.data || {}) as { phase?: string; message?: string; total?: number }
           const p = (d.phase || "search") as StreamPhase
@@ -1182,10 +1183,12 @@ export default function TopicWorkflowDashboard() {
       })
       if (!res.ok || !res.body) throw new Error(await res.text())
 
-      for await (const event of readSSE(res.body)) {
+      for await (const rawEvent of readSSE(res.body)) {
+        const event = normalizeSSEMessage(rawEvent, "paperscool_analyze")
         if (event.type === "progress") {
           const d = (event.data || {}) as { phase?: string; message?: string; total?: number }
-          store.addAnalyzeLog(`[${d.phase || "step"}] ${d.message || "running"}`)
+          const trace = event.envelope.trace_id ? ` trace=${event.envelope.trace_id}` : ""
+          store.addAnalyzeLog(`[${d.phase || "step"}] ${d.message || "running"}${trace}`)
           if (d.phase === "judge" && (d.total || 0) > 0) {
             setAnalyzeProgress({ done: 0, total: d.total || 0 })
           }

@@ -7,6 +7,7 @@ from paperbot.api.routes import paperscool as paperscool_route
 def _parse_sse_events(text: str):
     """Parse SSE text into a list of event dicts."""
     import json
+
     events = []
     for line in text.split("\n"):
         if line.startswith("data: "):
@@ -654,3 +655,87 @@ def test_dailypaper_sync_path_no_llm_no_judge(monkeypatch):
     assert payload["report"]["stats"]["unique_items"] == 1
     # No filter block in sync path
     assert "filter" not in payload["report"]
+
+
+def test_paperscool_repos_route_can_persist(monkeypatch):
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "full_name": "owner/repo",
+                "stargazers_count": 42,
+                "forks_count": 7,
+                "open_issues_count": 1,
+                "watchers_count": 5,
+                "language": "Python",
+                "license": {"spdx_id": "MIT"},
+                "updated_at": "2026-02-01T00:00:00Z",
+                "pushed_at": "2026-02-02T00:00:00Z",
+                "archived": False,
+                "topics": ["llm"],
+                "html_url": "https://github.com/owner/repo",
+            }
+
+    class _FakeStore:
+        def __init__(self):
+            self.rows = []
+
+        def ingest_repo_enrichment_rows(self, *, rows, source):
+            self.rows.extend(rows)
+            return {
+                "total": len(rows),
+                "created": len(rows),
+                "updated": 0,
+                "skipped": 0,
+                "unresolved_paper": 0,
+            }
+
+    fake_store = _FakeStore()
+    monkeypatch.setattr(paperscool_route.requests, "get", lambda *args, **kwargs: _FakeResp())
+    monkeypatch.setattr(paperscool_route, "SqlAlchemyResearchStore", lambda: fake_store)
+
+    with TestClient(api_main.app) as client:
+        resp = client.post(
+            "/api/research/paperscool/repos",
+            json={
+                "papers": [
+                    {
+                        "title": "Repo Paper",
+                        "url": "https://papers.cool/arxiv/1234",
+                        "external_url": "https://github.com/owner/repo",
+                    }
+                ],
+                "include_github_api": True,
+                "persist": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["persist_summary"]["total"] == 1
+    assert len(fake_store.rows) == 1
+
+
+def test_paperscool_daily_route_enqueues_repo_enrichment(monkeypatch):
+    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+
+    called = {"count": 0}
+
+    def _fake_enqueue(report):
+        called["count"] += 1
+
+    monkeypatch.setattr(paperscool_route, "_enqueue_repo_enrichment_async", _fake_enqueue)
+
+    with TestClient(api_main.app) as client:
+        resp = client.post(
+            "/api/research/paperscool/daily",
+            json={
+                "queries": ["ICL压缩"],
+                "enable_llm_analysis": False,
+                "enable_judge": False,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert called["count"] == 1

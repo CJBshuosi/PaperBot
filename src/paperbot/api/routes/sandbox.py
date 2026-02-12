@@ -12,7 +12,8 @@ Provides endpoints for:
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Query, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -23,8 +24,10 @@ router = APIRouter()
 
 # --- Request/Response Models ---
 
+
 class SubmitRequest(BaseModel):
     """Request body for job submission"""
+
     type: str = "paper2code"
     paper_url: Optional[str] = None
     paper_id: Optional[str] = None
@@ -34,6 +37,7 @@ class SubmitRequest(BaseModel):
 
 class CancelResponse(BaseModel):
     """Response for job cancellation"""
+
     status: str
     job_id: str
     message: str = ""
@@ -41,6 +45,7 @@ class CancelResponse(BaseModel):
 
 class RetryResponse(BaseModel):
     """Response for job retry"""
+
     status: str
     old_job_id: str
     new_job_id: Optional[str] = None
@@ -48,6 +53,7 @@ class RetryResponse(BaseModel):
 
 
 # --- Queue Management ---
+
 
 @router.get("/sandbox/queue")
 async def get_queue_status(
@@ -70,7 +76,13 @@ async def get_queue_status(
         finally:
             await manager.close()
     except ImportError:
-        return {"error": "Redis/ARQ not configured", "pending": [], "running": [], "completed": [], "stats": {}}
+        return {
+            "error": "Redis/ARQ not configured",
+            "pending": [],
+            "running": [],
+            "completed": [],
+            "stats": {},
+        }
     except Exception as e:
         return {"error": str(e), "pending": [], "running": [], "completed": [], "stats": {}}
 
@@ -111,9 +123,15 @@ async def cancel_job(job_id: str, http_request: Request) -> CancelResponse:
         try:
             success = await manager.cancel_job(job_id)
             if success:
-                return CancelResponse(status="cancelled", job_id=job_id, message="Job cancelled successfully")
+                return CancelResponse(
+                    status="cancelled", job_id=job_id, message="Job cancelled successfully"
+                )
             else:
-                return CancelResponse(status="failed", job_id=job_id, message="Cannot cancel job (may be running or completed)")
+                return CancelResponse(
+                    status="failed",
+                    job_id=job_id,
+                    message="Cannot cancel job (may be running or completed)",
+                )
         finally:
             await manager.close()
     except Exception as e:
@@ -150,6 +168,7 @@ async def retry_job(job_id: str, http_request: Request) -> RetryResponse:
 
 
 # --- Job Submission ---
+
 
 @router.post("/sandbox/submit")
 async def submit_job(body: SubmitRequest, http_request: Request):
@@ -189,6 +208,7 @@ async def submit_job(body: SubmitRequest, http_request: Request):
 
 # --- Log Streaming ---
 
+
 async def _log_stream_generator(run_id: str):
     """Generate SSE events for log streaming."""
     from paperbot.infrastructure.logging.execution_logger import get_execution_logger
@@ -212,7 +232,7 @@ async def stream_logs(run_id: str, http_request: Request):
     Returns Server-Sent Events with log entries.
     """
     return StreamingResponse(
-        wrap_generator(_log_stream_generator(run_id)),
+        wrap_generator(_log_stream_generator(run_id), workflow="sandbox_logs"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -242,6 +262,7 @@ async def get_logs(
 
 # --- Resource Metrics ---
 
+
 async def _metrics_stream_generator(run_id: str):
     """Generate SSE events for metrics streaming."""
     from paperbot.infrastructure.monitoring.resource_monitor import get_resource_monitor
@@ -265,7 +286,7 @@ async def stream_metrics(run_id: str, http_request: Request):
     Returns Server-Sent Events with CPU/memory metrics.
     """
     return StreamingResponse(
-        wrap_generator(_metrics_stream_generator(run_id)),
+        wrap_generator(_metrics_stream_generator(run_id), workflow="sandbox_metrics"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -312,6 +333,7 @@ async def get_metrics_history(
 
 
 # --- System Status ---
+
 
 @router.get("/sandbox/status")
 async def get_system_status(http_request: Request):

@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -449,6 +449,7 @@ class ResearchMilestoneModel(Base):
 
     track = relationship("ResearchTrackModel", back_populates="milestones")
 
+
 class PaperFeedbackModel(Base):
     """User feedback on recommended/seen papers (track-scoped)."""
 
@@ -501,6 +502,64 @@ class PaperJudgeScoreModel(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
     paper = relationship("PaperModel", back_populates="judge_scores")
+
+
+class PaperRepoModel(Base):
+    """Repository enrichment metadata linked to canonical papers."""
+
+    __tablename__ = "paper_repos"
+    __table_args__ = (UniqueConstraint("paper_id", "repo_url", name="uq_paper_repos_paper_repo"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(Integer, ForeignKey("papers.id"), index=True)
+
+    repo_url: Mapped[str] = mapped_column(String(512), default="", index=True)
+    full_name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+
+    stars: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    forks: Mapped[int] = mapped_column(Integer, default=0)
+    open_issues: Mapped[int] = mapped_column(Integer, default=0)
+    watchers: Mapped[int] = mapped_column(Integer, default=0)
+
+    language: Mapped[str] = mapped_column(String(64), default="")
+    license: Mapped[str] = mapped_column(String(64), default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    html_url: Mapped[str] = mapped_column(String(512), default="")
+    topics_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    updated_at_remote: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    pushed_at_remote: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    query: Mapped[str] = mapped_column(String(256), default="", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="paperscool_repo_enrich", index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    paper = relationship("PaperModel", back_populates="repo_rows")
+
+    def set_topics(self, values: Optional[list[str]]) -> None:
+        self.topics_json = json.dumps(
+            [str(v) for v in (values or []) if str(v).strip()],
+            ensure_ascii=False,
+        )
+
+    def get_topics(self) -> list[str]:
+        try:
+            data = json.loads(self.topics_json or "[]")
+            if isinstance(data, list):
+                return [str(v) for v in data if str(v).strip()]
+        except Exception:
+            pass
+        return []
 
 
 class PaperReadingStatusModel(Base):
@@ -635,9 +694,15 @@ class PaperModel(Base):
 
     # Canonical identifiers (for deduplication)
     doi: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True, index=True)
-    arxiv_id: Mapped[Optional[str]] = mapped_column(String(32), unique=True, nullable=True, index=True)
-    semantic_scholar_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
-    openalex_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    arxiv_id: Mapped[Optional[str]] = mapped_column(
+        String(32), unique=True, nullable=True, index=True
+    )
+    semantic_scholar_id: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
+    openalex_id: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
     title_hash: Mapped[str] = mapped_column(String(64), index=True)  # SHA256 of normalized title
 
     # Core metadata
@@ -658,18 +723,27 @@ class PaperModel(Base):
     fields_of_study_json: Mapped[str] = mapped_column(Text, default="[]")
 
     # Source tracking
-    primary_source: Mapped[str] = mapped_column(String(32), default="")  # First source that found this paper
-    sources_json: Mapped[str] = mapped_column(Text, default="[]")  # All sources that returned this paper
+    primary_source: Mapped[str] = mapped_column(
+        String(32), default=""
+    )  # First source that found this paper
+    sources_json: Mapped[str] = mapped_column(
+        Text, default="[]"
+    )  # All sources that returned this paper
 
     # Timestamps
-    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # Soft delete
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # Soft delete
 
     # Relationships
     feedback_rows = relationship("PaperFeedbackModel", back_populates="paper")
     judge_scores = relationship("PaperJudgeScoreModel", back_populates="paper")
     reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
+    repo_rows = relationship("PaperRepoModel", back_populates="paper")
 
     def get_authors(self) -> list:
         try:
@@ -720,14 +794,18 @@ class HarvestRunModel(Base):
     max_results_per_source: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Results
-    status: Mapped[Optional[str]] = mapped_column(String(32), default="running", index=True)  # running/success/partial/failed
+    status: Mapped[Optional[str]] = mapped_column(
+        String(32), default="running", index=True
+    )  # running/success/partial/failed
     papers_found: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     papers_new: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     papers_deduplicated: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     error_json: Mapped[str] = mapped_column(Text, default="{}")
 
     # Timestamps
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def get_keywords(self) -> list:
