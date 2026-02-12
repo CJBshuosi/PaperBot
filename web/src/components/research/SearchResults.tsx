@@ -13,10 +13,18 @@ interface SearchResultsProps {
   reasons?: Record<string, string[]>
   isSearching?: boolean
   hasSearched: boolean
+  selectedSources?: string[]
+  onToggleSource?: (source: string) => void
   onLike?: (paperId: string, rank: number) => Promise<void> | void
   onSave?: (paperId: string, rank: number, paper: Paper) => Promise<void> | void
   onDislike?: (paperId: string, rank: number) => Promise<void> | void
 }
+
+const SOURCE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "semantic_scholar", label: "S2" },
+  { value: "arxiv", label: "arXiv" },
+  { value: "openalex", label: "OpenAlex" },
+]
 
 function PaperCardSkeleton() {
   return (
@@ -46,6 +54,8 @@ export function SearchResults({
   reasons,
   isSearching = false,
   hasSearched,
+  selectedSources = ["semantic_scholar"],
+  onToggleSource,
   onLike,
   onSave,
   onDislike,
@@ -93,7 +103,26 @@ export function SearchResults({
         <p className="text-sm text-muted-foreground">
           Found <span className="font-medium text-foreground">{papers.length}</span> papers
         </p>
-        {/* Future: Add sort dropdown here */}
+        <div className="flex items-center gap-1.5">
+          {SOURCE_OPTIONS.map((source) => {
+            const active = selectedSources.includes(source.value)
+            return (
+              <button
+                key={source.value}
+                type="button"
+                onClick={() => onToggleSource?.(source.value)}
+                className={cn(
+                  "rounded-md border px-2 py-1 text-xs transition-colors",
+                  active
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {source.label}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       <ScrollArea className="h-[calc(100vh-300px)] sm:h-[calc(100vh-280px)]">

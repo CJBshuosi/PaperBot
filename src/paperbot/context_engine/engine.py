@@ -347,6 +347,7 @@ class ContextEngineConfig:
     paper_limit: int = 8
     offline: bool = False
     stage: str = "auto"
+    search_sources: Optional[List[str]] = None
     exploration_ratio: Optional[float] = None
     diversity_strength: Optional[float] = None
     track_router: TrackRouterConfig = field(default_factory=TrackRouterConfig)
@@ -557,13 +558,19 @@ class ContextEngine:
 
                 # Prefer PaperSearchService if available
                 if self.search_service is not None:
+                    selected_sources = [
+                        str(x).strip() for x in (self.config.search_sources or []) if str(x).strip()
+                    ]
+                    if not selected_sources:
+                        selected_sources = ["semantic_scholar"]
+
                     Logger.info(
                         f"Using PaperSearchService for query='{merged_query}'",
                         file=LogFiles.HARVEST,
                     )
                     search_result = await self.search_service.search(
                         merged_query,
-                        sources=["semantic_scholar"],
+                        sources=selected_sources,
                         max_results=fetch_limit,
                         persist=True,
                     )

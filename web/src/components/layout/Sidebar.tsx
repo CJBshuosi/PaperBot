@@ -2,7 +2,6 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,8 +23,8 @@ type SidebarProps = React.HTMLAttributes<HTMLDivElement> & {
 }
 
 const routes = [
-  { label: "Research", icon: FlaskConical, href: "/" },
   { label: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
+  { label: "Research", icon: FlaskConical, href: "/research" },
   { label: "Scholars", icon: Users, href: "/scholars" },
   { label: "Papers", icon: FileText, href: "/papers" },
   { label: "Workflows", icon: Workflow, href: "/workflows" },
@@ -61,8 +60,7 @@ export function Sidebar({ className, collapsed, onToggle }: SidebarProps) {
           {/* Nav items */}
           <div className="space-y-1">
             {routes.map((route) => {
-              const isActive =
-                route.href === "/" ? pathname === "/" : pathname.startsWith(route.href)
+              const isActive = pathname === route.href || pathname.startsWith(`${route.href}/`)
               return (
                 <Button
                   key={route.href}

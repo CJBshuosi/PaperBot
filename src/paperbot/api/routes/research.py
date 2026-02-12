@@ -938,6 +938,7 @@ class ContextRequest(BaseModel):
     activate_track_id: Optional[int] = None  # confirm switch: activates then uses it
     memory_limit: int = Field(8, ge=1, le=50)
     paper_limit: int = Field(8, ge=0, le=50)
+    sources: Optional[List[str]] = None
     offline: bool = False
     include_cross_track: bool = False
     stage: str = "auto"  # auto/survey/writing/rebuttal
@@ -983,6 +984,7 @@ async def build_context(req: ContextRequest):
         config=ContextEngineConfig(
             memory_limit=req.memory_limit,
             paper_limit=req.paper_limit,
+            search_sources=req.sources,
             offline=req.offline,
             stage=req.stage,
             exploration_ratio=(
