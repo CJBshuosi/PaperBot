@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { useStudioStore, AgentAction } from "@/lib/store/studio-store"
+import { CodeBlock } from "@/components/ai-elements"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Bot, FileCode, Wrench, Plug, AlertCircle, CheckCircle2, Search, Terminal, ChevronDown, ChevronRight, Clock, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -50,6 +51,8 @@ function ActionItem({ action, onViewDiff, isLast }: ActionItemProps) {
     const colors = actionColors[iconKey] || actionColors[action.type] || actionColors.text
 
     const hasExpandableContent = Boolean(action.metadata?.params || action.metadata?.result || action.metadata?.mcpResult)
+    const stringifyPayload = (payload: unknown): string =>
+        typeof payload === "string" ? payload : JSON.stringify(payload, null, 2) || ""
 
     return (
         <div className="relative flex gap-3">
@@ -107,22 +110,10 @@ function ActionItem({ action, onViewDiff, isLast }: ActionItemProps) {
                                 {expanded && (
                                     <div className="mt-2 space-y-2">
                                         {Boolean(action.metadata.params) && (
-                                            <div className="rounded-md border bg-muted/30 p-2">
-                                                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Args</div>
-                                                <pre className="text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
-                                                    {JSON.stringify(action.metadata.params, null, 2)}
-                                                </pre>
-                                            </div>
+                                            <CodeBlock title="Args" code={stringifyPayload(action.metadata.params)} />
                                         )}
                                         {Boolean(action.metadata.result) && (
-                                            <div className="rounded-md border border-green-200 dark:border-green-800 bg-green-50/50 dark:bg-green-950/20 p-2">
-                                                <div className="text-[10px] font-medium text-green-600 dark:text-green-400 uppercase tracking-wider mb-1">Result</div>
-                                                <pre className="text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
-                                                    {typeof action.metadata.result === 'string'
-                                                        ? action.metadata.result
-                                                        : JSON.stringify(action.metadata.result, null, 2)}
-                                                </pre>
-                                            </div>
+                                            <CodeBlock title="Result" code={stringifyPayload(action.metadata.result)} />
                                         )}
                                     </div>
                                 )}
@@ -144,13 +135,11 @@ function ActionItem({ action, onViewDiff, isLast }: ActionItemProps) {
                                     )}
                                 </div>
                                 {expanded && Boolean(action.metadata.mcpResult) && (
-                                    <div className="mt-2 rounded-md border bg-muted/30 p-2">
-                                        <pre className="text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
-                                            {typeof action.metadata.mcpResult === 'string'
-                                                ? action.metadata.mcpResult
-                                                : JSON.stringify(action.metadata.mcpResult, null, 2)}
-                                        </pre>
-                                    </div>
+                                    <CodeBlock
+                                        className="mt-2"
+                                        title="MCP Result"
+                                        code={stringifyPayload(action.metadata.mcpResult)}
+                                    />
                                 )}
                             </div>
                         ) : action.type === 'error' ? (

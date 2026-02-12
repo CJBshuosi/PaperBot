@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
 
+from paperbot.domain.identity import PaperIdentity
 from paperbot.infrastructure.stores.models import PaperJudgeScoreModel
 from paperbot.infrastructure.stores.paper_store import SqlAlchemyPaperStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
+from paperbot.infrastructure.stores.identity_store import IdentityStore
 
 
 def _judged_report():
@@ -135,3 +138,104 @@ def test_saved_list_and_detail_from_research_store(tmp_path: Path):
     assert detail is not None
     assert detail["paper"]["title"] == "UniICL"
     assert detail["reading_status"]["status"] == "read"
+
+
+def test_feedback_resolves_via_identity_store_mapping(tmp_path: Path):
+    db_path = tmp_path / "identity-feedback.db"
+    db_url = f"sqlite:///{db_path}"
+
+    paper_store = SqlAlchemyPaperStore(db_url=db_url)
+    research_store = SqlAlchemyResearchStore(db_url=db_url)
+    identity_store = IdentityStore(db_url=db_url)
+
+    paper = paper_store.upsert_paper(
+        paper={
+            "title": "CrossSource Paper",
+            "url": "https://example.com/p/abc",
+            "pdf_url": "https://example.com/p/abc.pdf",
+        }
+    )
+
+    identity_store.upsert_identity(
+        paper_id=int(paper["id"]),
+        identity=PaperIdentity(source="papers_cool", external_id="pc:abc123"),
+    )
+
+    track = research_store.create_track(user_id="u2", name="track-u2", activate=True)
+    feedback = research_store.add_paper_feedback(
+        user_id="u2",
+        track_id=int(track["id"]),
+        paper_id="pc:abc123",
+        action="save",
+        metadata={},
+    )
+
+    assert feedback is not None
+    assert feedback["paper_ref_id"] == int(paper["id"])
+
+
+def test_get_latest_judge_scores_returns_latest_row_per_paper(tmp_path: Path):
+    db_path = tmp_path / "judge-latest.db"
+    store = SqlAlchemyPaperStore(db_url=f"sqlite:///{db_path}")
+
+    p1 = store.upsert_paper(
+        paper={
+            "title": "P1",
+            "url": "https://example.com/p1",
+            "pdf_url": "https://example.com/p1.pdf",
+        }
+    )
+    p2 = store.upsert_paper(
+        paper={
+            "title": "P2",
+            "url": "https://example.com/p2",
+            "pdf_url": "https://example.com/p2.pdf",
+        }
+    )
+
+    now = datetime.now(timezone.utc)
+    with store._provider.session() as session:
+        session.add(
+            PaperJudgeScoreModel(
+                paper_id=int(p1["id"]),
+                query="q-old",
+                overall=3.1,
+                recommendation="worth_reading",
+                one_line_summary="old",
+                judge_model="m1",
+                judge_cost_tier=1,
+                scored_at=now - timedelta(days=1),
+            )
+        )
+        session.add(
+            PaperJudgeScoreModel(
+                paper_id=int(p1["id"]),
+                query="q-new",
+                overall=4.7,
+                recommendation="must_read",
+                one_line_summary="new",
+                judge_model="m2",
+                judge_cost_tier=1,
+                scored_at=now,
+            )
+        )
+        session.add(
+            PaperJudgeScoreModel(
+                paper_id=int(p2["id"]),
+                query="q-only",
+                overall=4.0,
+                recommendation="worth_reading",
+                one_line_summary="only",
+                judge_model="m3",
+                judge_cost_tier=1,
+                scored_at=now,
+            )
+        )
+        session.commit()
+
+    latest = store.get_latest_judge_scores([int(p1["id"]), int(p2["id"]), -1])
+
+    assert set(latest.keys()) == {int(p1["id"]), int(p2["id"])}
+    assert latest[int(p1["id"])]["overall"] == 4.7
+    assert latest[int(p1["id"])]["one_line_summary"] == "new"
+    assert latest[int(p2["id"])]["judge_model"] == "m3"

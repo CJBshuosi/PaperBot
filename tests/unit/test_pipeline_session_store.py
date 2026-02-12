@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from paperbot.infrastructure.stores.pipeline_session_store import PipelineSessionStore
+
+
+def test_pipeline_session_store_resume_and_result(tmp_path: Path):
+    db_url = f"sqlite:///{tmp_path / 'pipeline-session.db'}"
+    store = PipelineSessionStore(db_url=db_url)
+
+    started = store.start_session(
+        workflow="paperscool_daily",
+        payload={"q": ["icl"]},
+        session_id="sess-1",
+        resume=False,
+    )
+    assert started["session_id"] == "sess-1"
+    assert started["status"] == "running"
+
+    cp = store.save_checkpoint(
+        session_id="sess-1",
+        checkpoint="report_built",
+        state={"report": {"title": "Daily"}},
+    )
+    assert cp is not None
+    assert cp["checkpoint"] == "report_built"
+
+    done = store.save_result(
+        session_id="sess-1",
+        status="completed",
+        result={"report": {"title": "Daily"}, "markdown": "# test"},
+    )
+    assert done is not None
+    assert done["status"] == "completed"
+
+    resumed = store.start_session(
+        workflow="paperscool_daily",
+        payload={"q": ["icl"]},
+        session_id="sess-1",
+        resume=True,
+    )
+    assert resumed["status"] == "completed"
+    assert resumed["result"]["markdown"] == "# test"
+
+
+def test_pipeline_session_store_list_and_update_status(tmp_path: Path):
+    db_url = f"sqlite:///{tmp_path / 'pipeline-session-list.db'}"
+    store = PipelineSessionStore(db_url=db_url)
+
+    store.start_session(workflow="paperscool_daily", session_id="sess-a", payload={"q": ["a"]})
+    store.start_session(workflow="paperscool_daily", session_id="sess-b", payload={"q": ["b"]})
+
+    updated = store.update_status(
+        session_id="sess-a",
+        status="pending_approval",
+        checkpoint="approval_pending",
+        state_patch={"flag": True},
+        result={"approval_status": "pending_approval"},
+    )
+    assert updated is not None
+    assert updated["status"] == "pending_approval"
+    assert updated["checkpoint"] == "approval_pending"
+    assert updated["state"]["flag"] is True
+    assert updated["result"]["approval_status"] == "pending_approval"
+
+    rows = store.list_sessions(workflow="paperscool_daily", status="pending_approval", limit=10)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "sess-a"

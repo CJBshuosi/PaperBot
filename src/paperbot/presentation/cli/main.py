@@ -26,6 +26,12 @@ from paperbot.application.workflows.dailypaper import (
     render_daily_paper_markdown,
 )
 from paperbot.application.services.daily_push_service import DailyPushService
+from paperbot.application.workflows.unified_topic_search import (
+    make_default_search_service,
+    run_unified_topic_search,
+)
+from paperbot.infrastructure.stores.paper_store import PaperStore
+from paperbot.infrastructure.stores.pipeline_session_store import PipelineSessionStore
 
 # Load local .env automatically for CLI workflows using LLM providers.
 load_dotenv(find_dotenv(usecwd=True), override=False)
@@ -158,6 +164,16 @@ def create_parser() -> argparse.ArgumentParser:
         default=None,
         help="推送渠道：email/slack/dingding（可重复指定）",
     )
+    daily_parser.add_argument(
+        "--session-id",
+        default=None,
+        help="会话 ID（用于断点恢复；不传则自动生成）",
+    )
+    daily_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="从最近 checkpoint 恢复执行",
+    )
 
     # version
     parser.add_argument("--version", "-v", action="store_true", help="显示版本")
@@ -241,10 +257,14 @@ async def _quick_score(paper_id: str):
     print("Please use the main.py entry point instead.")
 
 
-def _create_topic_search_workflow():
-    from paperbot.application.workflows.paperscool_topic_search import PapersCoolTopicSearchWorkflow
+_paper_search_service = None
 
-    return PapersCoolTopicSearchWorkflow()
+
+def _get_paper_search_service():
+    global _paper_search_service
+    if _paper_search_service is None:
+        _paper_search_service = make_default_search_service(registry=PaperStore())
+    return _paper_search_service
 
 
 def _run_topic_search(parsed: argparse.Namespace) -> int:
@@ -255,13 +275,16 @@ def _run_topic_search(parsed: argparse.Namespace) -> int:
     branches = parsed.branches or ["arxiv", "venue"]
     sources = parsed.sources or ["papers_cool"]
 
-    workflow = _create_topic_search_workflow()
-    result = workflow.run(
-        queries=queries,
-        sources=sources,
-        branches=branches,
-        top_k_per_query=max(1, int(parsed.top_k)),
-        show_per_branch=max(1, int(parsed.show)),
+    result = asyncio.run(
+        run_unified_topic_search(
+            queries=queries,
+            sources=sources,
+            branches=branches,
+            top_k_per_query=max(1, int(parsed.top_k)),
+            show_per_branch=max(1, int(parsed.show)),
+            search_service=_get_paper_search_service(),
+            persist=False,
+        )
     )
 
     if parsed.json:
@@ -287,21 +310,55 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
     branches = parsed.branches or ["arxiv", "venue"]
     sources = parsed.sources or ["papers_cool"]
 
-    workflow = _create_topic_search_workflow()
-    effective_top_k = max(1, int(parsed.top_k), int(parsed.top_n))
-    search_result = workflow.run(
-        queries=queries,
-        sources=sources,
-        branches=branches,
-        top_k_per_query=effective_top_k,
-        show_per_branch=max(1, int(parsed.show)),
+    session_store = PipelineSessionStore()
+    session = session_store.start_session(
+        workflow="cli_daily_paper",
+        payload={k: getattr(parsed, k) for k in vars(parsed)},
+        session_id=getattr(parsed, "session_id", None),
+        resume=bool(getattr(parsed, "resume", False)),
     )
+    session_id = str(session.get("session_id") or "")
+    state: dict = session.get("state") if getattr(parsed, "resume", False) else {}
 
-    report = build_daily_paper_report(
-        search_result=search_result,
-        title=parsed.title,
-        top_n=max(1, int(parsed.top_n)),
-    )
+    if getattr(parsed, "resume", False) and session.get("status") == "completed":
+        done = session.get("result") if isinstance(session.get("result"), dict) else {}
+        if done:
+            if parsed.json:
+                print(json.dumps(done, ensure_ascii=False, indent=2))
+            else:
+                print(f"resumed session: {session_id}")
+                print("session already completed; returning cached result")
+            return 0
+
+    if isinstance(state.get("report"), dict):
+        report = dict(state.get("report") or {})
+        search_result = (
+            state.get("search_result") if isinstance(state.get("search_result"), dict) else {}
+        )
+    else:
+        effective_top_k = max(1, int(parsed.top_k), int(parsed.top_n))
+        search_result = asyncio.run(
+            run_unified_topic_search(
+                queries=queries,
+                sources=sources,
+                branches=branches,
+                top_k_per_query=effective_top_k,
+                show_per_branch=max(1, int(parsed.show)),
+                search_service=_get_paper_search_service(),
+                persist=False,
+            )
+        )
+
+        report = build_daily_paper_report(
+            search_result=search_result,
+            title=parsed.title,
+            top_n=max(1, int(parsed.top_n)),
+        )
+        session_store.save_checkpoint(
+            session_id=session_id,
+            checkpoint="report_built",
+            state={"search_result": search_result, "report": report},
+        )
     llm_enabled = bool(parsed.with_llm)
     llm_features = normalize_llm_features(parsed.llm_features or ["summary"])
     if llm_enabled:
@@ -356,8 +413,22 @@ def _run_daily_paper(parsed: argparse.Namespace) -> int:
             channels_override=parsed.notify_channels,
         )
 
+    session_store.save_result(
+        session_id=session_id,
+        status="completed",
+        result={
+            "session_id": session_id,
+            "report": report,
+            "markdown": markdown,
+            "markdown_path": markdown_path,
+            "json_path": json_path,
+            "notify": notify_result,
+        },
+    )
+
     if parsed.json:
         payload = {
+            "session_id": session_id,
             "report": report,
             "markdown": markdown,
             "markdown_path": markdown_path,

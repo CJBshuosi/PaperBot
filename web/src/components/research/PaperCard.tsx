@@ -1,11 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Check, ExternalLink, Heart, Loader2, Save, ThumbsDown } from "lucide-react"
 
 import { cn, safeHref } from "@/lib/utils"
+import { ReasoningBlock, ToolActionsGroup } from "@/components/ai-elements"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 
 export type Paper = {
   paper_id: string
@@ -16,6 +16,13 @@ export type Paper = {
   citation_count?: number
   authors?: string[]
   url?: string
+  latest_judge?: {
+    overall?: number
+    recommendation?: string
+    one_line_summary?: string
+    judge_model?: string
+  }
+  is_saved?: boolean
 }
 
 interface PaperCardProps {
@@ -39,7 +46,11 @@ export function PaperCard({
   isLoading = false,
   className,
 }: PaperCardProps) {
-  const [isSaved, setIsSaved] = useState(false)
+  const [isSaved, setIsSaved] = useState(Boolean(paper.is_saved))
+
+  useEffect(() => {
+    setIsSaved(Boolean(paper.is_saved))
+  }, [paper.is_saved])
   const [isLiked, setIsLiked] = useState(false)
   const [isDisliked, setIsDisliked] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -47,6 +58,9 @@ export function PaperCard({
   const authorText = paper.authors?.slice(0, 3).join(", ") || "Unknown authors"
   const hasMoreAuthors = (paper.authors?.length || 0) > 3
   const safeUrl = safeHref(paper.url)
+  const judge = paper.latest_judge
+  const judgeOverall = Number(judge?.overall || 0)
+  const judgeRec = String(judge?.recommendation || "").replace(/_/g, " ")
 
   const handleSave = async () => {
     if (!onSave || isSaved) return
@@ -148,79 +162,98 @@ export function PaperCard({
 
       {/* Recommendation reasons */}
       {reasons && reasons.length > 0 && (
+        <ReasoningBlock reasons={reasons} compact title="Why this paper" />
+      )}
+
+      {judge && judgeOverall > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {reasons.map((reason) => (
-            <Badge key={reason} variant="outline" className="text-xs">
-              {reason}
+          <Badge variant="secondary" className="text-xs">
+            Judge {judgeOverall.toFixed(1)}
+          </Badge>
+          {judgeRec && (
+            <Badge variant="outline" className="text-xs capitalize">
+              {judgeRec}
             </Badge>
-          ))}
+          )}
         </div>
       )}
 
       {/* Action buttons */}
-      <div className="flex items-center gap-2 pt-1 flex-wrap">
-        {onSave && (
-          <Button
-            size="sm"
-            variant={isSaved ? "default" : "outline"}
-            className={cn(
-              "h-8 gap-1.5 transition-all",
-              isSaved && "bg-green-600 hover:bg-green-700 text-white"
-            )}
-            onClick={handleSave}
-            disabled={isLoading || actionLoading !== null || isSaved}
-          >
-            {actionLoading === "save" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : isSaved ? (
-              <Check className="h-3.5 w-3.5" />
-            ) : (
-              <Save className="h-3.5 w-3.5" />
-            )}
-            {isSaved ? "Saved" : "Save"}
-          </Button>
-        )}
-        {onLike && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className={cn(
-              "h-8 gap-1.5 transition-all",
-              isLiked && "text-red-500 hover:text-red-600"
-            )}
-            onClick={handleLike}
-            disabled={isLoading || actionLoading !== null}
-          >
-            {actionLoading === "like" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Heart className={cn("h-3.5 w-3.5", isLiked && "fill-current")} />
-            )}
-            {isLiked ? "Liked" : "Like"}
-          </Button>
-        )}
-        {onDislike && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className={cn(
-              "h-8 gap-1.5 transition-all",
-              isDisliked
-                ? "text-orange-500 hover:text-orange-600"
-                : "text-muted-foreground hover:text-destructive"
-            )}
-            onClick={handleDislike}
-            disabled={isLoading || actionLoading !== null}
-          >
-            {actionLoading === "dislike" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <ThumbsDown className={cn("h-3.5 w-3.5", isDisliked && "fill-current")} />
-            )}
-            {isDisliked ? "Hidden" : "Not relevant"}
-          </Button>
-        )}
-      </div>
+      <ToolActionsGroup
+        className="pt-1"
+        ariaLabel="Paper actions"
+        actions={[
+          ...(onSave
+            ? [
+                {
+                  id: "save",
+                  label: isSaved ? "Saved" : "Save",
+                  variant: (isSaved ? "default" : "outline") as
+                    | "default"
+                    | "outline"
+                    | "ghost"
+                    | "destructive"
+                    | "secondary",
+                  className: cn(
+                    "transition-all",
+                    isSaved && "bg-green-600 hover:bg-green-700 text-white"
+                  ),
+                  onClick: handleSave,
+                  disabled: isLoading || actionLoading !== null || isSaved,
+                  icon:
+                    actionLoading === "save" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : isSaved ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : (
+                      <Save className="h-3.5 w-3.5" />
+                    ),
+                },
+              ]
+            : []),
+          ...(onLike
+            ? [
+                {
+                  id: "like",
+                  label: isLiked ? "Liked" : "Like",
+                  variant: "ghost" as const,
+                  className: cn("transition-all", isLiked && "text-red-500 hover:text-red-600"),
+                  onClick: handleLike,
+                  disabled: isLoading || actionLoading !== null,
+                  icon:
+                    actionLoading === "like" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Heart className={cn("h-3.5 w-3.5", isLiked && "fill-current")} />
+                    ),
+                },
+              ]
+            : []),
+          ...(onDislike
+            ? [
+                {
+                  id: "dislike",
+                  label: isDisliked ? "Hidden" : "Not relevant",
+                  variant: "ghost" as const,
+                  className: cn(
+                    "transition-all",
+                    isDisliked
+                      ? "text-orange-500 hover:text-orange-600"
+                      : "text-muted-foreground hover:text-destructive"
+                  ),
+                  onClick: handleDislike,
+                  disabled: isLoading || actionLoading !== null,
+                  icon:
+                    actionLoading === "dislike" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ThumbsDown className={cn("h-3.5 w-3.5", isDisliked && "fill-current")} />
+                    ),
+                },
+              ]
+            : []),
+        ]}
+      />
     </div>
   )
 }

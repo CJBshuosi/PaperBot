@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -27,6 +27,66 @@ _memory_store = SqlAlchemyMemoryStore()
 _track_router = TrackRouter(research_store=_research_store, memory_store=_memory_store)
 _metric_collector: Optional[MemoryMetricCollector] = None
 _paper_store: Optional["PaperStore"] = None
+_paper_search_service: Optional["PaperSearchService"] = None
+
+_DEADLINE_RADAR_DATA: List[Dict[str, Any]] = [
+    {
+        "name": "KDD 2026",
+        "ccf_level": "A",
+        "field": "Data Mining",
+        "deadline": "2026-03-05T23:59:59+00:00",
+        "url": "https://kdd.org/kdd2026/",
+        "keywords": ["data mining", "recommendation", "graph mining"],
+    },
+    {
+        "name": "ACL 2026",
+        "ccf_level": "A",
+        "field": "NLP",
+        "deadline": "2026-03-15T23:59:59+00:00",
+        "url": "https://2026.aclweb.org/",
+        "keywords": ["nlp", "llm", "language model", "retrieval"],
+    },
+    {
+        "name": "CVPR 2026",
+        "ccf_level": "A",
+        "field": "Computer Vision",
+        "deadline": "2026-03-20T23:59:59+00:00",
+        "url": "https://cvpr.thecvf.com/",
+        "keywords": ["computer vision", "diffusion", "multimodal"],
+    },
+    {
+        "name": "USENIX Security 2026",
+        "ccf_level": "A",
+        "field": "Security",
+        "deadline": "2026-03-28T23:59:59+00:00",
+        "url": "https://www.usenix.org/conference/usenixsecurity26",
+        "keywords": ["security", "privacy", "llm safety"],
+    },
+    {
+        "name": "EMNLP 2026",
+        "ccf_level": "B",
+        "field": "NLP",
+        "deadline": "2026-05-10T23:59:59+00:00",
+        "url": "https://2026.emnlp.org/",
+        "keywords": ["nlp", "alignment", "reasoning"],
+    },
+    {
+        "name": "NeurIPS 2026",
+        "ccf_level": "A",
+        "field": "Machine Learning",
+        "deadline": "2026-05-15T23:59:59+00:00",
+        "url": "https://neurips.cc/",
+        "keywords": ["machine learning", "llm", "optimization"],
+    },
+    {
+        "name": "AAAI 2027",
+        "ccf_level": "A",
+        "field": "Artificial Intelligence",
+        "deadline": "2026-08-10T23:59:59+00:00",
+        "url": "https://aaai.org/conference/aaai/",
+        "keywords": ["ai", "agent", "reasoning"],
+    },
+]
 
 
 def _get_metric_collector() -> MemoryMetricCollector:
@@ -45,6 +105,20 @@ def _get_paper_store() -> "PaperStore":
     if _paper_store is None:
         _paper_store = PaperStore()
     return _paper_store
+
+
+def _get_paper_search_service() -> "PaperSearchService":
+    """Lazy initialization of unified paper search service."""
+    from paperbot.application.services.paper_search_service import PaperSearchService
+    from paperbot.infrastructure.adapters import build_adapter_registry
+
+    global _paper_search_service
+    if _paper_search_service is None:
+        _paper_search_service = PaperSearchService(
+            adapters=build_adapter_registry(),
+            registry=_get_paper_store(),
+        )
+    return _paper_search_service
 
 
 def _schedule_embedding_precompute(
@@ -123,6 +197,102 @@ def list_tracks(
         user_id=user_id, include_archived=include_archived, limit=limit
     )
     return TrackListResponse(user_id=user_id, tracks=tracks)
+
+
+class DeadlineRadarResponse(BaseModel):
+    user_id: str
+    generated_at: str
+    items: List[Dict[str, Any]]
+
+
+@router.get("/research/deadlines/radar", response_model=DeadlineRadarResponse)
+def get_deadline_radar(
+    user_id: str = "default",
+    days: int = Query(180, ge=7, le=365),
+    ccf_levels: str = Query("A,B,C"),
+    field: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+):
+    levels = {
+        token.strip().upper()
+        for token in str(ccf_levels or "").split(",")
+        if token.strip().upper() in {"A", "B", "C"}
+    }
+    if not levels:
+        levels = {"A", "B", "C"}
+
+    field_filter = str(field or "").strip().lower()
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=int(days))
+
+    tracks = _research_store.list_tracks(user_id=user_id, include_archived=False, limit=200)
+    track_tokens: Dict[int, set[str]] = {}
+    for track in tracks:
+        track_id = int(track.get("id") or 0)
+        if track_id <= 0:
+            continue
+        tokens = {
+            str(term).strip().lower() for term in (track.get("keywords") or []) if str(term).strip()
+        }
+        track_tokens[track_id] = tokens
+
+    rows: List[Dict[str, Any]] = []
+    for item in _DEADLINE_RADAR_DATA:
+        try:
+            deadline = datetime.fromisoformat(str(item.get("deadline") or ""))
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+
+        if deadline < now or deadline > cutoff:
+            continue
+        if str(item.get("ccf_level") or "").strip().upper() not in levels:
+            continue
+        if field_filter and field_filter not in str(item.get("field") or "").strip().lower():
+            continue
+
+        conf_keywords = {
+            str(k).strip().lower() for k in (item.get("keywords") or []) if str(k).strip()
+        }
+
+        matched_tracks: List[Dict[str, Any]] = []
+        for track in tracks:
+            track_id = int(track.get("id") or 0)
+            if track_id <= 0:
+                continue
+            overlap = sorted(conf_keywords & track_tokens.get(track_id, set()))
+            if overlap:
+                matched_tracks.append(
+                    {
+                        "track_id": track_id,
+                        "track_name": str(track.get("name") or ""),
+                        "matched_keywords": overlap,
+                    }
+                )
+
+        workflow_query = ", ".join(item.get("keywords") or [])
+        days_left = max(0, int((deadline - now).total_seconds() // 86400))
+        rows.append(
+            {
+                "name": str(item.get("name") or ""),
+                "ccf_level": str(item.get("ccf_level") or ""),
+                "field": str(item.get("field") or ""),
+                "deadline": deadline.isoformat(),
+                "days_left": days_left,
+                "url": str(item.get("url") or ""),
+                "keywords": sorted(conf_keywords),
+                "workflow_query": workflow_query,
+                "matched_tracks": matched_tracks,
+            }
+        )
+
+    rows.sort(key=lambda row: (int(row.get("days_left") or 0), str(row.get("name") or "")))
+    return DeadlineRadarResponse(
+        user_id=user_id,
+        generated_at=now.isoformat(),
+        items=rows[: max(1, int(limit))],
+    )
 
 
 @router.get("/research/tracks/active", response_model=TrackResponse)
@@ -805,6 +975,15 @@ class SavedPapersResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class TrackFeedResponse(BaseModel):
+    user_id: str
+    track_id: int
+    total: int
+    limit: int
+    offset: int
+    items: List[Dict[str, Any]]
+
+
 class PaperDetailResponse(BaseModel):
     detail: Dict[str, Any]
 
@@ -831,11 +1010,44 @@ def update_paper_status(paper_id: str, req: PaperReadingStatusRequest):
 @router.get("/research/papers/saved", response_model=SavedPapersResponse)
 def list_saved_papers(
     user_id: str = "default",
+    track_id: Optional[int] = None,
     sort_by: str = Query("saved_at"),
     limit: int = Query(200, ge=1, le=1000),
 ):
-    items = _research_store.list_saved_papers(user_id=user_id, sort_by=sort_by, limit=limit)
+    items = _research_store.list_saved_papers(
+        user_id=user_id,
+        track_id=track_id,
+        sort_by=sort_by,
+        limit=limit,
+    )
     return SavedPapersResponse(user_id=user_id, items=items)
+
+
+@router.get("/research/tracks/{track_id}/feed", response_model=TrackFeedResponse)
+def get_track_feed(
+    track_id: int,
+    user_id: str = "default",
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    track = _research_store.get_track(user_id=user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    payload = _research_store.list_track_feed(
+        user_id=user_id,
+        track_id=track_id,
+        limit=limit,
+        offset=offset,
+    )
+    return TrackFeedResponse(
+        user_id=user_id,
+        track_id=track_id,
+        total=int(payload.get("total") or 0),
+        limit=limit,
+        offset=offset,
+        items=payload.get("items") or [],
+    )
 
 
 @router.get("/research/papers/{paper_id}", response_model=PaperDetailResponse)
@@ -881,6 +1093,7 @@ class ContextRequest(BaseModel):
     activate_track_id: Optional[int] = None  # confirm switch: activates then uses it
     memory_limit: int = Field(8, ge=1, le=50)
     paper_limit: int = Field(8, ge=0, le=50)
+    sources: Optional[List[str]] = None
     offline: bool = False
     include_cross_track: bool = False
     stage: str = "auto"  # auto/survey/writing/rebuttal
@@ -907,13 +1120,26 @@ async def build_context(req: ContextRequest):
             raise HTTPException(status_code=404, detail="Track not found")
 
     Logger.info("Initializing context engine", file=LogFiles.HARVEST)
+    search_service = None
+    if not req.offline and req.paper_limit > 0:
+        try:
+            search_service = _get_paper_search_service()
+        except Exception as exc:
+            Logger.warning(
+                f"Failed to initialize PaperSearchService, fallback to legacy S2 path: {exc}",
+                file=LogFiles.HARVEST,
+            )
+
     engine = ContextEngine(
         research_store=_research_store,
         memory_store=_memory_store,
+        paper_store=_get_paper_store(),
+        search_service=search_service,
         track_router=_track_router,
         config=ContextEngineConfig(
             memory_limit=req.memory_limit,
             paper_limit=req.paper_limit,
+            search_sources=req.sources,
             offline=req.offline,
             stage=req.stage,
             exploration_ratio=(

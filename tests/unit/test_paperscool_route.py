@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from paperbot.api import main as api_main
 from paperbot.api.routes import paperscool as paperscool_route
+from paperbot.infrastructure.stores.pipeline_session_store import PipelineSessionStore
 
 
 def _parse_sse_events(text: str):
@@ -739,3 +740,190 @@ def test_paperscool_daily_route_enqueues_repo_enrichment(monkeypatch):
 
     assert resp.status_code == 200
     assert called["count"] == 1
+
+
+def test_paperscool_daily_resume_session(monkeypatch, tmp_path):
+    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    paperscool_route._pipeline_session_store = PipelineSessionStore(
+        db_url=f"sqlite:///{tmp_path / 'daily-session.db'}"
+    )
+
+    class _FakeJudgment:
+        def to_dict(self):
+            return {
+                "relevance": {"score": 5, "rationale": ""},
+                "novelty": {"score": 4, "rationale": ""},
+                "rigor": {"score": 4, "rationale": ""},
+                "impact": {"score": 4, "rationale": ""},
+                "clarity": {"score": 4, "rationale": ""},
+                "overall": 4.2,
+                "one_line_summary": "good",
+                "recommendation": "must_read",
+                "judge_model": "fake",
+                "judge_cost_tier": 1,
+            }
+
+    class _FakeJudge:
+        def __init__(self, llm_service=None):
+            pass
+
+        def judge_single(self, *, paper, query):
+            return _FakeJudgment()
+
+        def judge_with_calibration(self, *, paper, query, n_runs=1):
+            return _FakeJudgment()
+
+    monkeypatch.setattr(paperscool_route, "PaperJudge", _FakeJudge)
+    monkeypatch.setattr(paperscool_route, "get_llm_service", lambda: object())
+
+    with TestClient(api_main.app) as client:
+        first = client.post(
+            "/api/research/paperscool/daily",
+            json={
+                "queries": ["ICL压缩"],
+                "enable_judge": True,
+                "judge_runs": 1,
+                "judge_max_items_per_query": 2,
+            },
+        )
+        assert first.status_code == 200
+        first_events = _parse_sse_events(first.text)
+        first_result = next(e for e in first_events if e.get("type") == "result")
+        session_id = first_result["data"].get("session_id")
+        assert session_id
+
+        session_resp = client.get(f"/api/research/paperscool/sessions/{session_id}")
+        assert session_resp.status_code == 200
+        assert session_resp.json()["session"]["status"] == "completed"
+
+        resumed = client.post(
+            "/api/research/paperscool/daily",
+            json={
+                "queries": ["ICL压缩"],
+                "enable_judge": True,
+                "session_id": session_id,
+                "resume": True,
+            },
+        )
+        assert resumed.status_code == 200
+        resumed_events = _parse_sse_events(resumed.text)
+        resumed_result = next(e for e in resumed_events if e.get("type") == "result")
+        assert resumed_result["data"].get("resumed") is True
+
+
+def test_paperscool_daily_route_pending_approval_and_queue(monkeypatch, tmp_path):
+    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+
+    calls = {"ingest": 0}
+
+    def _fake_ingest(report):
+        calls["ingest"] += 1
+        return {"saved": 1}
+
+    monkeypatch.setattr(paperscool_route, "ingest_daily_report_to_registry", _fake_ingest)
+    monkeypatch.setattr(
+        paperscool_route,
+        "_pipeline_session_store",
+        PipelineSessionStore(db_url=f"sqlite:///{tmp_path / 'daily-approval.db'}"),
+    )
+
+    with TestClient(api_main.app) as client:
+        resp = client.post(
+            "/api/research/paperscool/daily",
+            json={
+                "queries": ["ICL压缩"],
+                "require_approval": True,
+            },
+        )
+        assert resp.status_code == 200
+        events = _parse_sse_events(resp.text)
+        types = [e.get("type") for e in events]
+        assert "approval_required" in types
+        result_event = next(e for e in events if e.get("type") == "result")
+        assert result_event["data"].get("approval_status") == "pending_approval"
+        session_id = result_event["data"].get("session_id")
+        assert session_id
+
+        session_resp = client.get(f"/api/research/paperscool/sessions/{session_id}")
+        assert session_resp.status_code == 200
+        assert session_resp.json()["session"]["status"] == "pending_approval"
+
+        queue_resp = client.get("/api/research/paperscool/approvals?limit=10")
+        assert queue_resp.status_code == 200
+        ids = [item["session_id"] for item in queue_resp.json().get("items", [])]
+        assert session_id in ids
+
+    # Ingest is gated until explicit approve
+    assert calls["ingest"] == 0
+
+
+def test_paperscool_daily_approval_decisions(monkeypatch, tmp_path):
+    monkeypatch.setattr(paperscool_route, "PapersCoolTopicSearchWorkflow", _FakeWorkflow)
+    monkeypatch.setattr(
+        paperscool_route,
+        "_pipeline_session_store",
+        PipelineSessionStore(db_url=f"sqlite:///{tmp_path / 'daily-approval-decision.db'}"),
+    )
+    monkeypatch.setattr(
+        paperscool_route,
+        "ingest_daily_report_to_registry",
+        lambda report: {"saved": len(report.get("queries") or [])},
+    )
+    monkeypatch.setattr(
+        paperscool_route,
+        "persist_judge_scores_to_registry",
+        lambda report: {"saved": 0},
+    )
+
+    repo_calls = {"count": 0}
+
+    def _fake_enqueue(_report):
+        repo_calls["count"] += 1
+
+    monkeypatch.setattr(paperscool_route, "_enqueue_repo_enrichment_async", _fake_enqueue)
+
+    with TestClient(api_main.app) as client:
+        # Session A -> approve
+        pending_a = client.post(
+            "/api/research/paperscool/daily",
+            json={"queries": ["ICL压缩"], "require_approval": True},
+        )
+        assert pending_a.status_code == 200
+        events_a = _parse_sse_events(pending_a.text)
+        result_a = next(e for e in events_a if e.get("type") == "result")
+        session_a = result_a["data"]["session_id"]
+
+        approve = client.post(f"/api/research/paperscool/sessions/{session_a}/approve", json={})
+        assert approve.status_code == 200
+        approved_session = approve.json()["session"]
+        assert approved_session["status"] == "completed"
+        assert approved_session["result"]["approval_status"] == "approved"
+        assert "registry_ingest" in approved_session["result"]["report"]
+
+        # Session B -> reject
+        pending_b = client.post(
+            "/api/research/paperscool/daily",
+            json={"queries": ["RAG"], "require_approval": True},
+        )
+        assert pending_b.status_code == 200
+        events_b = _parse_sse_events(pending_b.text)
+        result_b = next(e for e in events_b if e.get("type") == "result")
+        session_b = result_b["data"]["session_id"]
+
+        reject = client.post(
+            f"/api/research/paperscool/sessions/{session_b}/reject",
+            json={"reason": "Not ready"},
+        )
+        assert reject.status_code == 200
+        rejected_session = reject.json()["session"]
+        assert rejected_session["status"] == "rejected"
+        assert rejected_session["state"].get("reject_reason") == "Not ready"
+        assert rejected_session["result"].get("approval_status") == "rejected"
+
+        queue_resp = client.get("/api/research/paperscool/approvals?limit=10")
+        assert queue_resp.status_code == 200
+        ids = [item["session_id"] for item in queue_resp.json().get("items", [])]
+        assert session_a not in ids
+        assert session_b not in ids
+
+    assert repo_calls["count"] == 1

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Any, Callable
+from typing import Dict, Optional, Any
 from enum import Enum
 
 from .providers.base import LLMProvider
@@ -54,6 +54,7 @@ class ModelConfig:
     model: str
     cost_tier: int = 1
     api_key_env: str = "OPENAI_API_KEY"
+    api_key: Optional[str] = None
     base_url: Optional[str] = None
     max_tokens: int = 4096
 
@@ -150,7 +151,7 @@ class ModelRouter:
 
     def _create_provider(self, config: ModelConfig) -> LLMProvider:
         """根据配置创建 Provider"""
-        api_key = os.getenv(config.api_key_env, "")
+        api_key = str(config.api_key or "").strip() or os.getenv(config.api_key_env, "")
 
         if config.provider == "openai":
             from .providers.openai_provider import OpenAIProvider
@@ -191,9 +192,76 @@ class ModelRouter:
         """列出所有配置的模型"""
         return {name: f"{cfg.provider}:{cfg.model}" for name, cfg in self.config.models.items()}
 
+    @staticmethod
+    def _normalize_provider(vendor: str) -> str:
+        text = str(vendor or "").strip().lower()
+        if text in {"openai", "openai_compatible", "openai-compatible"}:
+            return "openai"
+        if text in {"anthropic", "ollama"}:
+            return text
+        return "openai"
+
+    @classmethod
+    def _from_model_registry(cls) -> Optional["ModelRouter"]:
+        """Build router from user-managed model_endpoints registry if available."""
+        try:
+            from paperbot.infrastructure.stores.model_endpoint_store import ModelEndpointStore
+
+            store = ModelEndpointStore(auto_create_schema=False)
+            rows = store.list_endpoints(enabled_only=True, include_secrets=True)
+        except Exception as exc:
+            logger.warning("Model registry unavailable, fallback to env routing: %s", exc)
+            return None
+
+        if not rows:
+            return None
+
+        models: Dict[str, ModelConfig] = {}
+        fallback_name: Optional[str] = None
+
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            model_list = [str(x).strip() for x in (row.get("models") or []) if str(x).strip()]
+            if not name or not model_list:
+                continue
+
+            models[name] = ModelConfig(
+                provider=cls._normalize_provider(str(row.get("vendor") or "openai_compatible")),
+                model=model_list[0],
+                cost_tier=1,
+                api_key_env=str(row.get("api_key_env") or "OPENAI_API_KEY"),
+                api_key=(str(row.get("api_key") or "").strip() or None),
+                base_url=(str(row.get("base_url") or "").strip() or None),
+            )
+            if bool(row.get("is_default")) and fallback_name is None:
+                fallback_name = name
+
+        if not models:
+            return None
+
+        fallback_name = fallback_name or next(iter(models.keys()))
+        router = cls(RouterConfig(models=models, fallback_model=fallback_name))
+
+        allowed_tasks = {str(t.value) for t in TaskType}
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            if name not in models:
+                continue
+            for task in row.get("task_types") or []:
+                task_name = str(task).strip().lower()
+                if task_name in allowed_tasks:
+                    router.set_task_routing(task_name, name)
+
+        router.set_task_routing("default", fallback_name)
+        return router
+
     @classmethod
     def from_env(cls) -> "ModelRouter":
         """从环境变量创建默认路由器，并兼容 OpenAI-compatible 自定义端点。"""
+
+        registry_router = cls._from_model_registry()
+        if registry_router is not None:
+            return registry_router
 
         default_model_override = os.getenv("LLM_DEFAULT_MODEL")
         reasoning_model_override = os.getenv("LLM_REASONING_MODEL")

@@ -105,7 +105,6 @@ class IdentityResolver:
                     select(PaperModel).where(
                         or_(
                             PaperModel.url.in_(url_candidates),
-                            PaperModel.external_url.in_(url_candidates),
                             PaperModel.pdf_url.in_(url_candidates),
                         )
                     )

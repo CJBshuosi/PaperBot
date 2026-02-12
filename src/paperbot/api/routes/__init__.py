@@ -14,6 +14,7 @@ from . import (
     research,
     paperscool,
     newsletter,
+    model_endpoints,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "research",
     "paperscool",
     "newsletter",
+    "model_endpoints",
 ]

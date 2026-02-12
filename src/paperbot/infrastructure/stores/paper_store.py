@@ -719,10 +719,14 @@ class PaperStore:
 
         if USE_CANONICAL_FK:
             return self._get_user_library_canonical(
-                user_id, session_provider=self._provider,
-                track_id=track_id, actions=actions,
-                sort_by=sort_by, sort_order=sort_order,
-                limit=limit, offset=offset,
+                user_id,
+                session_provider=self._provider,
+                track_id=track_id,
+                actions=actions,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+                offset=offset,
             )
 
         with self._provider.session() as session:
@@ -739,7 +743,12 @@ class PaperStore:
             # This avoids CAST errors on PostgreSQL for non-numeric paper_ids
             # Also check library_paper_id from metadata if available
             base_stmt = (
-                select(PaperModel, PaperFeedbackModel)
+                select(
+                    PaperModel,
+                    PaperFeedbackModel.ts,
+                    PaperFeedbackModel.track_id,
+                    PaperFeedbackModel.action,
+                )
                 .join(
                     PaperFeedbackModel,
                     or_(
@@ -769,12 +778,20 @@ class PaperStore:
 
             # Deduplicate by paper.id, keeping the one with latest timestamp
             Logger.info("Deduplicating results by paper id", file=LogFiles.HARVEST)
-            paper_map: Dict[int, Tuple[PaperModel, PaperFeedbackModel]] = {}
+            paper_map: Dict[int, Tuple[PaperModel, Optional[datetime], Optional[int], str]] = {}
             for row in all_results:
                 paper = row[0]
-                feedback = row[1]
-                if paper.id not in paper_map or feedback.ts > paper_map[paper.id][1].ts:
-                    paper_map[paper.id] = (paper, feedback)
+                ts = row[1]
+                fb_track_id = row[2]
+                fb_action = row[3]
+                current_ts = ts or datetime.min.replace(tzinfo=timezone.utc)
+                existing_ts = (
+                    paper_map[paper.id][1] or datetime.min.replace(tzinfo=timezone.utc)
+                    if paper.id in paper_map
+                    else datetime.min.replace(tzinfo=timezone.utc)
+                )
+                if paper.id not in paper_map or current_ts > existing_ts:
+                    paper_map[paper.id] = (paper, ts, fb_track_id, fb_action)
 
             # Convert to list and sort
             unique_results = list(paper_map.values())
@@ -814,9 +831,9 @@ class PaperStore:
             return [
                 LibraryPaper(
                     paper=row[0],
-                    saved_at=row[1].ts,
-                    track_id=row[1].track_id,
-                    action=row[1].action,
+                    saved_at=row[1],
+                    track_id=row[2],
+                    action=row[3],
                 )
                 for row in paginated_results
             ], total
@@ -894,6 +911,37 @@ class PaperStore:
             result = session.execute(stmt)
             session.commit()
             return result.rowcount > 0
+
+    def get_latest_judge_scores(self, paper_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Fetch latest judge score per paper id."""
+        ids = sorted({int(pid) for pid in paper_ids if int(pid) > 0})
+        if not ids:
+            return {}
+
+        with self._provider.session() as session:
+            rows = (
+                session.execute(
+                    select(PaperJudgeScoreModel)
+                    .where(PaperJudgeScoreModel.paper_id.in_(ids))
+                    .order_by(desc(PaperJudgeScoreModel.scored_at), desc(PaperJudgeScoreModel.id))
+                )
+                .scalars()
+                .all()
+            )
+
+            latest: Dict[int, Dict[str, Any]] = {}
+            for row in rows:
+                pid = int(row.paper_id)
+                if pid in latest:
+                    continue
+                latest[pid] = {
+                    "overall": float(row.overall or 0.0),
+                    "recommendation": str(row.recommendation or ""),
+                    "one_line_summary": str(row.one_line_summary or ""),
+                    "judge_model": str(row.judge_model or ""),
+                    "scored_at": row.scored_at.isoformat() if row.scored_at else None,
+                }
+            return latest
 
     def create_harvest_run(
         self,

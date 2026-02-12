@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { useSearchParams } from "next/navigation"
 
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,10 +14,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { SearchBox } from "./SearchBox"
 import { TrackPills } from "./TrackPills"
 import { SearchResults } from "./SearchResults"
+import { FeedTab } from "./FeedTab"
+import { SavedTab } from "./SavedTab"
+import { MemoryTab } from "./MemoryTab"
 import { CreateTrackModal } from "./CreateTrackModal"
 import { EditTrackModal } from "./EditTrackModal"
 import { ManageTracksModal } from "./ManageTracksModal"
@@ -52,6 +57,8 @@ function getGreeting(): string {
 }
 
 export default function ResearchPageNew() {
+  const searchParams = useSearchParams()
+
   // User state
   const [userId] = useState("default")
 
@@ -64,6 +71,8 @@ export default function ResearchPageNew() {
   const [hasSearched, setHasSearched] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const [contextPack, setContextPack] = useState<ContextPack | null>(null)
+  const [activeTab, setActiveTab] = useState("search")
+  const [searchSources, setSearchSources] = useState<string[]>(["semantic_scholar"])
 
   // UI state
   const [loading, setLoading] = useState(false)
@@ -85,12 +94,21 @@ export default function ResearchPageNew() {
 
   const papers = contextPack?.paper_recommendations || []
   const reasons = contextPack?.paper_recommendation_reasons || {}
+  const routeTrackId = Number(searchParams.get("track_id") || 0)
 
   // Load tracks on mount
   useEffect(() => {
     refreshTracks().catch((e) => setError(String(e)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!routeTrackId || !Number.isFinite(routeTrackId)) return
+    if (!tracks.some((track) => track.id === routeTrackId)) return
+    if (activeTrackId === routeTrackId) return
+    activateTrack(routeTrackId).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeTrackId, tracks, activeTrackId])
 
   async function refreshTracks(): Promise<number | null> {
     const data = await fetchJson<{ tracks: Track[] }>(
@@ -135,6 +153,7 @@ export default function ResearchPageNew() {
         query,
         paper_limit: 10,
         memory_limit: 8,
+        sources: searchSources,
         offline: false,
         include_cross_track: false,
         stage: "auto",
@@ -150,11 +169,23 @@ export default function ResearchPageNew() {
       )
 
       setContextPack(data.context_pack)
+      setActiveTab("search")
     } catch (e) {
       setError(String(e))
     } finally {
       setIsSearching(false)
     }
+  }
+
+  function toggleSearchSource(source: string) {
+    setSearchSources((prev) => {
+      const exists = prev.includes(source)
+      if (exists) {
+        const next = prev.filter((x) => x !== source)
+        return next.length ? next : ["semantic_scholar"]
+      }
+      return [...prev, source]
+    })
   }
 
   async function handleCreateTrack(data: {
@@ -314,14 +345,7 @@ export default function ResearchPageNew() {
   const trackToClearName = tracks.find((t) => t.id === trackToClear)?.name || "this track"
 
   return (
-    <div
-      className={cn(
-        "min-h-[calc(100vh-4rem)] transition-all duration-500 ease-out",
-        hasSearched
-          ? "pt-8"
-          : "flex flex-col items-center justify-center"
-      )}
-    >
+    <div className={cn("min-h-[calc(100vh-4rem)] pt-6 sm:pt-8 transition-all duration-500 ease-out")}>
       {/* Confirm Clear Memory Dialog */}
       <Dialog open={confirmClearOpen} onOpenChange={setConfirmClearOpen}>
         <DialogContent>
@@ -398,7 +422,7 @@ export default function ResearchPageNew() {
       <div
         className={cn(
           "w-full px-4 sm:px-6 transition-all duration-500 ease-out",
-          hasSearched ? "max-w-5xl mx-auto" : "max-w-3xl"
+          "max-w-5xl mx-auto"
         )}
       >
         {/* Greeting - only show before search */}
@@ -460,16 +484,46 @@ export default function ResearchPageNew() {
           </Card>
         )}
 
-        {/* Search Results */}
-        <SearchResults
-          papers={papers}
-          reasons={reasons}
-          isSearching={isSearching}
-          hasSearched={hasSearched}
-          onLike={(paperId, rank) => handleFeedback(paperId, "like", rank)}
-          onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
-          onDislike={(paperId, rank) => handleFeedback(paperId, "dislike", rank)}
-        />
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="mb-4 grid w-full grid-cols-4">
+            <TabsTrigger value="search">Search</TabsTrigger>
+            <TabsTrigger value="feed">Feed</TabsTrigger>
+            <TabsTrigger value="saved">Saved</TabsTrigger>
+            <TabsTrigger value="memory">Memory</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="search">
+            <SearchResults
+              papers={papers}
+              reasons={reasons}
+              isSearching={isSearching}
+              hasSearched={hasSearched}
+              selectedSources={searchSources}
+              onToggleSource={toggleSearchSource}
+              onLike={(paperId, rank) => handleFeedback(paperId, "like", rank)}
+              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
+              onDislike={(paperId, rank) => handleFeedback(paperId, "dislike", rank)}
+            />
+          </TabsContent>
+
+          <TabsContent value="feed">
+            <FeedTab
+              userId={userId}
+              trackId={activeTrackId}
+              onLike={(paperId, rank) => handleFeedback(paperId, "like", rank)}
+              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
+              onDislike={(paperId, rank) => handleFeedback(paperId, "dislike", rank)}
+            />
+          </TabsContent>
+
+          <TabsContent value="saved">
+            <SavedTab userId={userId} trackId={activeTrackId} />
+          </TabsContent>
+
+          <TabsContent value="memory">
+            <MemoryTab userId={userId} trackId={activeTrackId} />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )
