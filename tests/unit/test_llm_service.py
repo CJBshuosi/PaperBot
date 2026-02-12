@@ -46,6 +46,15 @@ class _FakeResolver:
         return self.provider
 
 
+class _FakeUsageStore:
+    def __init__(self):
+        self.rows = []
+
+    def record_usage(self, **kwargs):
+        self.rows.append(kwargs)
+        return {"id": len(self.rows)}
+
+
 def test_complete_uses_cache_for_same_request():
     provider = _FakeProvider(response="cached")
     service = LLMService(router=_FakeRouter(provider))
@@ -106,3 +115,20 @@ def test_provider_resolver_can_be_injected():
 
     assert output == "resolver-ok"
     assert resolver.task_types == ["chat"]
+
+
+def test_complete_records_usage():
+    provider = _FakeProvider(response="usage")
+    usage_store = _FakeUsageStore()
+    service = LLMService(router=_FakeRouter(provider), usage_store=usage_store)
+
+    result = service.complete(task_type="summary", system="system prompt", user="user prompt")
+
+    assert result == "usage"
+    assert len(usage_store.rows) == 1
+    row = usage_store.rows[0]
+    assert row["task_type"] == "summary"
+    assert row["provider_name"] == "fake"
+    assert row["prompt_tokens"] >= 1
+    assert row["completion_tokens"] >= 1
+    assert row["estimated_cost_usd"] >= 0.0

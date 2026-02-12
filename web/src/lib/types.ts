@@ -123,11 +123,30 @@ export interface ReadingQueueItem {
     priority: number
 }
 
-export interface LLMUsageRecord {
+export interface LLMUsageDailyRecord {
     date: string
-    gpt4: number
-    claude: number
-    ollama: number
+    total_tokens: number
+    total_cost_usd: number
+    providers: Record<string, number>
+}
+
+export interface LLMUsageProviderModelRecord {
+    provider_name: string
+    model_name: string
+    calls: number
+    total_tokens: number
+    total_cost_usd: number
+}
+
+export interface LLMUsageSummary {
+    window_days: number
+    daily: LLMUsageDailyRecord[]
+    provider_models: LLMUsageProviderModelRecord[]
+    totals: {
+        calls: number
+        total_tokens: number
+        total_cost_usd: number
+    }
 }
 
 export interface DeadlineRadarItem {

@@ -1,4 +1,17 @@
-import { Activity, Paper, PaperDetails, Scholar, ScholarDetails, Stats, WikiConcept, TrendingTopic, PipelineTask, ReadingQueueItem, LLMUsageRecord, DeadlineRadarItem } from "./types"
+import {
+    Activity,
+    Paper,
+    PaperDetails,
+    Scholar,
+    ScholarDetails,
+    Stats,
+    WikiConcept,
+    TrendingTopic,
+    PipelineTask,
+    ReadingQueueItem,
+    LLMUsageSummary,
+    DeadlineRadarItem,
+} from "./types"
 
 const API_BASE_URL = process.env.PAPERBOT_API_BASE_URL || "http://127.0.0.1:8000/api"
 
@@ -26,9 +39,20 @@ async function postJson<T>(path: string, payload: Record<string, unknown>): Prom
 }
 
 export async function fetchStats(): Promise<Stats> {
-    // TODO: Replace with real API call
-    // const res = await fetch(`${API_BASE_URL}/stats`)
-    // return res.json()
+    try {
+        const usage = await fetchLLMUsage()
+        const tokenCount = usage.totals.total_tokens
+        const prettyTokens = tokenCount >= 1000 ? `${Math.round(tokenCount / 1000)}k` : `${tokenCount}`
+        return {
+            tracked_scholars: 128,
+            new_papers: 12,
+            llm_usage: prettyTokens,
+            read_later: 8,
+        }
+    } catch {
+        // Keep resilient dashboard fallback.
+    }
+
     return {
         tracked_scholars: 128,
         new_papers: 12,
@@ -112,16 +136,56 @@ export async function fetchReadingQueue(): Promise<ReadingQueueItem[]> {
     ]
 }
 
-export async function fetchLLMUsage(): Promise<LLMUsageRecord[]> {
-    return [
-        { date: "Mon", gpt4: 12000, claude: 8000, ollama: 3000 },
-        { date: "Tue", gpt4: 15000, claude: 9500, ollama: 4000 },
-        { date: "Wed", gpt4: 10000, claude: 7000, ollama: 5000 },
-        { date: "Thu", gpt4: 18000, claude: 12000, ollama: 2000 },
-        { date: "Fri", gpt4: 14000, claude: 10000, ollama: 6000 },
-        { date: "Sat", gpt4: 8000, claude: 5000, ollama: 1000 },
-        { date: "Sun", gpt4: 6000, claude: 4000, ollama: 500 }
-    ]
+export async function fetchLLMUsage(days: number = 7): Promise<LLMUsageSummary> {
+    try {
+        const qs = new URLSearchParams({ days: String(days) })
+        const res = await fetch(`${API_BASE_URL}/model-endpoints/usage?${qs.toString()}`, {
+            cache: "no-store",
+        })
+        if (!res.ok) throw new Error("usage endpoint unavailable")
+        const payload = await res.json() as { summary?: LLMUsageSummary }
+        if (payload.summary) {
+            return payload.summary
+        }
+    } catch {
+        // Keep static fallback for local-first UX.
+    }
+
+    return {
+        window_days: days,
+        daily: [
+            {
+                date: "Mon",
+                total_tokens: 23000,
+                total_cost_usd: 0.0,
+                providers: { openai: 12000, anthropic: 8000, ollama: 3000 },
+            },
+            {
+                date: "Tue",
+                total_tokens: 28500,
+                total_cost_usd: 0.0,
+                providers: { openai: 15000, anthropic: 9500, ollama: 4000 },
+            },
+            {
+                date: "Wed",
+                total_tokens: 22000,
+                total_cost_usd: 0.0,
+                providers: { openai: 10000, anthropic: 7000, ollama: 5000 },
+            },
+            {
+                date: "Thu",
+                total_tokens: 32000,
+                total_cost_usd: 0.0,
+                providers: { openai: 18000, anthropic: 12000, ollama: 2000 },
+            },
+        ],
+        provider_models: [],
+        totals: {
+            calls: 0,
+            total_tokens: 105500,
+            total_cost_usd: 0,
+        },
+    }
 }
 
 export async function fetchDeadlineRadar(userId: string = "default"): Promise<DeadlineRadarItem[]> {

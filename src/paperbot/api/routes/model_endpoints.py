@@ -7,11 +7,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from paperbot.infrastructure.llm.router import ModelConfig, ModelRouter, RouterConfig
+from paperbot.infrastructure.stores.llm_usage_store import LLMUsageStore
 from paperbot.infrastructure.stores.model_endpoint_store import ModelEndpointStore
 
 router = APIRouter()
 
 _store = ModelEndpointStore()
+_usage_store = LLMUsageStore()
 
 _ALLOWED_VENDORS = ["openai_compatible", "openai", "anthropic", "ollama"]
 _ALLOWED_TASK_TYPES = [
@@ -79,6 +81,10 @@ class EndpointActivateResponse(BaseModel):
     item: Dict[str, Any]
 
 
+class LLMUsageSummaryResponse(BaseModel):
+    summary: Dict[str, Any]
+
+
 def _build_model_config(endpoint: Dict[str, Any]) -> ModelConfig:
     models = [str(x).strip() for x in (endpoint.get("models") or []) if str(x).strip()]
     if not models:
@@ -143,6 +149,13 @@ def activate_model_endpoint(endpoint_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="model endpoint not found")
     return EndpointActivateResponse(item=row)
+
+
+@router.get("/model-endpoints/usage", response_model=LLMUsageSummaryResponse)
+def get_llm_usage_summary(days: int = 7):
+    window = max(1, min(int(days), 90))
+    summary = _usage_store.summarize(days=window)
+    return LLMUsageSummaryResponse(summary=summary)
 
 
 @router.post("/model-endpoints/{endpoint_id}/test", response_model=EndpointTestResponse)

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from paperbot.api import main as api_main
 from paperbot.api.routes import model_endpoints as model_endpoints_route
 from paperbot.infrastructure.llm.router import ModelRouter
+from paperbot.infrastructure.stores.llm_usage_store import LLMUsageStore
 from paperbot.infrastructure.stores.model_endpoint_store import ModelEndpointStore
 
 
@@ -164,3 +165,28 @@ def test_model_router_applies_task_routes_from_registry(tmp_path: Path, monkeypa
     assert router._task_routing["review"] == "ReasoningProvider"
     assert router._task_routing["chat"] == "DefaultProvider"
     assert router._task_routing["default"] == "DefaultProvider"
+
+
+def test_llm_usage_summary_route(tmp_path: Path, monkeypatch):
+    db_url = f"sqlite:///{tmp_path / usage-route.db}"
+    store = ModelEndpointStore(db_url=db_url)
+    usage_store = LLMUsageStore(db_url=db_url)
+    monkeypatch.setattr(model_endpoints_route, "_store", store)
+    monkeypatch.setattr(model_endpoints_route, "_usage_store", usage_store)
+
+    usage_store.record_usage(
+        task_type="summary",
+        provider_name="openai",
+        model_name="gpt-4o-mini",
+        prompt_tokens=100,
+        completion_tokens=40,
+        estimated_cost_usd=0.0,
+    )
+
+    with TestClient(api_main.app) as client:
+        resp = client.get("/api/model-endpoints/usage?days=7")
+
+    assert resp.status_code == 200
+    payload = resp.json()["summary"]
+    assert payload["totals"]["calls"] >= 1
+    assert payload["totals"]["total_tokens"] >= 140

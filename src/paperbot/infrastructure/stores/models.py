@@ -854,6 +854,23 @@ class ModelEndpointModel(Base):
         )
 
 
+class LLMUsageModel(Base):
+    """LLM token/cost usage records for dashboard and alerting."""
+
+    __tablename__ = "llm_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    task_type: Mapped[str] = mapped_column(String(32), default="default", index=True)
+    provider_name: Mapped[str] = mapped_column(String(64), default="unknown", index=True)
+    model_name: Mapped[str] = mapped_column(String(128), default="", index=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class HarvestRunModel(Base):
     """Harvest execution tracking."""
 

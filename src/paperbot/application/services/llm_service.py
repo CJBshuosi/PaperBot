@@ -11,6 +11,7 @@ from paperbot.application.services.provider_resolver import (
     RouterBackedProviderResolver,
 )
 from paperbot.infrastructure.llm.router import ModelRouter
+from paperbot.infrastructure.stores.llm_usage_store import LLMUsageStore
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class LLMService:
         router: Optional[ModelRouter] = None,
         provider_resolver: Optional[ProviderResolver] = None,
         prompt_registry: Optional[PromptRegistry] = None,
+        usage_store: Optional[LLMUsageStore] = None,
         *,
         enable_cache: bool = True,
         raise_errors: bool = False,
@@ -33,6 +35,12 @@ class LLMService:
         self._enable_cache = enable_cache
         self._raise_errors = raise_errors
         self._cache: Dict[str, str] = {}
+        self._usage_store = usage_store
+        if self._usage_store is None:
+            try:
+                self._usage_store = LLMUsageStore()
+            except Exception:
+                self._usage_store = None
 
     def complete(
         self,
@@ -50,6 +58,13 @@ class LLMService:
         try:
             provider = self._provider_resolver.get_provider(task_type)
             result = (provider.invoke_simple(system, user, **kwargs) or "").strip()
+            self._record_usage(
+                task_type=task_type,
+                provider=provider,
+                system=system,
+                user=user,
+                completion=result,
+            )
         except Exception as exc:  # pragma: no cover - exercised via fallback tests
             logger.warning("LLM complete failed task_type=%s error=%s", task_type, exc)
             if self._raise_errors:
@@ -74,7 +89,19 @@ class LLMService:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ]
-            yield from provider.stream_invoke(messages, **kwargs)
+            chunks: List[str] = []
+            for chunk in provider.stream_invoke(messages, **kwargs):
+                text = str(chunk or "")
+                if text:
+                    chunks.append(text)
+                    yield text
+            self._record_usage(
+                task_type=task_type,
+                provider=provider,
+                system=system,
+                user=user,
+                completion="".join(chunks),
+            )
         except Exception as exc:  # pragma: no cover - stream failures are runtime/network specific
             logger.warning("LLM stream failed task_type=%s error=%s", task_type, exc)
             if self._raise_errors:
@@ -156,6 +183,49 @@ class LLMService:
             sort_keys=True,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _record_usage(
+        self,
+        *,
+        task_type: str,
+        provider: Any,
+        system: str,
+        user: str,
+        completion: str,
+    ) -> None:
+        if self._usage_store is None:
+            return
+
+        prompt_tokens = _estimate_tokens(system) + _estimate_tokens(user)
+        completion_tokens = _estimate_tokens(completion)
+
+        try:
+            info = provider.info
+            provider_name = str(getattr(info, "provider_name", "unknown") or "unknown")
+            model_name = str(getattr(info, "model_name", "") or "")
+        except Exception:
+            provider_name = "unknown"
+            model_name = ""
+
+        cost_usd = _estimate_cost_usd(
+            provider_name=provider_name,
+            model_name=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+        try:
+            self._usage_store.record_usage(
+                task_type=task_type,
+                provider_name=provider_name,
+                model_name=model_name,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                estimated_cost_usd=cost_usd,
+                metadata={"estimated": True},
+            )
+        except Exception:
+            return
 
     def describe_task_provider(self, task_type: str = "default") -> Dict[str, Any]:
         """Expose selected provider metadata for auditing/judge reports."""
@@ -250,3 +320,34 @@ def _tokenize(text: str) -> List[str]:
         seen.add(token)
         dedup.append(token)
     return dedup
+
+
+def _estimate_tokens(text: str) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    # Lightweight heuristic: ~4 chars/token for mixed English+code prompts.
+    return max(1, int(len(raw) / 4))
+
+
+def _estimate_cost_usd(
+    *, provider_name: str, model_name: str, prompt_tokens: int, completion_tokens: int
+) -> float:
+    provider = (provider_name or "").lower()
+    model = (model_name or "").lower()
+
+    in_price = 0.0
+    out_price = 0.0
+
+    if provider == "openai" and "gpt-4o-mini" in model:
+        in_price, out_price = 0.15, 0.60
+    elif provider == "openai" and "gpt-4o" in model:
+        in_price, out_price = 2.50, 10.00
+    elif provider == "anthropic" and "claude-3-5-sonnet" in model:
+        in_price, out_price = 3.00, 15.00
+    elif provider == "deepseek":
+        in_price, out_price = 0.55, 2.19
+    elif provider == "ollama":
+        in_price, out_price = 0.0, 0.0
+
+    return ((prompt_tokens * in_price) + (completion_tokens * out_price)) / 1_000_000
