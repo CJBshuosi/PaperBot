@@ -46,6 +46,7 @@ type AnchorAuthor = {
     personalization: number
     total: number
   }
+  user_action?: "follow" | "ignore" | null
   evidence_status?: "ok" | "missing"
   evidence_note?: string | null
   evidence_papers: Array<{
@@ -375,6 +376,31 @@ export default function ResearchPageNew() {
     }
   }
 
+  async function handleAnchorAction(authorId: number, action: "follow" | "ignore"): Promise<void> {
+    if (!activeTrackId) return
+
+    try {
+      await fetchJson(`/api/research/tracks/${activeTrackId}/anchors/${authorId}/action`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, action }),
+        headers: { "Content-Type": "application/json" },
+      })
+
+      setAnchors((prev) =>
+        prev.map((row) =>
+          row.author_id === authorId
+            ? {
+                ...row,
+                user_action: action,
+              }
+            : row
+        )
+      )
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function handleFeedback(
     paperId: string,
     action: string,
@@ -586,6 +612,24 @@ export default function ResearchPageNew() {
                               score {anchor.anchor_score.toFixed(2)}
                             </span>
                           </div>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={anchor.user_action === "follow" ? "default" : "outline"}
+                            onClick={() => handleAnchorAction(anchor.author_id, "follow")}
+                          >
+                            Follow
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={anchor.user_action === "ignore" ? "destructive" : "outline"}
+                            onClick={() => handleAnchorAction(anchor.author_id, "ignore")}
+                          >
+                            Ignore
+                          </Button>
                         </div>
                         {evidence ? (
                           <div className="mt-1 text-xs text-muted-foreground">

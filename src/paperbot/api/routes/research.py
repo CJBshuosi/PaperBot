@@ -1015,6 +1015,21 @@ class AnchorDiscoverResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class AnchorActionRequest(BaseModel):
+    user_id: str = "default"
+    action: str = Field(..., pattern="^(follow|ignore)$")
+
+
+class AnchorActionResponse(BaseModel):
+    action: Dict[str, Any]
+
+
+class AnchorActionListResponse(BaseModel):
+    user_id: str
+    track_id: int
+    items: List[Dict[str, Any]]
+
+
 class PaperDetailResponse(BaseModel):
     detail: Dict[str, Any]
 
@@ -1167,6 +1182,53 @@ def discover_track_anchors(
         personalized=personalized,
         items=items,
     )
+
+
+@router.post(
+    "/research/tracks/{track_id}/anchors/{author_id}/action",
+    response_model=AnchorActionResponse,
+)
+def set_anchor_action(track_id: int, author_id: int, req: AnchorActionRequest):
+    track = _research_store.get_track(user_id=req.user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    started = time.perf_counter()
+    try:
+        payload = _get_anchor_service().set_user_anchor_action(
+            user_id=req.user_id,
+            track_id=track_id,
+            author_id=author_id,
+            action=req.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        raise HTTPException(status_code=404, detail="Anchor author not found") from exc
+
+    elapsed_ms = float((time.perf_counter() - started) * 1000.0)
+    _get_workflow_metric_store().record_metric(
+        workflow="anchor_action",
+        stage=req.action,
+        status="completed",
+        track_id=track_id,
+        claim_count=0,
+        evidence_count=0,
+        elapsed_ms=elapsed_ms,
+        detail={"author_id": author_id, "user_id": req.user_id},
+    )
+
+    return AnchorActionResponse(action=payload)
+
+
+@router.get("/research/tracks/{track_id}/anchors/actions", response_model=AnchorActionListResponse)
+def list_anchor_actions(track_id: int, user_id: str = "default"):
+    track = _research_store.get_track(user_id=user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    items = _get_anchor_service().get_user_anchor_actions(user_id=user_id, track_id=track_id)
+    return AnchorActionListResponse(user_id=user_id, track_id=track_id, items=items)
 
 
 @router.get("/research/papers/{paper_id}", response_model=PaperDetailResponse)

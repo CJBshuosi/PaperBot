@@ -735,6 +735,7 @@ class AuthorModel(Base):
 
     paper_links = relationship("PaperAuthorModel", back_populates="author")
     user_scores = relationship("UserAnchorScoreModel", back_populates="author")
+    user_actions = relationship("UserAnchorActionModel", back_populates="author")
 
 
 class UserAnchorScoreModel(Base):
@@ -759,6 +760,31 @@ class UserAnchorScoreModel(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
     author = relationship("AuthorModel", back_populates="user_scores")
+    track = relationship("ResearchTrackModel")
+
+
+class UserAnchorActionModel(Base):
+    """Per-user action on anchor author (follow / ignore)."""
+
+    __tablename__ = "user_anchor_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "track_id", "author_id", name="uq_user_anchor_actions_user_track_author"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    track_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_tracks.id"), index=True)
+    author_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+
+    action: Mapped[str] = mapped_column(String(16), default="follow", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    author = relationship("AuthorModel", back_populates="user_actions")
     track = relationship("ResearchTrackModel")
 
 

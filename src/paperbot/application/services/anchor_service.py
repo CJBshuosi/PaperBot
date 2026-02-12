@@ -15,6 +15,7 @@ from paperbot.infrastructure.stores.models import (
     PaperFeedbackModel,
     PaperModel,
     ResearchTrackModel,
+    UserAnchorActionModel,
     UserAnchorScoreModel,
 )
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
@@ -105,6 +106,12 @@ class AnchorService:
             max_paper_count = max(x.paper_count for x in aggregates) or 1
             max_citation_sum = max(x.citation_sum for x in aggregates) or 1
             network_map = self._build_network_map(session, year_from=year_from, now_year=now_year)
+            action_map = self.list_user_anchor_actions(
+                user_id=user_id,
+                track_id=int(track_id),
+                author_ids=[int(item.author.id) for item in aggregates],
+                session=session,
+            )
 
             payload: list[dict] = []
             for item in aggregates:
@@ -241,6 +248,7 @@ class AnchorService:
                         "citation_sum": int(item.citation_sum),
                         "keyword_match_rate": float(round(keyword_match_rate, 4)),
                         "feedback_signal": float(round(feedback_signal, 4)),
+                        "user_action": action_map.get(int(item.author.id)),
                         "score_breakdown": score_breakdown,
                         "evidence_status": evidence_status,
                         "evidence_note": evidence_note,
@@ -304,6 +312,101 @@ class AnchorService:
 
             session.commit()
             return {"authors": len(aggregates), "updated": updated}
+
+    def set_user_anchor_action(
+        self,
+        *,
+        user_id: str,
+        track_id: int,
+        author_id: int,
+        action: str,
+    ) -> dict[str, Any]:
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"follow", "ignore"}:
+            raise ValueError("action must be 'follow' or 'ignore'")
+
+        now = datetime.now(timezone.utc)
+        with self._provider.session() as session:
+            row = session.execute(
+                select(UserAnchorActionModel).where(
+                    UserAnchorActionModel.user_id == str(user_id),
+                    UserAnchorActionModel.track_id == int(track_id),
+                    UserAnchorActionModel.author_id == int(author_id),
+                )
+            ).scalar_one_or_none()
+
+            if row is None:
+                row = UserAnchorActionModel(
+                    user_id=str(user_id),
+                    track_id=int(track_id),
+                    author_id=int(author_id),
+                    action=normalized_action,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.action = normalized_action
+                row.updated_at = now
+
+            session.commit()
+            session.refresh(row)
+
+            return {
+                "user_id": row.user_id,
+                "track_id": int(row.track_id),
+                "author_id": int(row.author_id),
+                "action": row.action,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+
+    def get_user_anchor_actions(self, *, user_id: str, track_id: int) -> list[dict[str, Any]]:
+        with self._provider.session() as session:
+            rows = (
+                session.execute(
+                    select(UserAnchorActionModel)
+                    .where(UserAnchorActionModel.user_id == str(user_id))
+                    .where(UserAnchorActionModel.track_id == int(track_id))
+                    .order_by(
+                        UserAnchorActionModel.updated_at.desc(), UserAnchorActionModel.id.desc()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                {
+                    "user_id": row.user_id,
+                    "track_id": int(row.track_id),
+                    "author_id": int(row.author_id),
+                    "action": row.action,
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                }
+                for row in rows
+            ]
+
+    @staticmethod
+    def list_user_anchor_actions(
+        *,
+        user_id: str,
+        track_id: int,
+        author_ids: list[int],
+        session,
+    ) -> dict[int, str]:
+        if not author_ids:
+            return {}
+
+        rows = (
+            session.execute(
+                select(UserAnchorActionModel)
+                .where(UserAnchorActionModel.user_id == str(user_id))
+                .where(UserAnchorActionModel.track_id == int(track_id))
+                .where(UserAnchorActionModel.author_id.in_(author_ids))
+            )
+            .scalars()
+            .all()
+        )
+        return {int(row.author_id): str(row.action) for row in rows if row.author_id is not None}
 
     @staticmethod
     def _upsert_user_anchor_score(
