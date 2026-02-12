@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "next/navigation"
 
 import { cn } from "@/lib/utils"
+import { BookOpen } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -429,7 +430,7 @@ export default function ResearchPageNew() {
         {!hasSearched && (
           <div className="text-center mb-8 sm:mb-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <h1 className="text-3xl sm:text-4xl md:text-5xl font-semibold tracking-tight mb-2 sm:mb-3">
-              <span className="mr-2 sm:mr-3">📚</span>
+              <BookOpen className="inline-block mr-2 sm:mr-3 h-8 w-8 sm:h-10 sm:w-10 align-middle" />
               {getGreeting()}
             </h1>
             <p className="text-lg sm:text-xl text-muted-foreground">
@@ -461,7 +462,7 @@ export default function ResearchPageNew() {
 
         {/* Track Pills - only show before search */}
         {!hasSearched && tracks.length > 0 && (
-          <div className="animate-in fade-in slide-in-from-bottom-2 duration-500 delay-150">
+          <div className="mb-8 animate-in fade-in slide-in-from-bottom-2 duration-500 delay-150">
             <TrackPills
               tracks={tracks}
               activeTrackId={activeTrackId}

@@ -1,4 +1,5 @@
 import { fetchPaperDetails } from "@/lib/api"
+import { Bot } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -63,7 +64,7 @@ export default async function PaperPage({ params }: { params: Promise<{ id: stri
                                 </p>
                                 <div className="mt-6 p-4 bg-muted/50 rounded-lg border">
                                     <h4 className="font-semibold mb-2 flex items-center gap-2">
-                                        <span className="text-xl">🤖</span> AI TL;DR
+                                        <Bot className="h-5 w-5" /> AI TL;DR
                                     </h4>
                                     <p className="text-sm italic">{paper.tldr}</p>
                                 </div>
