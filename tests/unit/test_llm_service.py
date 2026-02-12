@@ -36,6 +36,16 @@ class _FakeRouter:
         return self.provider
 
 
+class _FakeResolver:
+    def __init__(self, provider: _FakeProvider):
+        self.provider = provider
+        self.task_types = []
+
+    def get_provider(self, task_type: str = "default"):
+        self.task_types.append(task_type)
+        return self.provider
+
+
 def test_complete_uses_cache_for_same_request():
     provider = _FakeProvider(response="cached")
     service = LLMService(router=_FakeRouter(provider))
@@ -85,3 +95,14 @@ def test_describe_task_provider_returns_model_metadata():
 
     assert info["provider_name"] == "fake"
     assert info["model_name"] == "fake-model"
+
+
+def test_provider_resolver_can_be_injected():
+    provider = _FakeProvider(response="resolver-ok")
+    resolver = _FakeResolver(provider)
+    service = LLMService(provider_resolver=resolver)
+
+    output = service.complete(task_type="chat", system="sys", user="hello")
+
+    assert output == "resolver-ok"
+    assert resolver.task_types == ["chat"]

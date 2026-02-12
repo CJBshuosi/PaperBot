@@ -6,6 +6,10 @@ import logging
 from typing import Any, Dict, Generator, List, Optional, Sequence
 
 from paperbot.application.prompts import PromptRegistry
+from paperbot.application.services.provider_resolver import (
+    ProviderResolver,
+    RouterBackedProviderResolver,
+)
 from paperbot.infrastructure.llm.router import ModelRouter
 
 logger = logging.getLogger(__name__)
@@ -17,12 +21,14 @@ class LLMService:
     def __init__(
         self,
         router: Optional[ModelRouter] = None,
+        provider_resolver: Optional[ProviderResolver] = None,
         prompt_registry: Optional[PromptRegistry] = None,
         *,
         enable_cache: bool = True,
         raise_errors: bool = False,
     ) -> None:
-        self._router = router or ModelRouter.from_env()
+        resolved_router = router or ModelRouter.from_env()
+        self._provider_resolver = provider_resolver or RouterBackedProviderResolver(resolved_router)
         self._prompts = prompt_registry or PromptRegistry()
         self._enable_cache = enable_cache
         self._raise_errors = raise_errors
@@ -42,7 +48,7 @@ class LLMService:
             return self._cache[cache_key]
 
         try:
-            provider = self._router.get_provider(task_type)
+            provider = self._provider_resolver.get_provider(task_type)
             result = (provider.invoke_simple(system, user, **kwargs) or "").strip()
         except Exception as exc:  # pragma: no cover - exercised via fallback tests
             logger.warning("LLM complete failed task_type=%s error=%s", task_type, exc)
@@ -63,7 +69,7 @@ class LLMService:
         **kwargs,
     ) -> Generator[str, None, None]:
         try:
-            provider = self._router.get_provider(task_type)
+            provider = self._provider_resolver.get_provider(task_type)
             messages = [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -154,7 +160,7 @@ class LLMService:
     def describe_task_provider(self, task_type: str = "default") -> Dict[str, Any]:
         """Expose selected provider metadata for auditing/judge reports."""
         try:
-            provider = self._router.get_provider(task_type)
+            provider = self._provider_resolver.get_provider(task_type)
             info = provider.info
             return {
                 "provider_name": info.provider_name,

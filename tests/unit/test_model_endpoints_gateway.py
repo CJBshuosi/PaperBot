@@ -108,3 +108,53 @@ def test_model_router_reads_registry_before_env(tmp_path: Path, monkeypatch):
     models = router.list_models()
     assert "GatewayDefault" in models
     assert models["GatewayDefault"] == "openai:gateway/model-a"
+
+
+def test_model_router_applies_task_routes_from_registry(tmp_path: Path, monkeypatch):
+    db_url = f"sqlite:///{tmp_path / router-routing.db}"
+    store = ModelEndpointStore(db_url=db_url)
+    store.upsert_endpoint(
+        payload={
+            "name": "SummaryProvider",
+            "vendor": "openai_compatible",
+            "base_url": "https://summary.example/v1",
+            "api_key_env": "SUMMARY_API_KEY",
+            "models": ["summary/model"],
+            "task_types": ["summary"],
+            "enabled": True,
+            "is_default": False,
+        }
+    )
+    store.upsert_endpoint(
+        payload={
+            "name": "ReasoningProvider",
+            "vendor": "openai_compatible",
+            "base_url": "https://reasoning.example/v1",
+            "api_key_env": "REASONING_API_KEY",
+            "models": ["reasoning/model"],
+            "task_types": ["reasoning", "review"],
+            "enabled": True,
+            "is_default": False,
+        }
+    )
+    store.upsert_endpoint(
+        payload={
+            "name": "DefaultProvider",
+            "vendor": "openai_compatible",
+            "base_url": "https://default.example/v1",
+            "api_key_env": "DEFAULT_API_KEY",
+            "models": ["default/model"],
+            "task_types": ["chat", "default"],
+            "enabled": True,
+            "is_default": True,
+        }
+    )
+
+    monkeypatch.setenv("PAPERBOT_DB_URL", db_url)
+    router = ModelRouter.from_env()
+
+    assert router._task_routing["summary"] == "SummaryProvider"
+    assert router._task_routing["reasoning"] == "ReasoningProvider"
+    assert router._task_routing["review"] == "ReasoningProvider"
+    assert router._task_routing["chat"] == "DefaultProvider"
+    assert router._task_routing["default"] == "DefaultProvider"
