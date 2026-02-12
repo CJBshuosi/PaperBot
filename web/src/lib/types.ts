@@ -14,7 +14,7 @@ export interface Paper {
     venue: string
     authors: string
     citations: string | number
-    status: "pending" | "analyzing" | "Reproduced"
+    status: "pending" | "analyzing" | "Reproduced" | "Saved"
     tags: string[]
 }
 
@@ -38,40 +38,22 @@ export interface TrendingTopic {
 }
 
 
-export type ActivityType = "published" | "alert" | "repro" | "milestone" | "conference"
+export type TimelineItemKind = "harvest" | "save" | "note"
 
-export interface Activity {
+export interface TimelineItem {
     id: string
-    type: ActivityType
+    kind: TimelineItemKind
+    title: string
+    subtitle?: string
     timestamp: string
-    // Type-specific fields
-    paper?: {
-        title: string
-        venue: string
-        year: string
-        citations: number
-        tags: string[]
-        abstract_snippet: string
-        is_influential?: boolean
-    }
-    scholar?: {
-        name: string
-        avatar: string
-        affiliation: string
-    }
-    milestone?: {
-        title: string
-        description: string
-        current_value: number
-        target_value?: number
-        trend: "up" | "down" | "flat"
-    }
-    conference?: {
-        name: string
-        location: string
-        date: string
-        deadline_countdown: string
-    }
+}
+
+export interface SavedPaper {
+    id: string
+    paper_id: string
+    title: string
+    authors: string
+    saved_at: string
 }
 
 export interface Stats {
@@ -105,22 +87,6 @@ export interface WikiConcept {
     examples: string[]
     category: "Method" | "Task" | "Metric" | "Architecture" | "Dataset"
     icon: string // Lucide icon name or identifier
-}
-
-export interface PipelineTask {
-    id: string
-    paper_title: string
-    status: "downloading" | "analyzing" | "building" | "testing" | "success" | "failed"
-    progress: number
-    started_at: string
-}
-
-export interface ReadingQueueItem {
-    id: string
-    paper_id: string
-    title: string
-    estimated_time: string
-    priority: number
 }
 
 export interface LLMUsageDailyRecord {

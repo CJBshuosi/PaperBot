@@ -803,7 +803,7 @@ class PaperStore:
             min_ts = datetime.min.replace(tzinfo=timezone.utc)
             if sort_by == "saved_at":
                 unique_results.sort(
-                    key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc")
+                    key=lambda x: x[1] or min_ts, reverse=(sort_order.lower() == "desc")
                 )
             elif sort_by == "title":
                 unique_results.sort(
@@ -819,7 +819,7 @@ class PaperStore:
                 )
             else:
                 unique_results.sort(
-                    key=lambda x: x[1].ts or min_ts, reverse=(sort_order.lower() == "desc")
+                    key=lambda x: x[1] or min_ts, reverse=(sort_order.lower() == "desc")
                 )
 
             # Get total count before pagination
