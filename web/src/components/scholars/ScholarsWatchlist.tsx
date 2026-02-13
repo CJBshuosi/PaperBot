@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ArrowRight,
   BellOff,
+  BellRing,
   BookOpen,
   Check,
   CircleAlert,
@@ -63,6 +64,10 @@ type ScholarApiRow = {
   muted?: boolean
   last_seen_at?: string | null
   last_seen_cached_papers?: number
+  digest_enabled?: boolean
+  digest_frequency?: "daily" | "weekly" | "monthly" | string
+  alert_enabled?: boolean
+  alert_keywords?: string[]
 }
 
 function toResearchLink(scholar: Scholar): string {
@@ -117,6 +122,15 @@ function mapScholarRow(row: ScholarApiRow): Scholar {
     muted: !!row.muted,
     last_seen_at: row.last_seen_at || null,
     last_seen_cached_papers: Number(row.last_seen_cached_papers || 0),
+    digest_enabled: !!row.digest_enabled,
+    digest_frequency:
+      row.digest_frequency === "daily" || row.digest_frequency === "monthly"
+        ? row.digest_frequency
+        : "weekly",
+    alert_enabled: !!row.alert_enabled,
+    alert_keywords: Array.isArray(row.alert_keywords)
+      ? row.alert_keywords.map((keyword) => String(keyword).trim()).filter(Boolean)
+      : [],
   }
 }
 
@@ -232,6 +246,19 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
 
   const selectedForTrack = selectedInsights.length === 1 ? selectedInsights[0].scholar : null
 
+  function buildUniqueTrackName(baseName: string): string {
+    const existingNames = new Set(tracks.map((track) => String(track.name || "").trim().toLowerCase()))
+    if (!existingNames.has(baseName.toLowerCase())) {
+      return baseName
+    }
+
+    let suffix = 2
+    while (existingNames.has(`${baseName} (${suffix})`.toLowerCase())) {
+      suffix += 1
+    }
+    return `${baseName} (${suffix})`
+  }
+
   function toggleSelected(id: string) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -247,6 +274,10 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
       muted?: boolean
       last_seen_cached_papers?: number
       last_seen_at?: string
+      digest_enabled?: boolean
+      digest_frequency?: "daily" | "weekly" | "monthly"
+      alert_enabled?: boolean
+      alert_keywords?: string[]
     },
   ) {
     const res = await fetch(`/api/research/scholars/${encodeURIComponent(scholar.id)}`, {
@@ -273,6 +304,27 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
     await refreshScholars()
   }
 
+  async function toggleDigestScholar(scholar: Scholar) {
+    const nextEnabled = !scholar.digest_enabled
+    await patchScholarState(scholar, {
+      digest_enabled: nextEnabled,
+      digest_frequency: scholar.digest_frequency || "weekly",
+    })
+    await refreshScholars()
+  }
+
+  async function toggleAlertScholar(scholar: Scholar) {
+    const nextEnabled = !scholar.alert_enabled
+    await patchScholarState(scholar, {
+      alert_enabled: nextEnabled,
+      alert_keywords:
+        nextEnabled && (!scholar.alert_keywords || scholar.alert_keywords.length === 0)
+          ? scholar.keywords || []
+          : scholar.alert_keywords || [],
+    })
+    await refreshScholars()
+  }
+
   async function muteSelected() {
     if (selectedIds.size === 0) return
     const targets = items.filter((item) => selectedIds.has(item.id) && !item.muted)
@@ -288,6 +340,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
       window.alert(error instanceof Error ? error.message : String(error))
     }
   }
+
 
   async function handleCreateScholar() {
     setCreateLoading(true)
@@ -324,7 +377,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
   async function handleCreateTrackFromScholar(scholar: Scholar) {
     setRowBusy((prev) => ({ ...prev, [scholar.id]: true }))
     try {
-      const trackName = `${scholar.name} Watch`
+      const trackName = buildUniqueTrackName(`${scholar.name} Watch`)
       const fallbackKeywords = [scholar.name]
       const keywords = (scholar.keywords || []).length > 0 ? scholar.keywords || [] : fallbackKeywords
 
@@ -509,6 +562,8 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
                 const scholar = row.scholar
                 const isSelected = selectedIds.has(scholar.id)
                 const isMuted = !!scholar.muted
+                const digestEnabled = !!scholar.digest_enabled
+                const alertEnabled = !!scholar.alert_enabled
 
                 return (
                   <Card key={scholar.id} className={isSelected ? "border-primary" : "border-border/60"}>
@@ -567,6 +622,15 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
                         </div>
                       )}
 
+                      <div className="flex flex-wrap gap-1.5">
+                        <Badge variant={digestEnabled ? "default" : "outline"} className="text-[11px] capitalize">
+                          Digest {digestEnabled ? scholar.digest_frequency || "weekly" : "off"}
+                        </Badge>
+                        <Badge variant={alertEnabled ? "default" : "outline"} className="text-[11px]">
+                          Alert {alertEnabled ? `${(scholar.alert_keywords || []).length} keywords` : "off"}
+                        </Badge>
+                      </div>
+
                       <p className="text-xs text-muted-foreground">{scholar.recent_activity}</p>
 
                       <div className="flex flex-wrap gap-1.5 pt-1">
@@ -613,6 +677,24 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
                         >
                           <BellOff className="mr-1 h-3.5 w-3.5" />
                           {isMuted ? "Unmute" : "Mute"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8"
+                          onClick={() => toggleDigestScholar(scholar).catch(() => {})}
+                        >
+                          <BellRing className="mr-1 h-3.5 w-3.5" />
+                          {digestEnabled ? "Digest Off" : "Digest On"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8"
+                          onClick={() => toggleAlertScholar(scholar).catch(() => {})}
+                        >
+                          <CircleAlert className="mr-1 h-3.5 w-3.5" />
+                          {alertEnabled ? "Alert Off" : "Alert On"}
                         </Button>
                         <Button
                           size="sm"

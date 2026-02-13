@@ -76,6 +76,20 @@
       "owner": "unassigned",
       "updated_at": "2026-02-13",
       "notes": "Completed in continued scholar refactor."
+    },
+    {
+      "id": "SCHOLAR-P3",
+      "title": "Scholar automation preferences",
+      "scope": "Persist weekly digest and alert preferences on scholar watchlist and expose quick toggles in the UI.",
+      "acceptance_criteria": [
+        "Scholar PATCH accepts digest/alert metadata fields",
+        "Scholar list response returns digest/alert metadata for each row",
+        "Watchlist cards can toggle digest and alerts without local-only state"
+      ],
+      "status": "done",
+      "owner": "unassigned",
+      "updated_at": "2026-02-13",
+      "notes": "Completed with backend metadata persistence and watchlist quick-action toggles."
     }
   ]
 }

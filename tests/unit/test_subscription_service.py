@@ -31,10 +31,16 @@ def test_subscription_service_add_update_remove(tmp_path: Path):
             "muted": True,
             "last_seen_cached_papers": 5,
             "last_seen_at": "2026-02-13T00:00:00+00:00",
+            "digest_enabled": True,
+            "digest_frequency": "daily",
+            "alert_enabled": True,
+            "alert_keywords": ["rag", "agents"],
         }
     )
     assert added["name"] == "Alice"
     assert added["muted"] is True
+    assert added["digest_enabled"] is True
+    assert added["digest_frequency"] == "daily"
 
     updated = service.update_scholar(
         "1001",
@@ -45,6 +51,10 @@ def test_subscription_service_add_update_remove(tmp_path: Path):
             "muted": False,
             "last_seen_cached_papers": 9,
             "last_seen_at": "2026-02-14T00:00:00+00:00",
+            "digest_enabled": False,
+            "digest_frequency": "monthly",
+            "alert_enabled": True,
+            "alert_keywords": ["safety"],
         },
     )
     assert updated is not None
@@ -53,6 +63,10 @@ def test_subscription_service_add_update_remove(tmp_path: Path):
     assert updated["affiliations"] == ["Lab B"]
     assert updated["muted"] is False
     assert updated["last_seen_cached_papers"] == 9
+    assert updated["digest_enabled"] is False
+    assert updated["digest_frequency"] == "monthly"
+    assert updated["alert_enabled"] is True
+    assert updated["alert_keywords"] == ["safety"]
 
     removed = service.remove_scholar("1001")
     assert removed is not None

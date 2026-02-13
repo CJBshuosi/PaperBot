@@ -238,6 +238,10 @@ export async function fetchScholars(): Promise<Scholar[]> {
                 muted?: boolean
                 last_seen_at?: string | null
                 last_seen_cached_papers?: number
+                digest_enabled?: boolean
+                digest_frequency?: "daily" | "weekly" | "monthly" | string
+                alert_enabled?: boolean
+                alert_keywords?: string[]
             }>
         }
         return (data.items || []).map((row) => ({
@@ -255,6 +259,15 @@ export async function fetchScholars(): Promise<Scholar[]> {
             muted: !!row.muted,
             last_seen_at: row.last_seen_at || null,
             last_seen_cached_papers: Number(row.last_seen_cached_papers || 0),
+            digest_enabled: !!row.digest_enabled,
+            digest_frequency:
+                row.digest_frequency === "daily" || row.digest_frequency === "monthly"
+                    ? row.digest_frequency
+                    : "weekly",
+            alert_enabled: !!row.alert_enabled,
+            alert_keywords: Array.isArray(row.alert_keywords)
+                ? row.alert_keywords.map((kw) => String(kw).trim()).filter(Boolean)
+                : [],
         }))
     } catch {
         return []

@@ -160,6 +160,10 @@ def test_scholar_list_route(monkeypatch):
                     "muted": True,
                     "last_seen_cached_papers": 6,
                     "last_seen_at": "2026-02-12T00:00:00+00:00",
+                    "digest_enabled": True,
+                    "digest_frequency": "weekly",
+                    "alert_enabled": True,
+                    "alert_keywords": ["llm", "agents"],
                 },
                 {
                     "name": "Bob",
@@ -185,6 +189,10 @@ def test_scholar_list_route(monkeypatch):
     assert payload["items"][0]["status"] == "active"
     assert payload["items"][0]["muted"] is True
     assert payload["items"][0]["last_seen_cached_papers"] == 6
+    assert payload["items"][0]["digest_enabled"] is True
+    assert payload["items"][0]["digest_frequency"] == "weekly"
+    assert payload["items"][0]["alert_enabled"] is True
+    assert payload["items"][0]["alert_keywords"] == ["llm", "agents"]
     assert payload["items"][1]["name"] == "Bob"
 
 
@@ -244,6 +252,10 @@ def test_scholar_update_route(monkeypatch):
                 "keywords": updates.get("keywords") or [],
                 "muted": bool(updates.get("muted")),
                 "last_seen_cached_papers": updates.get("last_seen_cached_papers") or 0,
+                "digest_enabled": bool(updates.get("digest_enabled")),
+                "digest_frequency": updates.get("digest_frequency") or "weekly",
+                "alert_enabled": bool(updates.get("alert_enabled")),
+                "alert_keywords": updates.get("alert_keywords") or [],
             }
 
     monkeypatch.setattr(research_route, "_subscription_service", _FakeSubscriptionService())
@@ -256,6 +268,10 @@ def test_scholar_update_route(monkeypatch):
                 "keywords": ["rag", "safety"],
                 "muted": True,
                 "last_seen_cached_papers": 7,
+                "digest_enabled": True,
+                "digest_frequency": "daily",
+                "alert_enabled": True,
+                "alert_keywords": ["rag"],
             },
         )
         missing = client.patch("/api/research/scholars/missing", json={"name": "x"})
@@ -266,6 +282,10 @@ def test_scholar_update_route(monkeypatch):
     assert payload["scholar"]["keywords"] == ["rag", "safety"]
     assert payload["scholar"]["muted"] is True
     assert payload["scholar"]["last_seen_cached_papers"] == 7
+    assert payload["scholar"]["digest_enabled"] is True
+    assert payload["scholar"]["digest_frequency"] == "daily"
+    assert payload["scholar"]["alert_enabled"] is True
+    assert payload["scholar"]["alert_keywords"] == ["rag"]
     assert missing.status_code == 404
 
 

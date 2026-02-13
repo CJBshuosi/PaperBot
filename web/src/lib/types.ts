@@ -13,6 +13,10 @@ export interface Scholar {
     muted?: boolean
     last_seen_at?: string | null
     last_seen_cached_papers?: number
+    digest_enabled?: boolean
+    digest_frequency?: "daily" | "weekly" | "monthly"
+    alert_enabled?: boolean
+    alert_keywords?: string[]
 }
 
 export interface Paper {

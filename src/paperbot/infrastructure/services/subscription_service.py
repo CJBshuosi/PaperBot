@@ -21,6 +21,13 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_digest_frequency(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"daily", "weekly", "monthly"}:
+        return normalized
+    return "weekly"
+
+
 class SubscriptionService:
     """学者订阅配置管理服务"""
 
@@ -223,6 +230,26 @@ class SubscriptionService:
             except Exception:
                 payload["last_seen_cached_papers"] = 0
 
+        if scholar.get("digest_enabled") is not None:
+            payload["digest_enabled"] = bool(scholar.get("digest_enabled"))
+
+        if scholar.get("digest_frequency") is not None:
+            payload["digest_frequency"] = _normalize_digest_frequency(
+                scholar.get("digest_frequency")
+            )
+
+        if scholar.get("alert_enabled") is not None:
+            payload["alert_enabled"] = bool(scholar.get("alert_enabled"))
+
+        if scholar.get("alert_keywords") is not None:
+            alert_keywords = scholar.get("alert_keywords")
+            if isinstance(alert_keywords, list):
+                payload["alert_keywords"] = [
+                    str(v).strip() for v in alert_keywords if str(v).strip()
+                ]
+            else:
+                payload["alert_keywords"] = []
+
         scholars.append(payload)
         self.save_config()
         self._scholars = None
@@ -337,6 +364,38 @@ class SubscriptionService:
                 )
             except Exception:
                 payload["last_seen_cached_papers"] = 0
+
+        if updates.get("digest_enabled") is not None:
+            payload["digest_enabled"] = bool(updates.get("digest_enabled"))
+        elif current.get("digest_enabled") is not None:
+            payload["digest_enabled"] = bool(current.get("digest_enabled"))
+
+        if updates.get("digest_frequency") is not None:
+            payload["digest_frequency"] = _normalize_digest_frequency(
+                updates.get("digest_frequency")
+            )
+        elif current.get("digest_frequency") is not None:
+            payload["digest_frequency"] = _normalize_digest_frequency(
+                current.get("digest_frequency")
+            )
+
+        if updates.get("alert_enabled") is not None:
+            payload["alert_enabled"] = bool(updates.get("alert_enabled"))
+        elif current.get("alert_enabled") is not None:
+            payload["alert_enabled"] = bool(current.get("alert_enabled"))
+
+        if updates.get("alert_keywords") is not None:
+            alert_keywords = updates.get("alert_keywords")
+            if isinstance(alert_keywords, list):
+                payload["alert_keywords"] = [
+                    str(v).strip() for v in alert_keywords if str(v).strip()
+                ]
+            else:
+                payload["alert_keywords"] = []
+        elif isinstance(current.get("alert_keywords"), list):
+            payload["alert_keywords"] = [
+                str(v).strip() for v in current.get("alert_keywords", []) if str(v).strip()
+            ]
 
         scholars[target_index] = payload
         self.save_config()

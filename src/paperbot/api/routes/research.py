@@ -1495,6 +1495,10 @@ class ScholarUpdateRequest(BaseModel):
     muted: Optional[bool] = None
     last_seen_at: Optional[str] = None
     last_seen_cached_papers: Optional[int] = Field(None, ge=0)
+    digest_enabled: Optional[bool] = None
+    digest_frequency: Optional[str] = Field(None, pattern="^(daily|weekly|monthly)$")
+    alert_enabled: Optional[bool] = None
+    alert_keywords: Optional[List[str]] = None
 
 
 class ScholarDeleteResponse(BaseModel):
@@ -1537,6 +1541,10 @@ def update_tracked_scholar(scholar_ref: str, req: ScholarUpdateRequest):
         "muted": req.muted,
         "last_seen_at": req.last_seen_at,
         "last_seen_cached_papers": req.last_seen_cached_papers,
+        "digest_enabled": req.digest_enabled,
+        "digest_frequency": req.digest_frequency,
+        "alert_enabled": req.alert_enabled,
+        "alert_keywords": req.alert_keywords,
     }
     try:
         scholar = service.update_scholar(scholar_ref, payload)
@@ -1723,6 +1731,27 @@ def list_tracked_scholars(limit: int = Query(100, ge=1, le=500)):
                     _safe_int(row_meta.get("last_seen_cached_papers"), 0)
                     if isinstance(row_meta, dict)
                     else 0
+                ),
+                "digest_enabled": (
+                    bool(row_meta.get("digest_enabled")) if isinstance(row_meta, dict) else False
+                ),
+                "digest_frequency": (
+                    str(row_meta.get("digest_frequency") or "weekly").strip()
+                    if isinstance(row_meta, dict)
+                    else "weekly"
+                )
+                or "weekly",
+                "alert_enabled": (
+                    bool(row_meta.get("alert_enabled")) if isinstance(row_meta, dict) else False
+                ),
+                "alert_keywords": (
+                    [
+                        str(keyword).strip()
+                        for keyword in (row_meta.get("alert_keywords") or [])
+                        if str(keyword).strip()
+                    ]
+                    if isinstance(row_meta, dict)
+                    else []
                 ),
             }
         )

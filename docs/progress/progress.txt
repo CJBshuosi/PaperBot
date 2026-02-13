@@ -75,3 +75,27 @@ Format:
   - Scholar state is now persisted in subscription config; this is user-global and not multi-user isolated yet.
 - Next:
   - If needed, add per-user scholar preference storage and team-shared controls.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Ran `scripts/session_bootstrap.sh` at session start to restore context and pending work.
+  - Added scholar automation metadata support (`digest_enabled`, `digest_frequency`, `alert_enabled`, `alert_keywords`) in subscription storage service.
+  - Extended scholar PATCH/list backend APIs to persist and return automation preferences.
+  - Upgraded Scholars watchlist cards with digest/alert status badges and quick toggle actions.
+  - Added track-name de-duplication when creating track from scholar (`Name Watch`, `Name Watch (2)`, ...).
+  - Expanded unit tests for subscription service and scholar routes to cover automation metadata fields.
+- Validation:
+  - ./scripts/session_bootstrap.sh
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_research_scholar_routes.py tests/unit/test_subscription_service.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_research_scholar_routes.py tests/unit/test_subscription_service.py
+  - pytest tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py -q (environment still exits -1 without stdout)
+  - (cd web && ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/lib/api.ts src/lib/types.ts)
+  - (cd web && ./node_modules/.bin/tsc --noEmit)
+- Risks/Notes:
+  - Automation preferences are still stored in shared subscription config, not per-user account rows.
+- Next:
+  - Add per-user/team scoping for scholar automation preferences when user identity model is finalized.
