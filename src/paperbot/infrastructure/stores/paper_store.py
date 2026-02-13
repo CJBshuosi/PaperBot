@@ -21,6 +21,7 @@ from paperbot.infrastructure.stores.models import (
     PaperModel,
 )
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
+from paperbot.infrastructure.stores.author_store import AuthorStore
 from paperbot.utils.logging_config import LogFiles, Logger
 
 USE_CANONICAL_FK = os.getenv("PAPERBOT_USE_CANONICAL_FK", "false").lower() == "true"
@@ -100,6 +101,7 @@ class PaperStore:
         self._provider = SessionProvider(self.db_url)
         if auto_create_schema:
             Base.metadata.create_all(self._provider.engine)
+        self._author_store = AuthorStore(db_url=self.db_url, auto_create_schema=auto_create_schema)
 
     def upsert_paper(
         self,
@@ -268,6 +270,19 @@ class PaperStore:
 
             # Dual-write: also populate paper_identifiers
             self._sync_identifiers(session, row)
+
+            # Extract and link authors to authors/paper_authors tables
+            if authors and row.id:
+                try:
+                    self._author_store.replace_paper_authors(
+                        paper_id=int(row.id),
+                        authors=authors,
+                    )
+                except Exception as e:
+                    Logger.warning(
+                        f"Failed to sync paper authors for paper {row.id}: {e}",
+                        file=LogFiles.HARVEST,
+                    )
 
             return payload
 
