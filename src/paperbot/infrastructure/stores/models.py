@@ -860,6 +860,9 @@ class PaperModel(Base):
     structured_card_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Timestamps
+    first_seen_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

@@ -1381,7 +1381,7 @@ class SqlAlchemyResearchStore:
             "year": getattr(p, "year", None),
             "publication_date": getattr(p, "publication_date", None),
             "published_at": published_at,
-            "first_seen_at": p.created_at.isoformat() if p.created_at else None,
+            "first_seen_at": (getattr(p, "first_seen_at", None) or p.created_at).isoformat() if (getattr(p, "first_seen_at", None) or p.created_at) else None,
             "keywords": p.get_keywords(),
             "fields_of_study": p.get_fields_of_study(),
             "sources": p.get_sources(),
