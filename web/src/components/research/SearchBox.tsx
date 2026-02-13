@@ -1,7 +1,7 @@
 "use client"
 
 import { KeyboardEvent, useRef } from "react"
-import { Loader2, Search } from "lucide-react"
+import { Brain, Loader2, Search } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -22,6 +22,9 @@ interface SearchBoxProps {
   disabled?: boolean
   placeholder?: string
   className?: string
+  anchorMode?: "personalized" | "global"
+  onAnchorModeChange?: (mode: "personalized" | "global") => void
+  onOpenMemory?: () => void
 }
 
 export function SearchBox({
@@ -37,6 +40,9 @@ export function SearchBox({
   disabled = false,
   placeholder = "Search for papers on RAG, transformers, security...",
   className,
+  anchorMode = "personalized",
+  onAnchorModeChange,
+  onOpenMemory,
 }: SearchBoxProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -65,8 +71,9 @@ export function SearchBox({
     >
       <div
         className={cn(
-          "relative rounded-2xl border bg-background shadow-sm transition-all duration-200",
-          "focus-within:shadow-md focus-within:border-primary/50",
+          "relative rounded-2xl border bg-background shadow-md transition-all duration-200",
+          "focus-within:shadow-lg focus-within:border-primary/50",
+          "hover:shadow-lg",
           disabled && "opacity-60"
         )}
       >
@@ -79,18 +86,42 @@ export function SearchBox({
           placeholder={placeholder}
           disabled={disabled || isSearching}
           className={cn(
-            "min-h-[70px] sm:min-h-[80px] max-h-[200px] resize-none border-0 bg-transparent",
-            "px-4 sm:px-5 pt-4 sm:pt-5 pb-14",
-            "text-base sm:text-lg placeholder:text-muted-foreground/60",
+            "min-h-[56px] max-h-[200px] resize-none border-0 bg-transparent",
+            "px-5 sm:px-6 pt-4 pb-[56px]",
+            "text-base placeholder:text-muted-foreground/50",
             "focus-visible:ring-0 focus-visible:ring-offset-0"
           )}
           rows={1}
         />
 
         {/* Bottom Toolbar */}
-        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-end px-3 sm:px-4 py-2.5 sm:py-3">
-          {/* Right side - Track selector and Search button */}
+        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-4 sm:px-5 py-2.5 sm:py-3">
+          {/* Left side - Anchor mode toggle */}
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => onAnchorModeChange?.(anchorMode === "personalized" ? "global" : "personalized")}
+              disabled={disabled || isSearching}
+            >
+              {anchorMode === "personalized" ? "Personalized" : "Global"}
+            </Button>
+          </div>
+
+          {/* Right side - Memory, Track selector and Search button */}
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onOpenMemory}
+              disabled={disabled || isSearching}
+              title="Track Memory"
+            >
+              <Brain className="h-4 w-4" />
+            </Button>
+
             <TrackSelector
               tracks={tracks}
               activeTrack={activeTrack}

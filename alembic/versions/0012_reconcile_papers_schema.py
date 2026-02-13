@@ -97,6 +97,15 @@ def upgrade() -> None:
     _add_column_if_missing(
         "papers", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True)
     )
+    _add_column_if_missing(
+        "papers", sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=True)
+    )
+
+    # Backfill first_seen_at from created_at if missing.
+    if "first_seen_at" in _columns("papers") and "created_at" in _columns("papers"):
+        op.execute(
+            sa.text("UPDATE papers SET first_seen_at = created_at WHERE first_seen_at IS NULL")
+        )
 
     # Fill empty title_hash so ORM non-null assumptions hold.
     if "title_hash" in _columns("papers"):

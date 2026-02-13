@@ -11,7 +11,7 @@ import { LLMUsageChart } from "@/components/dashboard/LLMUsageChart"
 import { PipelineStatus } from "@/components/dashboard/PipelineStatus"
 import { ReadingQueue } from "@/components/dashboard/ReadingQueue"
 import { ScholarSignalsPanel } from "@/components/dashboard/ScholarSignalsPanel"
-import { TrackSpotlight } from "@/components/dashboard/TrackSpotlight"
+import { TrackSpotlightSection } from "@/components/dashboard/TrackSpotlightSection"
 import {
   fetchDeadlineRadar,
   fetchLLMUsage,
@@ -169,11 +169,13 @@ export default async function DashboardPage() {
             tokenCalls={usageSummary.totals.calls}
           />
 
-          <TrackSpotlight
-            track={activeTrack}
-            feedItems={feedItems}
-            feedTotal={feedTotal}
-            anchors={anchors}
+          <TrackSpotlightSection
+            initialTracks={tracks}
+            initialActiveTrack={activeTrack}
+            initialFeedItems={feedItems}
+            initialFeedTotal={feedTotal}
+            initialAnchors={anchors}
+            userId="default"
           />
 
           <Card>

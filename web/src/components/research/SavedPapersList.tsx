@@ -2,11 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { Loader2, RefreshCw } from "lucide-react"
+import { Check, ChevronDown, Copy, Download, FileText, Filter, Loader2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
 
@@ -50,7 +67,13 @@ type SavedPapersResponse = {
 
 type UpdatingAction = "toggleRead" | "unsave"
 
-const PAGE_SIZE_OPTIONS = [10, 20, 50]
+type Track = {
+  id: number
+  name: string
+  is_active?: boolean
+}
+
+const PAGE_SIZE = 20
 const SORT_OPTIONS: Array<{ value: SavedPaperSort; label: string }> = [
   { value: "saved_at", label: "Saved Time" },
   { value: "judge_score", label: "Judge Score" },
@@ -77,12 +100,32 @@ function normalizeStatus(value?: string | null): ReadingStatus {
 export default function SavedPapersList() {
   const [items, setItems] = useState<SavedPaperItem[]>([])
   const [sortBy, setSortBy] = useState<SavedPaperSort>("saved_at")
-  const [pageSize, setPageSize] = useState<number>(20)
   const [page, setPage] = useState<number>(1)
   const [loading, setLoading] = useState<boolean>(true)
-  const [refreshTick, setRefreshTick] = useState<number>(0)
   const [error, setError] = useState<string | null>(null)
   const [updatingAction, setUpdatingAction] = useState<{ paperId: number; action: UpdatingAction } | null>(null)
+
+  // Related Work state
+  const [rwOpen, setRwOpen] = useState(false)
+  const [rwTopic, setRwTopic] = useState("")
+  const [rwLoading, setRwLoading] = useState(false)
+  const [rwMarkdown, setRwMarkdown] = useState<string | null>(null)
+  const [rwCopied, setRwCopied] = useState(false)
+
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+
+  // Track filter state
+  const [tracks, setTracks] = useState<Track[]>([])
+  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null)
+
+  // Fetch tracks on mount
+  useEffect(() => {
+    fetch("/api/research/tracks?user_id=default")
+      .then((res) => res.json())
+      .then((data) => setTracks(data.tracks || []))
+      .catch(() => setTracks([]))
+  }, [])
 
   const loadSavedPapers = useCallback(async () => {
     setLoading(true)
@@ -94,6 +137,9 @@ export default function SavedPapersList() {
         limit: "500",
         user_id: "default",
       })
+      if (selectedTrackId) {
+        qs.set("track_id", String(selectedTrackId))
+      }
       const res = await fetch(`/api/papers/library?${qs.toString()}`)
       if (!res.ok) {
         const errorText = await res.text()
@@ -106,6 +152,7 @@ export default function SavedPapersList() {
       const payload = (await res.json()) as SavedPapersResponse
       setItems(payload.papers || [])
       setPage(1)
+      setSelectedIds(new Set()) // Clear selection on reload
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       setError(detail)
@@ -113,21 +160,45 @@ export default function SavedPapersList() {
     } finally {
       setLoading(false)
     }
-  }, [sortBy])
+  }, [sortBy, selectedTrackId])
 
   useEffect(() => {
     loadSavedPapers().catch(() => {})
-  }, [loadSavedPapers, refreshTick])
+  }, [loadSavedPapers])
 
   const totalPages = useMemo(() => {
-    return Math.max(1, Math.ceil(items.length / pageSize))
-  }, [items.length, pageSize])
+    return Math.max(1, Math.ceil(items.length / PAGE_SIZE))
+  }, [items.length])
 
   const pagedItems = useMemo(() => {
     const safePage = Math.min(page, totalPages)
-    const start = (safePage - 1) * pageSize
-    return items.slice(start, start + pageSize)
-  }, [items, page, pageSize, totalPages])
+    const start = (safePage - 1) * PAGE_SIZE
+    return items.slice(start, start + PAGE_SIZE)
+  }, [items, page, totalPages])
+
+  const hasSelection = selectedIds.size > 0
+
+  const toggleSelect = useCallback((paperId: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(paperId)) {
+        next.delete(paperId)
+      } else {
+        next.add(paperId)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleSelectAll = useCallback(() => {
+    if (selectedIds.size === pagedItems.length && pagedItems.length > 0) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(pagedItems.map((item) => item.paper.id)))
+    }
+  }, [selectedIds.size, pagedItems])
+
+  const isAllSelected = pagedItems.length > 0 && selectedIds.size === pagedItems.length
 
   const unsavePaper = useCallback(async (paperId: number) => {
     setUpdatingAction({ paperId, action: "unsave" })
@@ -204,6 +275,57 @@ export default function SavedPapersList() {
     [],
   )
 
+  const handleExport = useCallback(async (format: "bibtex" | "ris" | "markdown" | "csl_json") => {
+    const qs = new URLSearchParams({ format, user_id: "default" })
+    // Add selected paper IDs
+    selectedIds.forEach((id) => qs.append("paper_id", String(id)))
+    try {
+      const res = await fetch(`/api/papers/export?${qs.toString()}`)
+      if (!res.ok) throw new Error(`${res.status}`)
+      const blob = await res.blob()
+      const extMap: Record<string, string> = { bibtex: "bib", ris: "ris", markdown: "md", csl_json: "csl.json" }
+      const ext = extMap[format] || "txt"
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `papers.${ext}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setError("Export failed")
+    }
+  }, [selectedIds])
+
+  const handleGenerateRelatedWork = useCallback(async () => {
+    if (!rwTopic.trim()) return
+    setRwLoading(true)
+    setRwMarkdown(null)
+    try {
+      const res = await fetch("/api/research/papers/related-work", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          topic: rwTopic.trim(),
+        }),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const data = await res.json()
+      setRwMarkdown(data.markdown || "No output generated.")
+    } catch {
+      setRwMarkdown("Failed to generate related work. Please try again.")
+    } finally {
+      setRwLoading(false)
+    }
+  }, [rwTopic])
+
+  const handleCopyRw = useCallback(async () => {
+    if (!rwMarkdown) return
+    await navigator.clipboard.writeText(rwMarkdown)
+    setRwCopied(true)
+    setTimeout(() => setRwCopied(false), 2000)
+  }, [rwMarkdown])
+
   return (
     <Card>
       <CardHeader className="space-y-3">
@@ -230,33 +352,62 @@ export default function SavedPapersList() {
                 </option>
               ))}
             </select>
-            <label className="text-sm text-muted-foreground" htmlFor="saved-page-size">
-              Per page
-            </label>
-            <select
-              id="saved-page-size"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={String(pageSize)}
-              onChange={(event) => {
-                setPageSize(Number(event.target.value || 20))
-                setPage(1)
-              }}
-            >
-              {PAGE_SIZE_OPTIONS.map((size) => (
-                <option key={size} value={String(size)}>
-                  {size}
-                </option>
-              ))}
-            </select>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" disabled={loading}>
+                  <Filter className="mr-1 h-4 w-4" />
+                  {selectedTrackId
+                    ? tracks.find((t) => t.id === selectedTrackId)?.name || "Track"
+                    : "All Tracks"}
+                  <ChevronDown className="ml-1 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem
+                  onClick={() => setSelectedTrackId(null)}
+                  className="flex items-center gap-2"
+                >
+                  {selectedTrackId === null ? <Check className="h-4 w-4" /> : <span className="w-4" />}
+                  All Tracks
+                </DropdownMenuItem>
+                {tracks.length > 0 && <DropdownMenuSeparator />}
+                {tracks.map((track) => (
+                  <DropdownMenuItem
+                    key={track.id}
+                    onClick={() => setSelectedTrackId(track.id)}
+                    className="flex items-center gap-2"
+                  >
+                    {selectedTrackId === track.id ? <Check className="h-4 w-4" /> : <span className="w-4" />}
+                    <span className="truncate">{track.name}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setRefreshTick((prev) => prev + 1)}
-              disabled={loading}
+              disabled={loading || items.length === 0}
+              onClick={() => { setRwOpen(true); setRwMarkdown(null); setRwTopic(""); }}
             >
-              {loading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-1 h-4 w-4" />}
-              Refresh
+              <FileText className="mr-1 h-4 w-4" />
+              Related Work
             </Button>
+            {hasSelection && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={loading}>
+                    <Download className="mr-1 h-4 w-4" />
+                    Export ({selectedIds.size})
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleExport("bibtex")}>BibTeX</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExport("ris")}>RIS</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExport("markdown")}>Markdown</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExport("csl_json")}>Zotero (CSL-JSON)</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         </div>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
@@ -274,6 +425,13 @@ export default function SavedPapersList() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-[50px]">
+                      <Checkbox
+                        checked={isAllSelected}
+                        onCheckedChange={toggleSelectAll}
+                        aria-label="Select all"
+                      />
+                    </TableHead>
                     <TableHead>Title</TableHead>
                     <TableHead>Source</TableHead>
                     <TableHead>Saved</TableHead>
@@ -293,7 +451,14 @@ export default function SavedPapersList() {
                     const rowUpdating = togglingRead || unsaving
                     return (
                       <TableRow key={paper.id}>
-                        <TableCell className="max-w-[520px]">
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedIds.has(paper.id)}
+                            onCheckedChange={() => toggleSelect(paper.id)}
+                            aria-label={`Select ${paper.title}`}
+                          />
+                        </TableCell>
+                        <TableCell className="max-w-[480px]">
                           <div className="font-medium">{paper.title}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             {(paper.authors || []).slice(0, 4).join(", ") || "Unknown authors"}
@@ -345,8 +510,8 @@ export default function SavedPapersList() {
             </div>
             <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
               <span>
-                Showing {(Math.min(page, totalPages) - 1) * pageSize + 1} -{" "}
-                {Math.min(Math.min(page, totalPages) * pageSize, items.length)} of {items.length}
+                Showing {(Math.min(page, totalPages) - 1) * PAGE_SIZE + 1} -{" "}
+                {Math.min(Math.min(page, totalPages) * PAGE_SIZE, items.length)} of {items.length}
               </span>
               <div className="flex items-center gap-2">
                 <Button
@@ -373,6 +538,45 @@ export default function SavedPapersList() {
           </>
         )}
       </CardContent>
+
+      {/* Related Work Dialog */}
+      <Dialog open={rwOpen} onOpenChange={setRwOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Generate Related Work</DialogTitle>
+            <DialogDescription>
+              Generate a Related Work section draft from your saved papers.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <Input
+                placeholder="Enter research topic..."
+                value={rwTopic}
+                onChange={(e) => setRwTopic(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleGenerateRelatedWork() }}
+                disabled={rwLoading}
+              />
+              <Button onClick={handleGenerateRelatedWork} disabled={rwLoading || !rwTopic.trim()}>
+                {rwLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Generate"}
+              </Button>
+            </div>
+            {rwMarkdown && (
+              <div className="rounded-md border bg-muted/50 p-4">
+                <pre className="whitespace-pre-wrap text-sm font-mono">{rwMarkdown}</pre>
+              </div>
+            )}
+          </div>
+          {rwMarkdown && (
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={handleCopyRw}>
+                <Copy className="mr-1 h-3.5 w-3.5" />
+                {rwCopied ? "Copied" : "Copy"}
+              </Button>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }
