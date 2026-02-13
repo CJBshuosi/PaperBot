@@ -29,6 +29,34 @@ import { ManageTracksModal } from "./ManageTracksModal"
 import type { Track } from "./TrackSelector"
 import type { Paper } from "./PaperCard"
 
+type AnchorAuthor = {
+  author_id: number
+  author_ref?: string
+  name: string
+  slug: string
+  anchor_score: number
+  anchor_level: string
+  intrinsic_score: number
+  relevance_score: number
+  score_breakdown?: {
+    intrinsic: number
+    relevance: number
+    network: number
+    personalization: number
+    total: number
+  }
+  user_action?: "follow" | "ignore" | null
+  evidence_status?: "ok" | "missing"
+  evidence_note?: string | null
+  evidence_papers: Array<{
+    paper_id: number
+    title: string
+    year?: number | null
+    url?: string | null
+    citation_count?: number
+  }>
+}
+
 type ContextPack = {
   context_run_id?: number | null
   routing: {
@@ -75,6 +103,12 @@ export default function ResearchPageNew() {
   const [activeTab, setActiveTab] = useState("search")
   const [searchSources, setSearchSources] = useState<string[]>(["semantic_scholar"])
 
+  // Anchor state
+  const [anchors, setAnchors] = useState<AnchorAuthor[]>([])
+  const [anchorsLoading, setAnchorsLoading] = useState(false)
+  const [anchorsError, setAnchorsError] = useState<string | null>(null)
+  const [anchorPersonalized, setAnchorPersonalized] = useState(true)
+
   // UI state
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -110,6 +144,41 @@ export default function ResearchPageNew() {
     activateTrack(routeTrackId).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeTrackId, tracks, activeTrackId])
+
+  useEffect(() => {
+    if (!activeTrackId) {
+      setAnchors([])
+      setAnchorsError(null)
+      setAnchorsLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setAnchorsLoading(true)
+    setAnchorsError(null)
+
+    fetchJson<{ items: AnchorAuthor[] }>(
+      `/api/research/tracks/${activeTrackId}/anchors/discover?user_id=${encodeURIComponent(userId)}&limit=5&window_days=730&personalized=${anchorPersonalized ? "true" : "false"}`
+    )
+      .then((data) => {
+        if (cancelled) return
+        setAnchors(data.items || [])
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setAnchors([])
+        setAnchorsError(String(e))
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAnchorsLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeTrackId, userId, anchorPersonalized])
 
   async function refreshTracks(): Promise<number | null> {
     const data = await fetchJson<{ tracks: Track[] }>(
@@ -306,6 +375,31 @@ export default function ResearchPageNew() {
     }
   }
 
+  async function handleAnchorAction(authorId: number, action: "follow" | "ignore"): Promise<void> {
+    if (!activeTrackId) return
+
+    try {
+      await fetchJson(`/api/research/tracks/${activeTrackId}/anchors/${authorId}/action`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, action }),
+        headers: { "Content-Type": "application/json" },
+      })
+
+      setAnchors((prev) =>
+        prev.map((row) =>
+          row.author_id === authorId
+            ? {
+                ...row,
+                user_action: action,
+              }
+            : row
+        )
+      )
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function handleFeedback(
     paperId: string,
     action: string,
@@ -471,6 +565,98 @@ export default function ResearchPageNew() {
               disabled={loading}
             />
           </div>
+        )}
+
+        {activeTrack && (
+          <Card className="mb-6 border-border/60">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base">Anchor Authors · {activeTrack.name}</CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => setAnchorPersonalized((prev) => !prev)}
+                >
+                  {anchorPersonalized ? "Personalized" : "Global"}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {anchorsLoading ? (
+                <p className="text-sm text-muted-foreground">Loading anchor authors...</p>
+              ) : anchorsError ? (
+                <p className="text-sm text-destructive">Failed to load anchors: {anchorsError}</p>
+              ) : anchors.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No anchor authors yet for this track. Try searching and saving a few papers first.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {anchors.map((anchor) => {
+                    const evidence = anchor.evidence_papers?.[0]
+                    return (
+                      <div
+                        key={`${anchor.author_id}-${anchor.slug}`}
+                        className="rounded-md border border-border/60 p-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium">{anchor.name}</div>
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="rounded-full bg-muted px-2 py-1 uppercase tracking-wide">
+                              {anchor.anchor_level}
+                            </span>
+                            <span className="text-muted-foreground">
+                              score {anchor.anchor_score.toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={anchor.user_action === "follow" ? "default" : "outline"}
+                            onClick={() => handleAnchorAction(anchor.author_id, "follow")}
+                          >
+                            Follow
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={anchor.user_action === "ignore" ? "destructive" : "outline"}
+                            onClick={() => handleAnchorAction(anchor.author_id, "ignore")}
+                          >
+                            Ignore
+                          </Button>
+                        </div>
+                        {evidence ? (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Evidence: {evidence.url ? (
+                              <a
+                                href={evidence.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="underline underline-offset-2"
+                              >
+                                {evidence.title}
+                              </a>
+                            ) : (
+                              <span>{evidence.title}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                            {anchor.evidence_note || "No evidence papers available yet."}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         )}
 
         {/* Error Display */}

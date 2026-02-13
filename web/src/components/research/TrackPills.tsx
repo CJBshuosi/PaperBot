@@ -1,7 +1,16 @@
 "use client"
 
-import { BarChart3, Bot, BookOpen, FileText, FlaskConical, MessageSquare, Plus, Shield } from "lucide-react"
-import type { LucideIcon } from "lucide-react"
+import {
+  BarChart3,
+  BookOpen,
+  Bot,
+  FlaskConical,
+  MessageSquare,
+  Plus,
+  ScanEye,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -21,15 +30,15 @@ const trackIcons: Record<string, LucideIcon> = {
   RAG: BarChart3,
   LLM: Bot,
   "ML Security": FlaskConical,
-  Security: Shield,
-  CV: FileText,
+  Security: ShieldCheck,
+  CV: ScanEye,
   NLP: MessageSquare,
 }
 
-const DefaultIcon = BookOpen
+const defaultIcon = BookOpen
 
 function getTrackIcon(name: string): LucideIcon {
-  return trackIcons[name] || DefaultIcon
+  return trackIcons[name] || defaultIcon
 }
 
 export function TrackPills({
@@ -58,7 +67,10 @@ export function TrackPills({
           onClick={() => onSelectTrack(track.id)}
           disabled={disabled}
         >
-          {(() => { const Icon = getTrackIcon(track.name); return <Icon className="h-4 w-4" /> })()}
+          {(() => {
+            const Icon = getTrackIcon(track.name)
+            return <Icon className="h-4 w-4" />
+          })()}
           <span className="truncate max-w-[100px] sm:max-w-none">{track.name}</span>
         </Button>
       ))}

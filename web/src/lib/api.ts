@@ -1,4 +1,5 @@
 import {
+    Activity,
     Paper,
     PaperDetails,
     Scholar,
@@ -6,8 +7,8 @@ import {
     Stats,
     WikiConcept,
     TrendingTopic,
-    TimelineItem,
-    SavedPaper,
+    PipelineTask,
+    ReadingQueueItem,
     LLMUsageSummary,
     DeadlineRadarItem,
 } from "./types"
@@ -39,69 +40,133 @@ async function postJson<T>(path: string, payload: Record<string, unknown>): Prom
 
 export async function fetchStats(): Promise<Stats> {
     try {
-        const usage = await fetchLLMUsage()
-        const tokenCount = usage.totals.total_tokens
+        const [usage, papers] = await Promise.allSettled([
+            fetchLLMUsage(),
+            fetchPapers(),
+        ])
+        const usageData = usage.status === "fulfilled" ? usage.value : null
+        const papersData = papers.status === "fulfilled" ? papers.value : []
+        const tokenCount = usageData?.totals?.total_tokens ?? 0
         const prettyTokens = tokenCount >= 1000 ? `${Math.round(tokenCount / 1000)}k` : `${tokenCount}`
         return {
-            tracked_scholars: 128,
-            new_papers: 12,
+            tracked_scholars: 0,
+            new_papers: papersData.length,
             llm_usage: prettyTokens,
-            read_later: 8,
+            read_later: papersData.filter(p => p.status === "Saved").length,
         }
     } catch {
-        // Keep resilient dashboard fallback.
-    }
-
-    return {
-        tracked_scholars: 128,
-        new_papers: 12,
-        llm_usage: "45k",
-        read_later: 8
+        return { tracked_scholars: 0, new_papers: 0, llm_usage: "0", read_later: 0 }
     }
 }
 
-export async function fetchActivities(): Promise<TimelineItem[]> {
+export async function fetchActivities(): Promise<Activity[]> {
+    const activities: Activity[] = []
     try {
-        const papers = await fetchPapers()
-        const items: TimelineItem[] = papers.slice(0, 10).map((p, i) => ({
-            id: `tl-${i}`,
-            kind: p.status === "Saved" ? "save" as const : "harvest" as const,
-            title: p.title,
-            subtitle: p.venue,
-            timestamp: "recently",
-        }))
-        return items
+        // Fetch recent harvest runs
+        const runsRes = await fetch(`${API_BASE_URL}/harvest/runs?limit=3`, { cache: "no-store" })
+        if (runsRes.ok) {
+            const runsData = await runsRes.json() as { runs?: Array<{ run_id: number; source: string; status: string; total_found: number; created_at: string }> }
+            for (const run of (runsData.runs || []).slice(0, 2)) {
+                activities.push({
+                    id: `harvest-${run.run_id}`,
+                    type: "milestone",
+                    timestamp: new Date(run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+                    milestone: {
+                        title: `Harvest: ${run.source}`,
+                        description: `Found ${run.total_found} papers (${run.status})`,
+                        current_value: run.total_found,
+                        trend: run.status === "completed" ? "up" : "flat",
+                    },
+                })
+            }
+        }
+    } catch { /* keep going */ }
+
+    try {
+        // Fetch recent saved papers
+        const savedRes = await fetch(`${API_BASE_URL}/research/papers/saved?user_id=default&limit=3`, { cache: "no-store" })
+        if (savedRes.ok) {
+            const savedData = await savedRes.json() as { papers?: Array<{ paper_id: string; title: string; authors?: string[]; venue?: string; year?: number; saved_at?: string }> }
+            for (const paper of (savedData.papers || []).slice(0, 3)) {
+                activities.push({
+                    id: `saved-${paper.paper_id}`,
+                    type: "published",
+                    timestamp: paper.saved_at ? new Date(paper.saved_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "Recently",
+                    scholar: {
+                        name: (paper.authors || [])[0] || "Unknown",
+                        avatar: `https://avatar.vercel.sh/${encodeURIComponent((paper.authors || ["unknown"])[0])}.png`,
+                        affiliation: "",
+                    },
+                    paper: {
+                        title: paper.title,
+                        venue: paper.venue || "",
+                        year: String(paper.year || ""),
+                        citations: 0,
+                        tags: [],
+                        abstract_snippet: "",
+                        is_influential: false,
+                    },
+                })
+            }
+        }
+    } catch { /* keep going */ }
+
+    return activities
+}
+
+export async function fetchTrendingTopics(): Promise<TrendingTopic[]> {
+    try {
+        const res = await fetch(`${API_BASE_URL}/research/tracks?user_id=default`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json() as { tracks?: Array<{ keywords?: string[] }> }
+        const keywordCounts = new Map<string, number>()
+        for (const track of data.tracks || []) {
+            for (const kw of track.keywords || []) {
+                keywordCounts.set(kw, (keywordCounts.get(kw) || 0) + 1)
+            }
+        }
+        return Array.from(keywordCounts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 8)
+            .map(([text, value]) => ({ text, value: value * 30 }))
     } catch {
         return []
     }
 }
 
-export async function fetchTrendingTopics(): Promise<TrendingTopic[]> {
-    return [
-        { text: "Large Language Models", value: 100 },
-        { text: "Transformer", value: 80 },
-        { text: "Reinforcement Learning", value: 60 },
-        { text: "Generative AI", value: 90 },
-        { text: "Computer Vision", value: 50 },
-        { text: "Diffusion Models", value: 70 },
-        { text: "Prompt Engineering", value: 40 },
-        { text: "Ethics", value: 30 }
-    ]
+export async function fetchPipelineTasks(): Promise<PipelineTask[]> {
+    try {
+        const res = await fetch(`${API_BASE_URL}/harvest/runs?limit=5`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json() as { runs?: Array<{ run_id: number; source: string; status: string; total_found: number; created_at: string }> }
+        return (data.runs || []).slice(0, 5).map((run) => {
+            const statusMap: Record<string, PipelineTask["status"]> = { completed: "success", running: "building", failed: "failed", pending: "building" }
+            const progressMap: Record<string, number> = { completed: 100, running: 50, failed: 100, pending: 10 }
+            return {
+                id: String(run.run_id),
+                paper_title: `${run.source} harvest (${run.total_found} papers)`,
+                status: statusMap[run.status] || "building" as PipelineTask["status"],
+                progress: progressMap[run.status] || 0,
+                started_at: new Date(run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+            }
+        })
+    } catch {
+        return []
+    }
 }
 
-export async function fetchSavedPapers(): Promise<SavedPaper[]> {
+export async function fetchReadingQueue(): Promise<ReadingQueueItem[]> {
     try {
-        const papers = await fetchPapers()
-        return papers
-            .filter((p) => p.status === "Saved")
-            .slice(0, 5)
-            .map((p) => ({
-                id: p.id,
-                paper_id: p.id,
-                title: p.title,
-                authors: p.authors,
-                saved_at: "recently",
-            }))
+        const res = await fetch(`${API_BASE_URL}/research/papers/saved?user_id=default&limit=5`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json() as { papers?: Array<{ paper_id: string; title: string }> }
+        return (data.papers || []).slice(0, 5).map((p, i) => ({
+            id: String(i + 1),
+            paper_id: p.paper_id,
+            title: p.title,
+            estimated_time: "",
+            priority: i + 1,
+        }))
     } catch {
         return []
     }
@@ -110,54 +175,23 @@ export async function fetchSavedPapers(): Promise<SavedPaper[]> {
 export async function fetchLLMUsage(days: number = 7): Promise<LLMUsageSummary> {
     try {
         const qs = new URLSearchParams({ days: String(days) })
-        // Use Next.js proxy route for SSR compatibility
-        const url = typeof window === "undefined"
-            ? `${API_BASE_URL}/model-endpoints/usage?${qs.toString()}`
-            : `/api/model-endpoints/usage?${qs.toString()}`
-        const res = await fetch(url, { cache: "no-store" })
+        const res = await fetch(`${API_BASE_URL}/model-endpoints/usage?${qs.toString()}`, {
+            cache: "no-store",
+        })
         if (!res.ok) throw new Error("usage endpoint unavailable")
         const payload = await res.json() as { summary?: LLMUsageSummary }
         if (payload.summary) {
             return payload.summary
         }
     } catch {
-        // Keep static fallback for local-first UX.
+        // Return empty summary when backend is unavailable.
     }
 
     return {
         window_days: days,
-        daily: [
-            {
-                date: "Mon",
-                total_tokens: 23000,
-                total_cost_usd: 0.0,
-                providers: { openai: 12000, anthropic: 8000, ollama: 3000 },
-            },
-            {
-                date: "Tue",
-                total_tokens: 28500,
-                total_cost_usd: 0.0,
-                providers: { openai: 15000, anthropic: 9500, ollama: 4000 },
-            },
-            {
-                date: "Wed",
-                total_tokens: 22000,
-                total_cost_usd: 0.0,
-                providers: { openai: 10000, anthropic: 7000, ollama: 5000 },
-            },
-            {
-                date: "Thu",
-                total_tokens: 32000,
-                total_cost_usd: 0.0,
-                providers: { openai: 18000, anthropic: 12000, ollama: 2000 },
-            },
-        ],
+        daily: [],
         provider_models: [],
-        totals: {
-            calls: 0,
-            total_tokens: 105500,
-            total_cost_usd: 0,
-        },
+        totals: { calls: 0, total_tokens: 0, total_cost_usd: 0 },
     }
 }
 
@@ -454,7 +488,6 @@ export async function fetchPapers(): Promise<Paper[]> {
     try {
         const res = await fetch(`${API_BASE_URL}/papers/library`)
         if (!res.ok) {
-            console.error("Failed to fetch papers library:", res.status)
             return []
         }
         const data = await res.json()
@@ -468,8 +501,7 @@ export async function fetchPapers(): Promise<Paper[]> {
             status: item.action === "save" ? "Saved" : "pending",
             tags: Array.isArray(item.paper.fields_of_study) ? item.paper.fields_of_study.slice(0, 3) : []
         }))
-    } catch (e) {
-        console.error("Error fetching papers:", e)
+    } catch {
         return []
     }
 }

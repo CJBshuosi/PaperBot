@@ -115,6 +115,57 @@ export interface LLMUsageSummary {
     }
 }
 
+export interface Activity {
+    id: string
+    type: "published" | "milestone" | "conference"
+    timestamp: string
+    scholar?: {
+        name: string
+        avatar: string
+        affiliation: string
+    }
+    paper?: {
+        title: string
+        venue: string
+        year: string
+        citations: number
+        tags: string[]
+        abstract_snippet?: string
+        is_influential?: boolean
+    }
+    milestone?: {
+        title: string
+        description: string
+        current_value?: number
+        trend?: "up" | "down" | "flat"
+    }
+    conference?: {
+        name: string
+        location: string
+        date: string
+        deadline_countdown?: string
+    }
+}
+
+export interface PipelineTask {
+    id: string
+    paper_title: string
+    status: "downloading" | "analyzing" | "building" | "testing" | "success" | "failed"
+    progress: number
+    started_at: string
+}
+
+export interface ReadingQueueItem {
+    id: string
+    paper_id: string
+    title: string
+    authors?: string
+    saved_at?: string
+    estimated_time?: string
+    priority?: number
+    status?: "unread" | "reading" | "done"
+}
+
 export interface DeadlineRadarItem {
     name: string
     ccf_level: string
@@ -129,4 +180,41 @@ export interface DeadlineRadarItem {
         track_name: string
         matched_keywords: string[]
     }>
+}
+
+export interface ResearchTrackSummary {
+    id: number
+    name: string
+    description?: string
+    keywords?: string[]
+    methods?: string[]
+    venues?: string[]
+    is_active?: boolean
+}
+
+export interface TrackFeedPaper {
+    id: number | string
+    title: string
+    year?: number | null
+    venue?: string | null
+    citation_count?: number
+}
+
+export interface TrackFeedItem {
+    paper: TrackFeedPaper
+    feed_score: number
+    matched_terms: string[]
+    latest_feedback_action?: string | null
+    latest_judge?: {
+        overall?: number | null
+        recommendation?: string | null
+    } | null
+}
+
+export interface AnchorPreviewItem {
+    author_id: number
+    name: string
+    anchor_score: number
+    anchor_level?: string
+    user_action?: "follow" | "ignore" | null
 }

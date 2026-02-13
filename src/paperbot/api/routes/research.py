@@ -32,6 +32,9 @@ _metric_collector: Optional[MemoryMetricCollector] = None
 _workflow_metric_store: Optional[WorkflowMetricStore] = None
 _paper_store: Optional["PaperStore"] = None
 _paper_search_service: Optional["PaperSearchService"] = None
+_anchor_service: Optional["AnchorService"] = None
+
+ENABLE_ANCHOR_AUTHORS = os.getenv("PAPERBOT_ENABLE_ANCHOR_AUTHORS", "true").lower() == "true"
 
 _DEADLINE_RADAR_DATA: List[Dict[str, Any]] = [
     {
@@ -130,6 +133,25 @@ def _get_paper_search_service() -> "PaperSearchService":
             registry=_get_paper_store(),
         )
     return _paper_search_service
+
+
+def _get_anchor_service() -> "AnchorService":
+    """Lazy initialization of anchor author discovery service."""
+    from paperbot.application.services.anchor_service import AnchorService
+
+    global _anchor_service
+    if _anchor_service is None:
+        _anchor_service = AnchorService()
+    return _anchor_service
+
+
+def _ensure_anchor_feature_enabled() -> None:
+    if ENABLE_ANCHOR_AUTHORS:
+        return
+    raise HTTPException(
+        status_code=503,
+        detail="Anchor author feature is disabled by PAPERBOT_ENABLE_ANCHOR_AUTHORS",
+    )
 
 
 def _schedule_embedding_precompute(
@@ -995,6 +1017,30 @@ class TrackFeedResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class AnchorDiscoverResponse(BaseModel):
+    user_id: str
+    track_id: int
+    limit: int
+    window_days: int
+    personalized: bool
+    items: List[Dict[str, Any]]
+
+
+class AnchorActionRequest(BaseModel):
+    user_id: str = "default"
+    action: str = Field(..., pattern="^(follow|ignore)$")
+
+
+class AnchorActionResponse(BaseModel):
+    action: Dict[str, Any]
+
+
+class AnchorActionListResponse(BaseModel):
+    user_id: str
+    track_id: int
+    items: List[Dict[str, Any]]
+
+
 class PaperDetailResponse(BaseModel):
     detail: Dict[str, Any]
 
@@ -1113,6 +1159,95 @@ def export_papers(
         media_type="text/markdown",
         headers={"Content-Disposition": "attachment; filename=papers.md"},
     )
+
+
+@router.get("/research/tracks/{track_id}/anchors/discover", response_model=AnchorDiscoverResponse)
+# TODO: IDOR — replace user_id query param with authenticated session user (PR #112 review).
+def discover_track_anchors(
+    track_id: int,
+    user_id: str = "default",
+    limit: int = Query(20, ge=1, le=100),
+    window_days: int = Query(365, ge=30, le=3650),
+    personalized: bool = Query(True),
+):
+    _ensure_anchor_feature_enabled()
+
+    track = _research_store.get_track(user_id=user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    window_years = max(int(window_days) // 365, 1)
+    try:
+        items = _get_anchor_service().discover(
+            track_id=track_id,
+            user_id=user_id,
+            limit=limit,
+            window_years=window_years,
+            personalized=personalized,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return AnchorDiscoverResponse(
+        user_id=user_id,
+        track_id=track_id,
+        limit=limit,
+        window_days=window_days,
+        personalized=personalized,
+        items=items,
+    )
+
+
+@router.post(
+    "/research/tracks/{track_id}/anchors/{author_id}/action",
+    response_model=AnchorActionResponse,
+)
+# TODO: IDOR — replace req.user_id with authenticated session user (PR #112 review).
+def set_anchor_action(track_id: int, author_id: int, req: AnchorActionRequest):
+    _ensure_anchor_feature_enabled()
+
+    track = _research_store.get_track(user_id=req.user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    started = time.perf_counter()
+    try:
+        payload = _get_anchor_service().set_user_anchor_action(
+            user_id=req.user_id,
+            track_id=track_id,
+            author_id=author_id,
+            action=req.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        raise HTTPException(status_code=404, detail="Anchor author not found") from exc
+
+    elapsed_ms = float((time.perf_counter() - started) * 1000.0)
+    _get_workflow_metric_store().record_metric(
+        workflow="anchor_action",
+        stage=req.action,
+        status="completed",
+        track_id=track_id,
+        claim_count=0,
+        evidence_count=0,
+        elapsed_ms=elapsed_ms,
+        detail={"author_id": author_id, "user_id": req.user_id},
+    )
+
+    return AnchorActionResponse(action=payload)
+
+
+@router.get("/research/tracks/{track_id}/anchors/actions", response_model=AnchorActionListResponse)
+def list_anchor_actions(track_id: int, user_id: str = "default"):
+    _ensure_anchor_feature_enabled()
+
+    track = _research_store.get_track(user_id=user_id, track_id=track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    items = _get_anchor_service().get_user_anchor_actions(user_id=user_id, track_id=track_id)
+    return AnchorActionListResponse(user_id=user_id, track_id=track_id, items=items)
 
 
 @router.get("/research/papers/{paper_id}", response_model=PaperDetailResponse)

@@ -1,12 +1,11 @@
 import { fetchPaperDetails } from "@/lib/api"
-import { Bot } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Download, Play, MessageSquare, FileCode } from "lucide-react"
+import { Download, Play, MessageSquare, FileCode, Bot } from "lucide-react"
 
 import { ImpactRadar } from "@/components/paper/ImpactRadar"
 import { SentimentChart } from "@/components/paper/SentimentChart"

@@ -42,6 +42,59 @@ def _normalize_title(title: str) -> str:
     return s
 
 
+# ── Short-query expansion: common CS/ML acronyms ──
+_ACRONYM_MAP: Dict[str, str] = {
+    "rag": "retrieval augmented generation RAG",
+    "llm": "large language model LLM",
+    "llms": "large language models LLM",
+    "rlhf": "reinforcement learning from human feedback RLHF",
+    "rl": "reinforcement learning RL",
+    "nlp": "natural language processing NLP",
+    "cv": "computer vision CV",
+    "gan": "generative adversarial network GAN",
+    "gnn": "graph neural network GNN",
+    "vae": "variational autoencoder VAE",
+    "moe": "mixture of experts MoE",
+    "cot": "chain of thought CoT",
+    "dpo": "direct preference optimization DPO",
+    "grpo": "group relative policy optimization GRPO",
+    "mllm": "multimodal large language model MLLM",
+    "vla": "vision language action VLA",
+    "vlm": "vision language model VLM",
+    "sft": "supervised fine-tuning SFT",
+    "ppo": "proximal policy optimization PPO",
+    "lora": "low-rank adaptation LoRA",
+    "dit": "diffusion transformer DiT",
+}
+
+
+def _expand_short_query(query: str) -> str:
+    """Expand short acronym queries to include the full term for better search."""
+    stripped = query.strip()
+    key = stripped.lower()
+    if key in _ACRONYM_MAP:
+        return _ACRONYM_MAP[key]
+    return stripped
+
+
+def _is_academic_paper(paper: Dict[str, Any]) -> bool:
+    """Filter out non-academic results (shopping pages, poetry, etc.)."""
+    title = str(paper.get("title") or "")
+    abstract = str(paper.get("abstract") or "")
+
+    # Must have a non-trivial abstract (>30 chars)
+    if len(abstract.strip()) < 30:
+        return False
+
+    # Reject titles that are mostly non-Latin characters (CJK, Arabic, etc.)
+    latin_chars = sum(1 for c in title if c.isascii() and c.isalpha())
+    total_alpha = sum(1 for c in title if c.isalpha())
+    if total_alpha > 0 and latin_chars / total_alpha < 0.5:
+        return False
+
+    return True
+
+
 def _paper_keyword_match_count(paper: Dict[str, Any], track: Optional[Dict[str, Any]]) -> int:
     if not track:
         return 0
@@ -491,9 +544,9 @@ class ContextEngine:
                     h["track_name"] = t.get("name")
                 cross_track_memories.extend(hits)
 
-        merged_query = query
+        merged_query = _expand_short_query(query)
         if routed_track:
-            merged_query = _merge_query(query, routed_track.get("keywords") or [])
+            merged_query = _merge_query(merged_query, routed_track.get("keywords") or [])
 
         papers: List[Dict[str, Any]] = []
         paper_scores: Dict[str, float] = {}
@@ -617,12 +670,14 @@ class ContextEngine:
                             file=LogFiles.HARVEST,
                         )
 
-                # Feedback filtering + dedup
+                # Feedback filtering + dedup + relevance
                 seen_titles: set[str] = set()
                 filtered: List[Dict[str, Any]] = []
                 for p in raw:
                     pid = str(p.get("paper_id") or "").strip()
                     if pid and pid in disliked_ids:
+                        continue
+                    if not _is_academic_paper(p):
                         continue
                     tkey = _normalize_title(str(p.get("title") or ""))
                     if tkey and tkey in seen_titles:

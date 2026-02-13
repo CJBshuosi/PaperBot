@@ -130,6 +130,23 @@ class PaperStore:
             or normalize_doi(pdf_url)
         )
 
+        # Extract S2/OpenAlex IDs from identities list (PaperCandidate format)
+        semantic_scholar_id = paper.get("semantic_scholar_id")
+        openalex_id = paper.get("openalex_id")
+        for ident in paper.get("identities") or []:
+            src = str(ident.get("source") or "").strip()
+            ext_id = str(ident.get("external_id") or "").strip()
+            if not ext_id:
+                continue
+            if src == "semantic_scholar" and not semantic_scholar_id:
+                semantic_scholar_id = ext_id
+            elif src == "openalex" and not openalex_id:
+                openalex_id = ext_id
+            elif src == "arxiv" and not arxiv_id:
+                arxiv_id = normalize_arxiv_id(ext_id)
+            elif src == "doi" and not doi:
+                doi = normalize_doi(ext_id)
+
         source = (
             source_hint
             or (paper.get("sources") or [None])[0]
@@ -176,6 +193,14 @@ class PaperStore:
                 row = session.execute(
                     select(PaperModel).where(PaperModel.doi == doi)
                 ).scalar_one_or_none()
+            if row is None and semantic_scholar_id:
+                row = session.execute(
+                    select(PaperModel).where(PaperModel.semantic_scholar_id == semantic_scholar_id)
+                ).scalar_one_or_none()
+            if row is None and openalex_id:
+                row = session.execute(
+                    select(PaperModel).where(PaperModel.openalex_id == openalex_id)
+                ).scalar_one_or_none()
             if row is None and url:
                 row = session.execute(
                     select(PaperModel).where(PaperModel.url == url)
@@ -195,6 +220,7 @@ class PaperStore:
             if row is None:
                 row = PaperModel(
                     title_hash=title_hash,
+                    first_seen_at=seen_at or now,
                     created_at=now,
                     updated_at=now,
                 )
@@ -204,6 +230,10 @@ class PaperStore:
                 row.arxiv_id = arxiv_id
             if doi:
                 row.doi = doi
+            if semantic_scholar_id:
+                row.semantic_scholar_id = semantic_scholar_id
+            if openalex_id:
+                row.openalex_id = openalex_id
             row.title_hash = title_hash
             row.title = title or row.title or ""
             row.abstract = abstract or row.abstract or ""
@@ -408,7 +438,7 @@ class PaperStore:
             "year": row.year,
             "publication_date": publication_date,
             "published_at": published_at,
-            "first_seen_at": row.created_at.isoformat() if row.created_at else None,
+            "first_seen_at": (row.first_seen_at or row.created_at).isoformat() if (row.first_seen_at or row.created_at) else None,
             "keywords": row.get_keywords(),
             "fields_of_study": row.get_fields_of_study(),
             "sources": row.get_sources(),
