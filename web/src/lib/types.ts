@@ -181,3 +181,40 @@ export interface DeadlineRadarItem {
         matched_keywords: string[]
     }>
 }
+
+export interface ResearchTrackSummary {
+    id: number
+    name: string
+    description?: string
+    keywords?: string[]
+    methods?: string[]
+    venues?: string[]
+    is_active?: boolean
+}
+
+export interface TrackFeedPaper {
+    id: number | string
+    title: string
+    year?: number | null
+    venue?: string | null
+    citation_count?: number
+}
+
+export interface TrackFeedItem {
+    paper: TrackFeedPaper
+    feed_score: number
+    matched_terms: string[]
+    latest_feedback_action?: string | null
+    latest_judge?: {
+        overall?: number | null
+        recommendation?: string | null
+    } | null
+}
+
+export interface AnchorPreviewItem {
+    author_id: number
+    name: string
+    anchor_score: number
+    anchor_level?: string
+    user_action?: "follow" | "ignore" | null
+}
