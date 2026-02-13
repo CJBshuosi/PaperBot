@@ -121,7 +121,7 @@ export default function SavedPapersList() {
 
   // Fetch tracks on mount
   useEffect(() => {
-    fetch("/api/research/tracks?user_id=default")
+    fetch("/api/research/tracks?user_id=default", { cache: "no-store" })
       .then((res) => res.json())
       .then((data) => setTracks(data.tracks || []))
       .catch(() => setTracks([]))
@@ -140,7 +140,7 @@ export default function SavedPapersList() {
       if (selectedTrackId) {
         qs.set("track_id", String(selectedTrackId))
       }
-      const res = await fetch(`/api/papers/library?${qs.toString()}`)
+      const res = await fetch(`/api/papers/library?${qs.toString()}`, { cache: "no-store" })
       if (!res.ok) {
         const errorText = await res.text()
         // Avoid showing raw HTML in error messages
@@ -280,7 +280,7 @@ export default function SavedPapersList() {
     // Add selected paper IDs
     selectedIds.forEach((id) => qs.append("paper_id", String(id)))
     try {
-      const res = await fetch(`/api/papers/export?${qs.toString()}`)
+      const res = await fetch(`/api/papers/export?${qs.toString()}`, { cache: "no-store" })
       if (!res.ok) throw new Error(`${res.status}`)
       const blob = await res.blob()
       const extMap: Record<string, string> = { bibtex: "bib", ris: "ris", markdown: "md", csl_json: "csl.json" }
