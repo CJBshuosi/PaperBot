@@ -1162,6 +1162,7 @@ def export_papers(
 
 
 @router.get("/research/tracks/{track_id}/anchors/discover", response_model=AnchorDiscoverResponse)
+# TODO: IDOR — replace user_id query param with authenticated session user (PR #112 review).
 def discover_track_anchors(
     track_id: int,
     user_id: str = "default",
@@ -1201,6 +1202,7 @@ def discover_track_anchors(
     "/research/tracks/{track_id}/anchors/{author_id}/action",
     response_model=AnchorActionResponse,
 )
+# TODO: IDOR — replace req.user_id with authenticated session user (PR #112 review).
 def set_anchor_action(track_id: int, author_id: int, req: AnchorActionRequest):
     _ensure_anchor_feature_enabled()
 

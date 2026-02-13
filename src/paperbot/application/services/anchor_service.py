@@ -114,6 +114,8 @@ class AnchorService:
             )
 
             payload: list[dict] = []
+            # TODO: N+1 query — batch-fetch author_papers and feedback_rows
+            #  outside the loop to reduce DB roundtrips (PR #112 review).
             for item in aggregates:
                 author_papers = (
                     session.execute(

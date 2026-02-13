@@ -127,6 +127,8 @@ class AuthorStore:
                 delete(PaperAuthorModel).where(PaperAuthorModel.paper_id == int(paper_id))
             )
 
+            # TODO: N+1 query — batch-lookup existing authors before the loop
+            #  to avoid per-author DB queries (PR #112 review).
             for order, raw_author in enumerate(authors or []):
                 author_name = ""
                 resolved_author_id: Optional[str] = None

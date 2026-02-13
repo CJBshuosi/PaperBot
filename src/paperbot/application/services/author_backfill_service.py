@@ -71,6 +71,8 @@ def run_author_backfill(
         "new_relations": 0,
     }
 
+    # TODO: N+1 query — batch-fetch existing paper_authors and process
+    #  in bulk to reduce DB roundtrips for large backfills (PR #112 review).
     for paper in papers:
         stats["scanned_papers"] += 1
 
