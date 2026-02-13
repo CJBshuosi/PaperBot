@@ -33,6 +33,7 @@ _workflow_metric_store: Optional[WorkflowMetricStore] = None
 _paper_store: Optional["PaperStore"] = None
 _paper_search_service: Optional["PaperSearchService"] = None
 _anchor_service: Optional["AnchorService"] = None
+_subscription_service: Optional["SubscriptionService"] = None
 
 ENABLE_ANCHOR_AUTHORS = os.getenv("PAPERBOT_ENABLE_ANCHOR_AUTHORS", "true").lower() == "true"
 
@@ -143,6 +144,17 @@ def _get_anchor_service() -> "AnchorService":
     if _anchor_service is None:
         _anchor_service = AnchorService()
     return _anchor_service
+
+
+def _get_subscription_service() -> "SubscriptionService":
+    from paperbot.infrastructure.services.subscription_service import SubscriptionService
+
+    global _subscription_service
+    if _subscription_service is None:
+        _subscription_service = SubscriptionService(
+            config_path=os.getenv("PAPERBOT_SUBSCRIPTIONS_CONFIG_PATH") or None
+        )
+    return _subscription_service
 
 
 def _ensure_anchor_feature_enabled() -> None:
@@ -1113,9 +1125,7 @@ def export_papers(
     track_id: Optional[int] = None,
     format: str = Query("bibtex", pattern="^(bibtex|ris|markdown|csl_json)$"),
 ):
-    items = _research_store.list_saved_papers(
-        user_id=user_id, track_id=track_id, limit=1000
-    )
+    items = _research_store.list_saved_papers(user_id=user_id, track_id=track_id, limit=1000)
     papers = [item["paper"] for item in items if item.get("paper")]
 
     if not papers:
@@ -1348,10 +1358,12 @@ def get_evidence_coverage(
 
     trend = []
     for day_bucket in summary.get("by_day", []):
-        trend.append({
-            "date": day_bucket.get("date", ""),
-            "rate": float(day_bucket.get("coverage_rate") or 0.0),
-        })
+        trend.append(
+            {
+                "date": day_bucket.get("date", ""),
+                "rate": float(day_bucket.get("coverage_rate") or 0.0),
+            }
+        )
 
     return EvidenceCoverageResponse(
         coverage_rate=coverage_rate,
@@ -1455,6 +1467,239 @@ async def build_context(req: ContextRequest):
         raise
     finally:
         await engine.close()
+
+
+class ScholarListResponse(BaseModel):
+    items: List[Dict[str, Any]]
+    total: int
+
+
+class ScholarCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    semantic_scholar_id: str = Field(..., min_length=1, max_length=128)
+    affiliations: List[str] = []
+    keywords: List[str] = []
+    research_fields: List[str] = []
+
+
+class ScholarCreateResponse(BaseModel):
+    scholar: Dict[str, Any]
+
+
+class ScholarUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    semantic_scholar_id: Optional[str] = Field(None, min_length=1, max_length=128)
+    affiliations: Optional[List[str]] = None
+    keywords: Optional[List[str]] = None
+    research_fields: Optional[List[str]] = None
+
+
+class ScholarDeleteResponse(BaseModel):
+    removed: bool
+    scholar: Optional[Dict[str, Any]] = None
+
+
+@router.post("/research/scholars", response_model=ScholarCreateResponse)
+def create_tracked_scholar(req: ScholarCreateRequest):
+    service = _get_subscription_service()
+    try:
+        scholar = service.add_scholar(
+            {
+                "name": req.name,
+                "semantic_scholar_id": req.semantic_scholar_id,
+                "affiliations": req.affiliations,
+                "keywords": req.keywords,
+                "research_fields": req.research_fields,
+            }
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 409 if "already exists" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"failed to persist scholar: {exc}") from exc
+
+    return ScholarCreateResponse(scholar=scholar)
+
+
+@router.patch("/research/scholars/{scholar_ref}", response_model=ScholarCreateResponse)
+def update_tracked_scholar(scholar_ref: str, req: ScholarUpdateRequest):
+    service = _get_subscription_service()
+    payload = {
+        "name": req.name,
+        "semantic_scholar_id": req.semantic_scholar_id,
+        "affiliations": req.affiliations,
+        "keywords": req.keywords,
+        "research_fields": req.research_fields,
+    }
+    try:
+        scholar = service.update_scholar(scholar_ref, payload)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 409 if "already exists" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"failed to persist scholar update: {exc}"
+        ) from exc
+
+    if scholar is None:
+        raise HTTPException(status_code=404, detail="Scholar not found")
+
+    return ScholarCreateResponse(scholar=scholar)
+
+
+@router.delete("/research/scholars/{scholar_ref}", response_model=ScholarDeleteResponse)
+def delete_tracked_scholar(scholar_ref: str):
+    service = _get_subscription_service()
+    try:
+        removed = service.remove_scholar(scholar_ref)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"failed to persist scholar removal: {exc}"
+        ) from exc
+
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Scholar not found")
+
+    return ScholarDeleteResponse(removed=True, scholar=removed)
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+class ScholarSearchResponse(BaseModel):
+    query: str
+    items: List[Dict[str, Any]]
+    total: int
+
+
+@router.get("/research/scholars/search", response_model=ScholarSearchResponse)
+async def search_scholar_candidates(
+    query: str = Query(..., min_length=1),
+    limit: int = Query(10, ge=1, le=50),
+):
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY")
+    client = SemanticScholarClient(api_key=api_key)
+    try:
+        rows = await client.search_authors(
+            query=query,
+            limit=max(1, int(limit)),
+            fields=["name", "affiliations", "paperCount", "citationCount", "hIndex"],
+        )
+    finally:
+        await client.close()
+
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        author_id = str(row.get("authorId") or row.get("author_id") or "").strip()
+        if not name or not author_id:
+            continue
+
+        affiliations_raw = row.get("affiliations") or []
+        affiliations = []
+        if isinstance(affiliations_raw, list):
+            affiliations = [str(v).strip() for v in affiliations_raw if str(v).strip()]
+
+        items.append(
+            {
+                "author_id": author_id,
+                "name": name,
+                "affiliations": affiliations,
+                "affiliation": affiliations[0] if affiliations else "Unknown affiliation",
+                "paper_count": _safe_int(row.get("paperCount"), 0),
+                "citation_count": _safe_int(row.get("citationCount"), 0),
+                "h_index": _safe_int(row.get("hIndex"), 0),
+            }
+        )
+
+    return ScholarSearchResponse(query=query, items=items, total=len(items))
+
+
+@router.get("/research/scholars", response_model=ScholarListResponse)
+def list_tracked_scholars(limit: int = Query(100, ge=1, le=500)):
+    from paperbot.agents.scholar_tracking.scholar_profile_agent import ScholarProfileAgent
+
+    try:
+        profile = ScholarProfileAgent()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"failed to load scholar profile: {exc}"
+        ) from exc
+
+    now = datetime.now(timezone.utc)
+    items: List[Dict[str, Any]] = []
+
+    for scholar in profile.list_tracked_scholars():
+        semantic_id = str(scholar.semantic_scholar_id or "").strip()
+        scholar_ref = semantic_id or str(scholar.scholar_id or "").strip()
+        cache_stats = profile.get_cache_stats(scholar_ref) if scholar_ref else {}
+
+        last_updated = cache_stats.get("last_updated")
+        last_updated_dt = _parse_iso_datetime(last_updated)
+        age_days: Optional[int] = None
+        if last_updated_dt is not None:
+            age_days = max(0, int((now - last_updated_dt).total_seconds() // 86400))
+
+        if age_days is None:
+            recent_activity = "No tracking runs yet"
+            status = "idle"
+        elif age_days == 0:
+            recent_activity = "Updated today"
+            status = "active"
+        elif age_days == 1:
+            recent_activity = "Updated 1 day ago"
+            status = "active"
+        else:
+            recent_activity = f"Updated {age_days} days ago"
+            status = "active" if age_days <= 30 else "idle"
+
+        items.append(
+            {
+                "id": scholar_ref or scholar.name,
+                "scholar_id": str(scholar.scholar_id or scholar_ref),
+                "semantic_scholar_id": semantic_id or None,
+                "name": scholar.name,
+                "affiliation": (
+                    scholar.affiliations[0] if scholar.affiliations else "Unknown affiliation"
+                ),
+                "affiliations": list(scholar.affiliations or []),
+                "keywords": list(scholar.keywords or []),
+                "research_fields": list(scholar.research_fields or []),
+                "h_index": _safe_int(scholar.h_index, 0),
+                "citation_count": _safe_int(scholar.citation_count, 0),
+                "paper_count": _safe_int(scholar.paper_count, 0),
+                "cached_papers": _safe_int(cache_stats.get("paper_count"), 0),
+                "cache_history_length": _safe_int(cache_stats.get("history_length"), 0),
+                "last_updated": last_updated,
+                "recent_activity": recent_activity,
+                "status": status,
+            }
+        )
+
+    items.sort(
+        key=lambda row: (
+            _parse_iso_datetime(row.get("last_updated"))
+            or datetime(1970, 1, 1, tzinfo=timezone.utc),
+            str(row.get("name") or "").lower(),
+        ),
+        reverse=True,
+    )
+
+    return ScholarListResponse(items=items[: max(1, int(limit))], total=len(items))
 
 
 class ScholarNetworkRequest(BaseModel):
@@ -1842,6 +2087,7 @@ async def scholar_trends(req: ScholarTrendsRequest):
 # Paper export (BibTeX / RIS / Markdown)
 # ---------------------------------------------------------------------------
 
+
 def _make_citation_key(authors: List[str], year: Optional[int]) -> str:
     """first_author_lastname + year, e.g. 'smith2025'."""
     lastname = "unknown"
@@ -1960,8 +2206,6 @@ def _paper_to_csl_json(paper: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
-
-
 # ---------------------------------------------------------------------------
 # Structured Card (LLM-extracted method/dataset/conclusion/limitations)
 # ---------------------------------------------------------------------------
@@ -2007,7 +2251,12 @@ def get_structured_card(paper_id: str, user_id: str = "default"):
     if not abstract:
         return StructuredCardResponse(
             paper_id=paper_id,
-            structured_card={"method": "", "dataset": "N/A", "conclusion": "", "limitations": "Not stated"},
+            structured_card={
+                "method": "",
+                "dataset": "N/A",
+                "conclusion": "",
+                "limitations": "Not stated",
+            },
         )
 
     llm = _get_llm_service()
@@ -2052,7 +2301,11 @@ def generate_related_work(req: RelatedWorkRequest):
 
     if req.paper_ids:
         id_set = set(req.paper_ids)
-        papers = [p for p in papers if str(p.get("id") or "") in id_set or str(p.get("paper_id") or "") in id_set]
+        papers = [
+            p
+            for p in papers
+            if str(p.get("id") or "") in id_set or str(p.get("paper_id") or "") in id_set
+        ]
 
     if not papers:
         raise HTTPException(status_code=404, detail="No saved papers found")
@@ -2071,11 +2324,13 @@ def generate_related_work(req: RelatedWorkRequest):
             if parts:
                 lastname = parts[-1]
         key = f"{lastname}{year or 'nd'}"
-        citations.append({
-            "key": key,
-            "title": p.get("title") or "",
-            "authors": authors,
-            "year": year,
-        })
+        citations.append(
+            {
+                "key": key,
+                "title": p.get("title") or "",
+                "authors": authors,
+                "year": year,
+            }
+        )
 
     return RelatedWorkResponse(markdown=markdown, citations=citations)
