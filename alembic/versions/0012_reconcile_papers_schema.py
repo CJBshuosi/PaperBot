@@ -100,11 +100,16 @@ def upgrade() -> None:
 
     # Fill empty title_hash so ORM non-null assumptions hold.
     if "title_hash" in _columns("papers"):
+        dialect = op.get_bind().dialect.name
+        if dialect == "postgresql":
+            rand_hex = "md5(random()::text)"
+        else:
+            rand_hex = "lower(hex(randomblob(16)))"
         op.execute(
             sa.text(
-                """
+                f"""
                 UPDATE papers
-                SET title_hash = lower(hex(randomblob(16)))
+                SET title_hash = {rand_hex}
                 WHERE title_hash IS NULL OR title_hash = ''
                 """
             )
