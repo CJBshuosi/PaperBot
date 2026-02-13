@@ -115,6 +115,57 @@ export interface LLMUsageSummary {
     }
 }
 
+export interface Activity {
+    id: string
+    type: "published" | "milestone" | "conference"
+    timestamp: string
+    scholar?: {
+        name: string
+        avatar: string
+        affiliation: string
+    }
+    paper?: {
+        title: string
+        venue: string
+        year: string
+        citations: number
+        tags: string[]
+        abstract_snippet?: string
+        is_influential?: boolean
+    }
+    milestone?: {
+        title: string
+        description: string
+        current_value?: number
+        trend?: "up" | "down" | "flat"
+    }
+    conference?: {
+        name: string
+        location: string
+        date: string
+        deadline_countdown?: string
+    }
+}
+
+export interface PipelineTask {
+    id: string
+    paper_title: string
+    status: "downloading" | "analyzing" | "building" | "testing" | "success" | "failed"
+    progress: number
+    started_at: string
+}
+
+export interface ReadingQueueItem {
+    id: string
+    paper_id: string
+    title: string
+    authors?: string
+    saved_at?: string
+    estimated_time?: string
+    priority?: number
+    status?: "unread" | "reading" | "done"
+}
+
 export interface DeadlineRadarItem {
     name: string
     ccf_level: string

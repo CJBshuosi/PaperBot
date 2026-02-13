@@ -28,7 +28,6 @@ import { EditTrackModal } from "./EditTrackModal"
 import { ManageTracksModal } from "./ManageTracksModal"
 import type { Track } from "./TrackSelector"
 import type { Paper } from "./PaperCard"
-import { BookOpen } from "lucide-react"
 
 type AnchorAuthor = {
   author_id: number
