@@ -83,7 +83,8 @@ export function Sidebar({ className, collapsed, onToggle }: SidebarProps) {
       </div>
 
       {demoUrl ? (
-        <div className={cn("mt-auto px-3 pb-4", collapsed && "px-2")}>          <Button
+        <div className={cn("mt-auto px-3 pb-4", collapsed && "px-2")}>
+          <Button
             asChild
             variant="outline"
             className={cn("w-full", collapsed ? "justify-center px-0" : "justify-start")}
