@@ -1,16 +1,27 @@
+"use client"
+
 import Link from "next/link"
-import { ArrowRight, Bookmark, Compass, Hash, Sparkles, Star } from "lucide-react"
+import { Bookmark, Check, ChevronDown, Compass, Hash, Loader2, Sparkles, Star } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import type { AnchorPreviewItem, ResearchTrackSummary, TrackFeedItem } from "@/lib/types"
 
 interface TrackSpotlightProps {
-  track: ResearchTrackSummary | null
+  tracks: ResearchTrackSummary[]
+  activeTrack: ResearchTrackSummary | null
+  onSelectTrack: (trackId: number) => void
   feedItems: TrackFeedItem[]
   feedTotal: number
   anchors: AnchorPreviewItem[]
+  isLoading?: boolean
 }
 
 function toPaperHref(item: TrackFeedItem): string {
@@ -22,8 +33,16 @@ function formatScore(score?: number): string {
   return score.toFixed(1)
 }
 
-export function TrackSpotlight({ track, feedItems, feedTotal, anchors }: TrackSpotlightProps) {
-  if (!track) {
+export function TrackSpotlight({
+  tracks,
+  activeTrack,
+  onSelectTrack,
+  feedItems,
+  feedTotal,
+  anchors,
+  isLoading = false,
+}: TrackSpotlightProps) {
+  if (!activeTrack) {
     return (
       <Card className="border-dashed">
         <CardHeader>
@@ -41,7 +60,7 @@ export function TrackSpotlight({ track, feedItems, feedTotal, anchors }: TrackSp
     )
   }
 
-  const keywords = (track.keywords || []).slice(0, 6)
+  const keywords = (activeTrack.keywords || []).slice(0, 6)
 
   return (
     <Card>
@@ -50,17 +69,42 @@ export function TrackSpotlight({ track, feedItems, feedTotal, anchors }: TrackSp
           <div>
             <CardTitle className="text-base flex items-center gap-2">
               <Compass className="h-4 w-4 text-primary" />
-              Track Spotlight · {track.name}
+              Track Spotlight · {activeTrack.name}
+              {isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
             </CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">
-              {track.description || "Track-level feed blending keyword match, feedback preference and judge score."}
+              {activeTrack.description || "Track-level feed blending keyword match, feedback preference and judge score."}
             </p>
           </div>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/research?track_id=${track.id}`}>Open Track</Link>
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={isLoading}>
+                Select Tracks
+                <ChevronDown className="ml-1 h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {tracks.map((track) => (
+                <DropdownMenuItem
+                  key={track.id}
+                  onClick={() => onSelectTrack(track.id)}
+                  className="flex items-center gap-2"
+                >
+                  {track.id === activeTrack.id ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <span className="w-4" />
+                  )}
+                  <span className="truncate">{track.name}</span>
+                </DropdownMenuItem>
+              ))}
+              {tracks.length === 0 && (
+                <DropdownMenuItem disabled>No tracks available</DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
-        {!!keywords.length && (
+        {keywords.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {keywords.map((keyword) => (
               <Badge key={keyword} variant="secondary" className="text-xs">
@@ -108,13 +152,6 @@ export function TrackSpotlight({ track, feedItems, feedTotal, anchors }: TrackSp
               ))}
             </div>
           )}
-
-          <Button asChild variant="ghost" size="sm" className="px-0">
-            <Link href={`/research?track_id=${track.id}`}>
-              View full feed
-              <ArrowRight className="ml-1 h-3.5 w-3.5" />
-            </Link>
-          </Button>
         </div>
 
         <div className="space-y-2 xl:col-span-2">

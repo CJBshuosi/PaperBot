@@ -14,48 +14,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { SearchBox } from "./SearchBox"
 import { TrackPills } from "./TrackPills"
 import { SearchResults } from "./SearchResults"
-import { FeedTab } from "./FeedTab"
-import { SavedTab } from "./SavedTab"
 import { MemoryTab } from "./MemoryTab"
 import { CreateTrackModal } from "./CreateTrackModal"
 import { EditTrackModal } from "./EditTrackModal"
 import { ManageTracksModal } from "./ManageTracksModal"
 import type { Track } from "./TrackSelector"
 import type { Paper } from "./PaperCard"
-
-type AnchorAuthor = {
-  author_id: number
-  author_ref?: string
-  name: string
-  slug: string
-  anchor_score: number
-  anchor_level: string
-  intrinsic_score: number
-  relevance_score: number
-  score_breakdown?: {
-    intrinsic: number
-    relevance: number
-    network: number
-    personalization: number
-    total: number
-  }
-  user_action?: "follow" | "ignore" | null
-  evidence_status?: "ok" | "missing"
-  evidence_note?: string | null
-  evidence_papers: Array<{
-    paper_id: number
-    title: string
-    year?: number | null
-    url?: string | null
-    citation_count?: number
-  }>
-}
 
 type ContextPack = {
   context_run_id?: number | null
@@ -95,18 +70,20 @@ export default function ResearchPageNew() {
   const [tracks, setTracks] = useState<Track[]>([])
   const [activeTrackId, setActiveTrackId] = useState<number | null>(null)
 
+  // All available sources
+  const ALL_SOURCES = ["semantic_scholar", "arxiv", "openalex", "papers_cool", "hf_daily"]
+
   // Search state
   const [query, setQuery] = useState("")
   const [hasSearched, setHasSearched] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const [contextPack, setContextPack] = useState<ContextPack | null>(null)
-  const [activeTab, setActiveTab] = useState("search")
-  const [searchSources, setSearchSources] = useState<string[]>(["semantic_scholar"])
+  const [searchSources, setSearchSources] = useState<string[]>(ALL_SOURCES)
 
-  // Anchor state
-  const [anchors, setAnchors] = useState<AnchorAuthor[]>([])
-  const [anchorsLoading, setAnchorsLoading] = useState(false)
-  const [anchorsError, setAnchorsError] = useState<string | null>(null)
+  // Memory drawer state
+  const [memoryOpen, setMemoryOpen] = useState(false)
+
+  // Anchor mode state (used for search filtering)
   const [anchorPersonalized, setAnchorPersonalized] = useState(true)
 
   // UI state
@@ -144,41 +121,6 @@ export default function ResearchPageNew() {
     activateTrack(routeTrackId).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeTrackId, tracks, activeTrackId])
-
-  useEffect(() => {
-    if (!activeTrackId) {
-      setAnchors([])
-      setAnchorsError(null)
-      setAnchorsLoading(false)
-      return
-    }
-
-    let cancelled = false
-    setAnchorsLoading(true)
-    setAnchorsError(null)
-
-    fetchJson<{ items: AnchorAuthor[] }>(
-      `/api/research/tracks/${activeTrackId}/anchors/discover?user_id=${encodeURIComponent(userId)}&limit=5&window_days=730&personalized=${anchorPersonalized ? "true" : "false"}`
-    )
-      .then((data) => {
-        if (cancelled) return
-        setAnchors(data.items || [])
-      })
-      .catch((e) => {
-        if (cancelled) return
-        setAnchors([])
-        setAnchorsError(String(e))
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setAnchorsLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeTrackId, userId, anchorPersonalized])
 
   async function refreshTracks(): Promise<number | null> {
     const data = await fetchJson<{ tracks: Track[] }>(
@@ -239,7 +181,6 @@ export default function ResearchPageNew() {
       )
 
       setContextPack(data.context_pack)
-      setActiveTab("search")
     } catch (e) {
       setError(String(e))
     } finally {
@@ -252,11 +193,25 @@ export default function ResearchPageNew() {
       const exists = prev.includes(source)
       if (exists) {
         const next = prev.filter((x) => x !== source)
-        return next.length ? next : ["semantic_scholar"]
+        // Keep at least one source selected
+        return next.length ? next : prev
       }
       return [...prev, source]
     })
   }
+
+  // Auto-refresh search when sources change (after initial search)
+  useEffect(() => {
+    if (!hasSearched || !query.trim() || isSearching) return
+
+    // Debounce to avoid rapid re-fetching
+    const timer = setTimeout(() => {
+      handleSearch()
+    }, 300)
+
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchSources])
 
   async function handleCreateTrack(data: {
     name: string
@@ -375,31 +330,6 @@ export default function ResearchPageNew() {
     }
   }
 
-  async function handleAnchorAction(authorId: number, action: "follow" | "ignore"): Promise<void> {
-    if (!activeTrackId) return
-
-    try {
-      await fetchJson(`/api/research/tracks/${activeTrackId}/anchors/${authorId}/action`, {
-        method: "POST",
-        body: JSON.stringify({ user_id: userId, action }),
-        headers: { "Content-Type": "application/json" },
-      })
-
-      setAnchors((prev) =>
-        prev.map((row) =>
-          row.author_id === authorId
-            ? {
-                ...row,
-                user_action: action,
-              }
-            : row
-        )
-      )
-    } catch (e) {
-      setError(String(e))
-    }
-  }
-
   async function handleFeedback(
     paperId: string,
     action: string,
@@ -440,7 +370,13 @@ export default function ResearchPageNew() {
   const trackToClearName = tracks.find((t) => t.id === trackToClear)?.name || "this track"
 
   return (
-    <div className={cn("min-h-[calc(100vh-4rem)] pt-6 sm:pt-8 transition-all duration-500 ease-out")}>
+    <div
+      className={cn(
+        "min-h-[calc(100vh-4rem)] transition-all duration-500 ease-out",
+        !hasSearched && "flex flex-col items-center justify-center",
+        hasSearched && "pt-6 sm:pt-8"
+      )}
+    >
       {/* Confirm Clear Memory Dialog */}
       <Dialog open={confirmClearOpen} onOpenChange={setConfirmClearOpen}>
         <DialogContent>
@@ -516,8 +452,8 @@ export default function ResearchPageNew() {
       {/* Main Content */}
       <div
         className={cn(
-          "w-full px-4 sm:px-6 transition-all duration-500 ease-out",
-          "max-w-5xl mx-auto"
+          "w-full px-4 sm:px-6 lg:px-8 transition-all duration-500 ease-out mx-auto",
+          hasSearched ? "max-w-5xl" : "max-w-4xl"
         )}
       >
         {/* Greeting - only show before search */}
@@ -551,12 +487,15 @@ export default function ResearchPageNew() {
             onManageTracks={() => setManageModalOpen(true)}
             isSearching={isSearching}
             disabled={loading}
+            anchorMode={anchorPersonalized ? "personalized" : "global"}
+            onAnchorModeChange={(mode) => setAnchorPersonalized(mode === "personalized")}
+            onOpenMemory={() => setMemoryOpen(true)}
           />
         </div>
 
         {/* Track Pills - only show before search */}
         {!hasSearched && tracks.length > 0 && (
-          <div className="mb-8 animate-in fade-in slide-in-from-bottom-2 duration-500 delay-150">
+          <div className="mb-8 flex justify-center animate-in fade-in slide-in-from-bottom-2 duration-500 delay-150">
             <TrackPills
               tracks={tracks}
               activeTrackId={activeTrackId}
@@ -565,98 +504,6 @@ export default function ResearchPageNew() {
               disabled={loading}
             />
           </div>
-        )}
-
-        {activeTrack && (
-          <Card className="mb-6 border-border/60">
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-base">Anchor Authors · {activeTrack.name}</CardTitle>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => setAnchorPersonalized((prev) => !prev)}
-                >
-                  {anchorPersonalized ? "Personalized" : "Global"}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {anchorsLoading ? (
-                <p className="text-sm text-muted-foreground">Loading anchor authors...</p>
-              ) : anchorsError ? (
-                <p className="text-sm text-destructive">Failed to load anchors: {anchorsError}</p>
-              ) : anchors.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No anchor authors yet for this track. Try searching and saving a few papers first.
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  {anchors.map((anchor) => {
-                    const evidence = anchor.evidence_papers?.[0]
-                    return (
-                      <div
-                        key={`${anchor.author_id}-${anchor.slug}`}
-                        className="rounded-md border border-border/60 p-3"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="font-medium">{anchor.name}</div>
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="rounded-full bg-muted px-2 py-1 uppercase tracking-wide">
-                              {anchor.anchor_level}
-                            </span>
-                            <span className="text-muted-foreground">
-                              score {anchor.anchor_score.toFixed(2)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={anchor.user_action === "follow" ? "default" : "outline"}
-                            onClick={() => handleAnchorAction(anchor.author_id, "follow")}
-                          >
-                            Follow
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={anchor.user_action === "ignore" ? "destructive" : "outline"}
-                            onClick={() => handleAnchorAction(anchor.author_id, "ignore")}
-                          >
-                            Ignore
-                          </Button>
-                        </div>
-                        {evidence ? (
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            Evidence: {evidence.url ? (
-                              <a
-                                href={evidence.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="underline underline-offset-2"
-                              >
-                                {evidence.title}
-                              </a>
-                            ) : (
-                              <span>{evidence.title}</span>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                            {anchor.evidence_note || "No evidence papers available yet."}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
         )}
 
         {/* Error Display */}
@@ -671,46 +518,32 @@ export default function ResearchPageNew() {
           </Card>
         )}
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="mb-4 grid w-full grid-cols-4">
-            <TabsTrigger value="search">Search</TabsTrigger>
-            <TabsTrigger value="feed">Feed</TabsTrigger>
-            <TabsTrigger value="saved">Saved</TabsTrigger>
-            <TabsTrigger value="memory">Memory</TabsTrigger>
-          </TabsList>
+        {/* Search Results - only shown after search */}
+        {hasSearched && (
+          <SearchResults
+            papers={papers}
+            reasons={reasons}
+            isSearching={isSearching}
+            hasSearched={hasSearched}
+            selectedSources={searchSources}
+            onToggleSource={toggleSearchSource}
+            onLike={(paperId, rank) => handleFeedback(paperId, "like", rank)}
+            onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
+            onDislike={(paperId, rank) => handleFeedback(paperId, "dislike", rank)}
+          />
+        )}
 
-          <TabsContent value="search">
-            <SearchResults
-              papers={papers}
-              reasons={reasons}
-              isSearching={isSearching}
-              hasSearched={hasSearched}
-              selectedSources={searchSources}
-              onToggleSource={toggleSearchSource}
-              onLike={(paperId, rank) => handleFeedback(paperId, "like", rank)}
-              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
-              onDislike={(paperId, rank) => handleFeedback(paperId, "dislike", rank)}
-            />
-          </TabsContent>
-
-          <TabsContent value="feed">
-            <FeedTab
-              userId={userId}
-              trackId={activeTrackId}
-              onLike={(paperId, rank) => handleFeedback(paperId, "like", rank)}
-              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
-              onDislike={(paperId, rank) => handleFeedback(paperId, "dislike", rank)}
-            />
-          </TabsContent>
-
-          <TabsContent value="saved">
-            <SavedTab userId={userId} trackId={activeTrackId} />
-          </TabsContent>
-
-          <TabsContent value="memory">
-            <MemoryTab userId={userId} trackId={activeTrackId} />
-          </TabsContent>
-        </Tabs>
+        {/* Memory Sheet Drawer */}
+        <Sheet open={memoryOpen} onOpenChange={setMemoryOpen}>
+          <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+            <SheetHeader>
+              <SheetTitle>Track Memory</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4">
+              <MemoryTab userId={userId} trackId={activeTrackId} />
+            </div>
+          </SheetContent>
+        </Sheet>
       </div>
     </div>
   )
