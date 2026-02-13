@@ -7,7 +7,7 @@ from paperbot.infrastructure.stores.paper_store import PaperStore
 
 
 def test_upsert_author_deduplicates_by_name(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path / author-store.db}"
+    db_url = f"sqlite:///{tmp_path / 'author-store.db'}"
     store = AuthorStore(db_url=db_url)
 
     first = store.upsert_author(name="Yoshua Bengio")
@@ -19,7 +19,7 @@ def test_upsert_author_deduplicates_by_name(tmp_path: Path):
 
 
 def test_replace_and_get_paper_authors(tmp_path: Path):
-    db_url = f"sqlite:///{tmp_path / paper-authors.db}"
+    db_url = f"sqlite:///{tmp_path / 'paper-authors.db'}"
     paper_store = PaperStore(db_url=db_url)
     author_store = AuthorStore(db_url=db_url)
 

@@ -55,7 +55,7 @@ def upgrade() -> None:
             sa.Column(
                 "track_id",
                 sa.Integer(),
-                sa.ForeignKey("research_tracks.id"),
+                sa.ForeignKey("research_tracks.id", ondelete="CASCADE"),
                 nullable=False,
             ),
             sa.Column(
