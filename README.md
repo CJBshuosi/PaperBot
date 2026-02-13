@@ -128,7 +128,7 @@ Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save
 
 ### Web Dashboard（Next.js）
 
-![Dashboard](asset/ui/dashboard.jpg)
+![Dashboard](asset/ui/dashboard.png)
 
 | Research Workspace | Model Provider Settings |
 |--------------------|------------------------|
