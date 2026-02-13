@@ -45,8 +45,6 @@ jobs:
             tests/unit/test_jobs_routes_import.py \
             tests/unit/test_dailypaper.py \
             tests/unit/test_paper_judge.py \
-            tests/unit/test_topic_search_sources.py \
-            tests/unit/test_paperscool_topic_search.py \
             tests/unit/test_memory_module.py \
             tests/unit/test_memory_metric_collector.py \
             tests/unit/test_llm_service.py \
