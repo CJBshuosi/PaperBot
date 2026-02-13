@@ -1,28 +1,30 @@
-import { StatsBar } from "@/components/dashboard/StatsBar"
-import { ActivityTimeline } from "@/components/dashboard/ActivityTimeline"
+import { ActivityFeed } from "@/components/dashboard/ActivityFeed"
+import { StatsCard } from "@/components/dashboard/StatsCard"
+import { PipelineStatus } from "@/components/dashboard/PipelineStatus"
+import { ReadingQueue } from "@/components/dashboard/ReadingQueue"
 import { LLMUsageChart } from "@/components/dashboard/LLMUsageChart"
-import { SavedPapers } from "@/components/dashboard/SavedPapers"
+import { QuickActions } from "@/components/dashboard/QuickActions"
 import { DeadlineRadar } from "@/components/dashboard/DeadlineRadar"
-import { fetchStats, fetchActivities, fetchSavedPapers, fetchLLMUsage, fetchDeadlineRadar } from "@/lib/api"
+import { Users, FileText, Zap, BookOpen } from "lucide-react"
+import { fetchStats, fetchPipelineTasks, fetchReadingQueue, fetchLLMUsage, fetchDeadlineRadar } from "@/lib/api"
 
 export default async function DashboardPage() {
-  const [statsResult, activitiesResult, savedResult, llmResult, deadlineResult] = await Promise.allSettled([
+  const [statsResult, tasksResult, readingQueueResult, llmUsageResult, deadlineResult] = await Promise.allSettled([
     fetchStats(),
-    fetchActivities(),
-    fetchSavedPapers(),
+    fetchPipelineTasks(),
+    fetchReadingQueue(),
     fetchLLMUsage(),
     fetchDeadlineRadar("default"),
   ])
-
   const stats = statsResult.status === "fulfilled" ? statsResult.value : {
     tracked_scholars: 0,
     new_papers: 0,
     llm_usage: "0",
     read_later: 0,
   }
-  const activities = activitiesResult.status === "fulfilled" ? activitiesResult.value : []
-  const saved = savedResult.status === "fulfilled" ? savedResult.value : []
-  const usageSummary = llmResult.status === "fulfilled" ? llmResult.value : {
+  const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : []
+  const readingQueue = readingQueueResult.status === "fulfilled" ? readingQueueResult.value : []
+  const usageSummary = llmUsageResult.status === "fulfilled" ? llmUsageResult.value : {
     window_days: 7,
     daily: [],
     provider_models: [],
@@ -30,39 +32,35 @@ export default async function DashboardPage() {
   }
   const deadlines = deadlineResult.status === "fulfilled" ? deadlineResult.value : []
 
-  const today = new Date().toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })
-
   return (
-    <div className="flex-1 p-4 space-y-3 min-h-screen">
+    <div className="flex-1 p-4 space-y-4 min-h-screen max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">Welcome back</h2>
-          <StatsBar
-            papers={stats.new_papers}
-            tokens={stats.llm_usage}
-            saved={stats.read_later}
-            tracks={deadlines.length}
-          />
-        </div>
-        <p className="text-sm text-muted-foreground">{today}</p>
+      <div>
+        <h2 className="text-2xl font-bold tracking-tight">Dashboard</h2>
+        <p className="text-sm text-muted-foreground">Overview of your research workspace</p>
       </div>
 
-      {/* Main Grid: 2/3 + 1/3 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        {/* Left: Activity Timeline */}
-        <div className="lg:col-span-2">
-          <ActivityTimeline items={activities} />
+      {/* Stats Row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatsCard title="Scholars" value={stats.tracked_scholars.toString()} description="tracked" icon={Users} />
+        <StatsCard title="Papers" value={stats.new_papers.toString()} description="in library" icon={FileText} />
+        <StatsCard title="LLM" value={stats.llm_usage} description="tokens" icon={Zap} />
+        <StatsCard title="Saved" value={stats.read_later.toString()} description="to read" icon={BookOpen} />
+      </div>
+
+      {/* Two-column layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Left: Activity Feed + LLM Usage */}
+        <div className="lg:col-span-2 space-y-4">
+          <ActivityFeed />
+          <LLMUsageChart data={usageSummary} />
         </div>
 
-        {/* Right: stacked cards */}
-        <div className="space-y-3">
-          <LLMUsageChart data={usageSummary} />
-          <SavedPapers items={saved} />
+        {/* Right sidebar */}
+        <div className="space-y-4">
+          <QuickActions />
+          <PipelineStatus tasks={tasks} />
+          <ReadingQueue items={readingQueue} />
           <DeadlineRadar items={deadlines} />
         </div>
       </div>

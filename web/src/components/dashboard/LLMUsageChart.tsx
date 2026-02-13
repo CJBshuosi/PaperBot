@@ -51,17 +51,13 @@ export function LLMUsageChart({ data }: LLMUsageChartProps) {
   return (
     <Card>
       <CardHeader className="py-3 px-4">
-        <CardTitle className="text-sm font-medium">
-          LLM Usage ({data.window_days}d)
-        </CardTitle>
-        <div className="flex gap-3 text-xs text-muted-foreground">
-          <span>{(data.totals?.total_tokens || 0).toLocaleString()} tokens</span>
-          <span>${Number(data.totals?.total_cost_usd || 0).toFixed(2)}</span>
-        </div>
+        <CardTitle className="text-sm font-medium">LLM Token Usage ({data.window_days}d)</CardTitle>
       </CardHeader>
-      <CardContent className="px-2 py-2">
-        {chartRows.length > 0 ? (
-          <ResponsiveContainer width="100%" height={180}>
+      <CardContent className="px-4 py-2">
+        {chartRows.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-6 text-center">No usage data yet. Run a workflow to see token usage.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={200}>
             <BarChart data={chartRows}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" fontSize={11} />
@@ -79,8 +75,6 @@ export function LLMUsageChart({ data }: LLMUsageChartProps) {
               ))}
             </BarChart>
           </ResponsiveContainer>
-        ) : (
-          <p className="text-xs text-muted-foreground py-4 text-center">No usage data yet.</p>
         )}
       </CardContent>
     </Card>
