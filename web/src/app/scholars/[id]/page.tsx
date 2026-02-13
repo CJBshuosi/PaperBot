@@ -1,5 +1,15 @@
 import Link from "next/link"
-import { ArrowLeft, ArrowUpRight, BookOpen, Compass, Network, Sparkles, Workflow } from "lucide-react"
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Bell,
+  BookOpen,
+  Compass,
+  Gauge,
+  Network,
+  Sparkles,
+  Workflow,
+} from "lucide-react"
 
 import { ImpactRadar } from "@/components/paper/ImpactRadar"
 import { Badge } from "@/components/ui/badge"
@@ -7,6 +17,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { fetchScholarDetails } from "@/lib/api"
+import { fetchDashboardTracks } from "@/lib/dashboard-api"
 
 function trendTone(value?: string): "default" | "secondary" | "destructive" {
   if (value === "up") return "default"
@@ -14,9 +25,34 @@ function trendTone(value?: string): "default" | "secondary" | "destructive" {
   return "secondary"
 }
 
+function buildResearchLink(query: string, trackId?: number): string {
+  const qs = new URLSearchParams({ query })
+  if (trackId) qs.set("track_id", String(trackId))
+  return `/research?${qs.toString()}`
+}
+
 export default async function ScholarProfilePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const scholar = await fetchScholarDetails(id)
+  const [scholar, tracks] = await Promise.all([
+    fetchScholarDetails(id),
+    fetchDashboardTracks("default"),
+  ])
+
+  const activeTrack = tracks.find((track) => track.is_active) || tracks[0]
+  const primaryTopic = scholar.top_topics?.[0]?.topic || scholar.keywords?.[0] || scholar.name
+  const recommendation =
+    scholar.status === "active" && scholar.trend_summary?.publication_trend === "up"
+      ? "High priority follow"
+      : scholar.status === "idle"
+        ? "Monitor monthly"
+        : "Follow weekly"
+
+  const directionSummary =
+    (scholar.top_topics || []).slice(0, 2).map((row) => row.topic).join(" -> ") || "Insufficient trend data"
+
+  const evidenceTopicLink = buildResearchLink(`${scholar.name} ${primaryTopic}`, activeTrack?.id)
+  const evidenceTrendLink = buildResearchLink(`${scholar.name} recent papers`, activeTrack?.id)
+  const actionLink = buildResearchLink(`${scholar.keywords?.[0] || scholar.name}`, activeTrack?.id)
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 pb-10 sm:p-6">
@@ -30,6 +66,10 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
           </Button>
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{scholar.name}</h1>
           <p className="text-sm text-muted-foreground">{scholar.affiliation}</p>
+          <p className="max-w-3xl text-sm text-muted-foreground">
+            Researcher intelligence cockpit: decide if this scholar is worth tracking, detect direction changes,
+            and trigger next actions with evidence links.
+          </p>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={scholar.status === "active" ? "default" : "secondary"} className="capitalize">
               {scholar.status}
@@ -44,12 +84,13 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
                 </Badge>
               </>
             ) : null}
+            <Badge variant="outline">No evidence, no claim</Badge>
           </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline">
-            <Link href={`/research?query=${encodeURIComponent(scholar.name)}`}>Search in Research</Link>
+          <Button asChild>
+            <Link href={actionLink}>Open in Research</Link>
           </Button>
           <Button asChild variant="outline">
             <Link href="/workflows">Run Tracking Workflow</Link>
@@ -84,6 +125,47 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
         </Card>
       </div>
 
+      <div className="grid gap-3 md:grid-cols-3">
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <p className="text-xs text-muted-foreground">1) Worth following?</p>
+            <p className="text-sm font-semibold">{recommendation}</p>
+            <Button asChild size="sm" variant="outline">
+              <Link href={evidenceTrendLink}>
+                Evidence
+                <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <p className="text-xs text-muted-foreground">2) Direction shift</p>
+            <p className="text-sm font-semibold">{directionSummary}</p>
+            <Button asChild size="sm" variant="outline">
+              <Link href={evidenceTopicLink}>
+                Evidence
+                <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <p className="text-xs text-muted-foreground">3) Next action</p>
+            <p className="text-sm font-semibold">Build reading queue from latest matched papers</p>
+            <Button asChild size="sm">
+              <Link href={actionLink}>
+                Start Action
+                <Compass className="ml-1 h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
       <Tabs defaultValue="signals" className="space-y-4">
         <TabsList>
           <TabsTrigger value="signals">Signals</TabsTrigger>
@@ -105,6 +187,12 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
                     <div key={topic.topic} className="rounded-lg border p-2.5">
                       <p className="text-sm font-medium">{topic.topic}</p>
                       <p className="text-xs text-muted-foreground">{topic.count} papers in window</p>
+                      <Button asChild size="sm" variant="ghost" className="mt-1 h-7 px-2 text-xs">
+                        <Link href={buildResearchLink(`${scholar.name} ${topic.topic}`, activeTrack?.id)}>
+                          Evidence
+                          <ArrowUpRight className="ml-1 h-3 w-3" />
+                        </Link>
+                      </Button>
                     </div>
                   ))}
                 </div>
@@ -144,6 +232,12 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
                       <p className="text-sm font-medium">{row.year}</p>
                       <p className="text-xs text-muted-foreground">papers {row.papers}</p>
                       <p className="text-xs text-muted-foreground">citations {row.citations}</p>
+                      <Button asChild size="sm" variant="ghost" className="mt-1 h-7 px-2 text-xs">
+                        <Link href={buildResearchLink(`${scholar.name} ${row.year}`, activeTrack?.id)}>
+                          Evidence
+                          <ArrowUpRight className="ml-1 h-3 w-3" />
+                        </Link>
+                      </Button>
                     </div>
                   ))}
                 </div>
@@ -184,7 +278,7 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
                       </Button>
                     ) : null}
                     <Button asChild size="sm" variant="ghost">
-                      <Link href={`/research?query=${encodeURIComponent(paper.title)}`}>Open in Research</Link>
+                      <Link href={buildResearchLink(paper.title, activeTrack?.id)}>Open in Research</Link>
                     </Button>
                   </div>
                 </CardContent>
@@ -193,7 +287,7 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
           )}
         </TabsContent>
 
-        <TabsContent value="network">
+        <TabsContent value="network" className="space-y-3">
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Co-author Network</CardTitle>
@@ -202,12 +296,20 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
               {(scholar.co_authors || []).length === 0 ? (
                 <p className="text-sm text-muted-foreground">No collaborator signals available.</p>
               ) : (
-                <div className="flex flex-wrap gap-2">
-                  {(scholar.co_authors || []).map((author) => (
-                    <Badge key={author.name} variant="secondary">
-                      <Network className="mr-1 h-3.5 w-3.5" />
-                      {author.name}
-                    </Badge>
+                <div className="space-y-2">
+                  {(scholar.co_authors || []).slice(0, 16).map((author) => (
+                    <div key={author.name} className="flex items-center justify-between gap-3 rounded-lg border p-2.5">
+                      <Badge variant="secondary">
+                        <Network className="mr-1 h-3.5 w-3.5" />
+                        {author.name}
+                      </Badge>
+                      <Button asChild size="sm" variant="ghost">
+                        <Link href={buildResearchLink(`${scholar.name} ${author.name}`, activeTrack?.id)}>
+                          Evidence
+                          <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+                        </Link>
+                      </Button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -224,7 +326,7 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
                   Build context pack with scholar keywords and evaluate candidate papers.
                 </p>
                 <Button asChild size="sm">
-                  <Link href={`/research?query=${encodeURIComponent(scholar.keywords?.[0] || scholar.name)}`}>
+                  <Link href={actionLink}>
                     <Compass className="mr-1 h-3.5 w-3.5" />
                     Open Research
                   </Link>
@@ -234,14 +336,29 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
 
             <Card>
               <CardContent className="space-y-3 p-4">
-                <p className="text-sm font-semibold">Track in Workflows</p>
+                <p className="text-sm font-semibold">Create Track from Scholar</p>
                 <p className="text-xs text-muted-foreground">
-                  Trigger scholar pipeline and keep monitoring new papers.
+                  Use Scholars watchlist action to create a dedicated track and route papers into feed ranking.
+                </p>
+                <Button asChild size="sm" variant="outline">
+                  <Link href="/scholars">
+                    <Gauge className="mr-1 h-3.5 w-3.5" />
+                    Open Watchlist Console
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="space-y-3 p-4">
+                <p className="text-sm font-semibold">Weekly Digest / Alert</p>
+                <p className="text-xs text-muted-foreground">
+                  Trigger recurring digest and keyword alerts from workflow orchestration.
                 </p>
                 <Button asChild size="sm" variant="outline">
                   <Link href="/workflows">
                     <Workflow className="mr-1 h-3.5 w-3.5" />
-                    Open Workflows
+                    Configure Workflows
                   </Link>
                 </Button>
               </CardContent>
@@ -249,28 +366,38 @@ export default async function ScholarProfilePage({ params }: { params: Promise<{
 
             <Card>
               <CardContent className="space-y-3 p-4">
-                <p className="text-sm font-semibold">Review Saved Papers</p>
+                <p className="text-sm font-semibold">Submission Window Radar</p>
                 <p className="text-xs text-muted-foreground">
-                  Jump to library and compare saved papers with this scholar trend.
+                  Link scholar trends with deadline radar and saved-paper decisions.
                 </p>
-                <Button asChild size="sm" variant="outline">
-                  <Link href="/papers">
-                    <BookOpen className="mr-1 h-3.5 w-3.5" />
-                    Open Library
-                  </Link>
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/dashboard">
+                      <Bell className="mr-1 h-3.5 w-3.5" />
+                      Open Dashboard
+                    </Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/papers">
+                      <BookOpen className="mr-1 h-3.5 w-3.5" />
+                      Open Papers
+                    </Link>
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardContent className="space-y-3 p-4">
-                <p className="text-sm font-semibold">Signal Snapshot</p>
-                <p className="text-xs text-muted-foreground">
-                  Publication trend: {scholar.trend_summary?.publication_trend || "flat"} · Citation trend: {scholar.trend_summary?.citation_trend || "flat"}
-                </p>
+            <Card className="md:col-span-2">
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                <div>
+                  <p className="text-sm font-semibold">Evidence-first policy</p>
+                  <p className="text-xs text-muted-foreground">
+                    Every AI-derived signal in this view must link to verifiable paper evidence.
+                  </p>
+                </div>
                 <Badge variant="secondary" className="w-fit">
                   <Sparkles className="mr-1 h-3.5 w-3.5" />
-                  Evidence-first mode
+                  No evidence, no claim
                 </Badge>
               </CardContent>
             </Card>

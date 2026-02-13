@@ -1,0 +1,53 @@
+# PaperBot Progress Log
+
+Format:
+- Date:
+- Owner:
+- Branch:
+- Done:
+- Validation:
+- Risks/Notes:
+- Next:
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Added long-running harness baseline files:
+    - docs/HARNESS.md
+    - scripts/session_bootstrap.sh
+    - docs/issue_contract.json
+    - docs/progress/progress.txt
+  - Initialized issue contract entries for Scholar intelligence refactor and harness baseline.
+- Validation:
+  - chmod +x scripts/session_bootstrap.sh
+  - scripts/session_bootstrap.sh runs and prints repository/session context
+- Risks/Notes:
+  - issue_contract.json is intentionally minimal and should be updated incrementally, not rewritten.
+- Next:
+  - Complete SCHOLAR-P0 and SCHOLAR-P1 implementation and mark status updates.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Refactored Scholars list into a watchlist console focused on decisions and actions.
+  - Added decision metrics per scholar card: Momentum, Track Match, New Since Last Seen, Risk/Noise.
+  - Added action controls: Add to Watchlist, Mute (selected), Create Track from Scholar.
+  - Added local mute/last-seen persistence for operator workflow continuity.
+  - Upgraded Scholar detail page to an evidence-driven cockpit with decision cards and evidence links in Signals/Network sections.
+  - Strengthened cross-module action links to Research, Workflows, Dashboard, Papers.
+- Validation:
+  - ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/app/scholars/[id]/page.tsx
+  - ./node_modules/.bin/tsc --noEmit
+  - python -m py_compile src/paperbot/api/routes/research.py
+  - ./scripts/session_bootstrap.sh
+- Risks/Notes:
+  - "Mute" and "Last Seen" are currently local user-browser state (localStorage), not server-synced preferences.
+  - "Create Track from Scholar" currently creates a track and routes into Research; no duplicate-name reconciliation beyond backend response.
+- Next:
+  - If needed, move mute/seen state to backend user preferences and add team-shared watchlist controls.

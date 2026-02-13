@@ -1,0 +1,67 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-02-13",
+  "edit_policy": {
+    "allowed_fields_during_execution": [
+      "status",
+      "owner",
+      "updated_at",
+      "notes"
+    ],
+    "requires_product_approval": [
+      "title",
+      "scope",
+      "acceptance_criteria"
+    ]
+  },
+  "status_values": [
+    "todo",
+    "in_progress",
+    "blocked",
+    "done"
+  ],
+  "issues": [
+    {
+      "id": "SCHOLAR-P0",
+      "title": "Watchlist console upgrade",
+      "scope": "Refactor scholars list to action-oriented control plane with decision metrics and task actions.",
+      "acceptance_criteria": [
+        "Show Momentum, Track Match, New Since Last Seen, Risk/Noise on each scholar card",
+        "Provide Add to Watchlist, Mute, and Create Track from Scholar actions",
+        "Support filters for institution, activity, and track matching"
+      ],
+      "status": "done",
+      "owner": "unassigned",
+      "updated_at": "2026-02-13",
+      "notes": "Completed in scholar intelligence UI refactor."
+    },
+    {
+      "id": "SCHOLAR-P1",
+      "title": "Evidence-driven scholar cockpit",
+      "scope": "Upgrade scholar detail page tabs and actions to focus on decision support and evidence links.",
+      "acceptance_criteria": [
+        "Signals/Papers/Network/Actions tabs are preserved and action-oriented",
+        "AI-derived sections expose Evidence links",
+        "Cross-module actions route to Research, Papers, Workflows, and Dashboard/Deadline context"
+      ],
+      "status": "done",
+      "owner": "unassigned",
+      "updated_at": "2026-02-13",
+      "notes": "Completed in scholar intelligence UI refactor."
+    },
+    {
+      "id": "HARNESS-P0",
+      "title": "Long-running harness baseline",
+      "scope": "Introduce harness docs, bootstrap script, and progress/contract artifacts for multi-session delivery.",
+      "acceptance_criteria": [
+        "docs/HARNESS.md exists with start/end workflow",
+        "scripts/session_bootstrap.sh exists and is executable",
+        "docs/progress/progress.txt exists as append-only handoff log"
+      ],
+      "status": "done",
+      "owner": "unassigned",
+      "updated_at": "2026-02-13",
+      "notes": "Completed in this change set."
+    }
+  ]
+}
