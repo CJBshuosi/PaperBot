@@ -51,3 +51,27 @@ Format:
   - "Create Track from Scholar" currently creates a track and routes into Research; no duplicate-name reconciliation beyond backend response.
 - Next:
   - If needed, move mute/seen state to backend user preferences and add team-shared watchlist controls.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Started the session via `scripts/session_bootstrap.sh` and followed harness workflow.
+  - Upgraded Scholar state handling from localStorage to backend persistence via scholar subscription PATCH.
+  - Added backend support for scholar metadata fields: `muted`, `last_seen_at`, `last_seen_cached_papers`.
+  - Updated scholars list API aggregation to return persisted state metadata.
+  - Updated Scholars watchlist UI to read/write muted and last-seen state through backend APIs.
+  - Expanded unit tests for subscription service and scholar routes to cover metadata persistence and response fields.
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py
+  - pytest tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py -q (environment exits -1 without output)
+  - (cd web && ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/lib/api.ts src/lib/types.ts)
+  - (cd web && ./node_modules/.bin/tsc --noEmit)
+  - ./scripts/session_bootstrap.sh
+- Risks/Notes:
+  - Scholar state is now persisted in subscription config; this is user-global and not multi-user isolated yet.
+- Next:
+  - If needed, add per-user scholar preference storage and team-shared controls.

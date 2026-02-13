@@ -28,9 +28,13 @@ def test_subscription_service_add_update_remove(tmp_path: Path):
             "semantic_scholar_id": "1001",
             "keywords": ["rag", "agent"],
             "affiliations": ["Lab A"],
+            "muted": True,
+            "last_seen_cached_papers": 5,
+            "last_seen_at": "2026-02-13T00:00:00+00:00",
         }
     )
     assert added["name"] == "Alice"
+    assert added["muted"] is True
 
     updated = service.update_scholar(
         "1001",
@@ -38,12 +42,17 @@ def test_subscription_service_add_update_remove(tmp_path: Path):
             "name": "Alice Updated",
             "keywords": ["safety"],
             "affiliations": ["Lab B"],
+            "muted": False,
+            "last_seen_cached_papers": 9,
+            "last_seen_at": "2026-02-14T00:00:00+00:00",
         },
     )
     assert updated is not None
     assert updated["name"] == "Alice Updated"
     assert updated["keywords"] == ["safety"]
     assert updated["affiliations"] == ["Lab B"]
+    assert updated["muted"] is False
+    assert updated["last_seen_cached_papers"] == 9
 
     removed = service.remove_scholar("1001")
     assert removed is not None

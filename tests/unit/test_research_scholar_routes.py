@@ -151,10 +151,28 @@ def test_scholar_list_route(monkeypatch):
                 "last_updated": None,
             }
 
+    class _FakeSubscriptionService:
+        def get_scholar_configs(self):
+            return [
+                {
+                    "name": "Alice",
+                    "semantic_scholar_id": "1001",
+                    "muted": True,
+                    "last_seen_cached_papers": 6,
+                    "last_seen_at": "2026-02-12T00:00:00+00:00",
+                },
+                {
+                    "name": "Bob",
+                    "semantic_scholar_id": "1002",
+                    "muted": False,
+                },
+            ]
+
     monkeypatch.setattr(
         "paperbot.agents.scholar_tracking.scholar_profile_agent.ScholarProfileAgent",
         _FakeScholarProfileAgent,
     )
+    monkeypatch.setattr(research_route, "_subscription_service", _FakeSubscriptionService())
 
     with TestClient(api_main.app) as client:
         resp = client.get("/api/research/scholars?limit=10")
@@ -165,6 +183,8 @@ def test_scholar_list_route(monkeypatch):
     assert len(payload["items"]) == 2
     assert payload["items"][0]["name"] == "Alice"
     assert payload["items"][0]["status"] == "active"
+    assert payload["items"][0]["muted"] is True
+    assert payload["items"][0]["last_seen_cached_papers"] == 6
     assert payload["items"][1]["name"] == "Bob"
 
 
@@ -222,6 +242,8 @@ def test_scholar_update_route(monkeypatch):
                 "name": updates.get("name") or "Alice",
                 "semantic_scholar_id": updates.get("semantic_scholar_id") or "1001",
                 "keywords": updates.get("keywords") or [],
+                "muted": bool(updates.get("muted")),
+                "last_seen_cached_papers": updates.get("last_seen_cached_papers") or 0,
             }
 
     monkeypatch.setattr(research_route, "_subscription_service", _FakeSubscriptionService())
@@ -229,7 +251,12 @@ def test_scholar_update_route(monkeypatch):
     with TestClient(api_main.app) as client:
         resp = client.patch(
             "/api/research/scholars/1001",
-            json={"name": "Alice Updated", "keywords": ["rag", "safety"]},
+            json={
+                "name": "Alice Updated",
+                "keywords": ["rag", "safety"],
+                "muted": True,
+                "last_seen_cached_papers": 7,
+            },
         )
         missing = client.patch("/api/research/scholars/missing", json={"name": "x"})
 
@@ -237,6 +264,8 @@ def test_scholar_update_route(monkeypatch):
     payload = resp.json()
     assert payload["scholar"]["name"] == "Alice Updated"
     assert payload["scholar"]["keywords"] == ["rag", "safety"]
+    assert payload["scholar"]["muted"] is True
+    assert payload["scholar"]["last_seen_cached_papers"] == 7
     assert missing.status_code == 404
 
 

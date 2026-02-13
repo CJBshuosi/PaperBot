@@ -1492,6 +1492,9 @@ class ScholarUpdateRequest(BaseModel):
     affiliations: Optional[List[str]] = None
     keywords: Optional[List[str]] = None
     research_fields: Optional[List[str]] = None
+    muted: Optional[bool] = None
+    last_seen_at: Optional[str] = None
+    last_seen_cached_papers: Optional[int] = Field(None, ge=0)
 
 
 class ScholarDeleteResponse(BaseModel):
@@ -1531,6 +1534,9 @@ def update_tracked_scholar(scholar_ref: str, req: ScholarUpdateRequest):
         "affiliations": req.affiliations,
         "keywords": req.keywords,
         "research_fields": req.research_fields,
+        "muted": req.muted,
+        "last_seen_at": req.last_seen_at,
+        "last_seen_cached_papers": req.last_seen_cached_papers,
     }
     try:
         scholar = service.update_scholar(scholar_ref, payload)
@@ -1643,6 +1649,19 @@ def list_tracked_scholars(limit: int = Query(100, ge=1, le=500)):
     now = datetime.now(timezone.utc)
     items: List[Dict[str, Any]] = []
 
+    metadata_by_ref: Dict[str, Dict[str, Any]] = {}
+    try:
+        service = _get_subscription_service()
+        for row in service.get_scholar_configs():
+            semantic = str(row.get("semantic_scholar_id") or "").strip().lower()
+            row_id = str(row.get("scholar_id") or row.get("id") or "").strip().lower()
+            name = str(row.get("name") or "").strip().lower()
+            for key in {semantic, row_id, name}:
+                if key:
+                    metadata_by_ref[key] = row
+    except Exception:
+        metadata_by_ref = {}
+
     for scholar in profile.list_tracked_scholars():
         semantic_id = str(scholar.semantic_scholar_id or "").strip()
         scholar_ref = semantic_id or str(scholar.scholar_id or "").strip()
@@ -1667,6 +1686,12 @@ def list_tracked_scholars(limit: int = Query(100, ge=1, le=500)):
             recent_activity = f"Updated {age_days} days ago"
             status = "active" if age_days <= 30 else "idle"
 
+        row_meta = (
+            metadata_by_ref.get(semantic_id.lower())
+            or metadata_by_ref.get(str(scholar.scholar_id or "").strip().lower())
+            or metadata_by_ref.get(str(scholar.name or "").strip().lower())
+        )
+
         items.append(
             {
                 "id": scholar_ref or scholar.name,
@@ -1687,6 +1712,18 @@ def list_tracked_scholars(limit: int = Query(100, ge=1, le=500)):
                 "last_updated": last_updated,
                 "recent_activity": recent_activity,
                 "status": status,
+                "muted": bool(row_meta.get("muted")) if isinstance(row_meta, dict) else False,
+                "last_seen_at": (
+                    str(row_meta.get("last_seen_at") or "").strip()
+                    if isinstance(row_meta, dict)
+                    else None
+                )
+                or None,
+                "last_seen_cached_papers": (
+                    _safe_int(row_meta.get("last_seen_cached_papers"), 0)
+                    if isinstance(row_meta, dict)
+                    else 0
+                ),
             }
         )
 

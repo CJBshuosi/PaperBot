@@ -113,6 +113,12 @@ class SubscriptionService:
         logger.info(f"Loaded {len(self._scholars)} scholars from config")
         return self._scholars
 
+    def get_scholar_configs(self) -> List[Dict[str, Any]]:
+        """获取原始订阅学者配置（包含扩展字段）。"""
+        config = self.load_config()
+        scholars = config.get("subscriptions", {}).get("scholars", [])
+        return [dict(row) for row in scholars if isinstance(row, dict)]
+
     def get_settings(self) -> Dict[str, Any]:
         """获取全局设置"""
         config = self.load_config()
@@ -203,6 +209,20 @@ class SubscriptionService:
         if isinstance(research_fields, list):
             payload["research_fields"] = [str(v).strip() for v in research_fields if str(v).strip()]
 
+        if scholar.get("muted") is not None:
+            payload["muted"] = bool(scholar.get("muted"))
+
+        if scholar.get("last_seen_at") is not None:
+            payload["last_seen_at"] = str(scholar.get("last_seen_at") or "").strip()
+
+        if scholar.get("last_seen_cached_papers") is not None:
+            try:
+                payload["last_seen_cached_papers"] = max(
+                    0, int(scholar.get("last_seen_cached_papers") or 0)
+                )
+            except Exception:
+                payload["last_seen_cached_papers"] = 0
+
         scholars.append(payload)
         self.save_config()
         self._scholars = None
@@ -253,15 +273,17 @@ class SubscriptionService:
             if existing_id and existing_id == normalized_id:
                 raise ValueError("semantic_scholar_id already exists")
 
-        payload: Dict[str, Any] = {
-            "name": name,
-            "semantic_scholar_id": semantic_id,
-        }
+        # Keep unknown fields (e.g. UI state metadata) and overwrite managed fields.
+        payload: Dict[str, Any] = dict(current)
+        payload["name"] = name
+        payload["semantic_scholar_id"] = semantic_id
 
         if updates.get("keywords") is not None:
             keywords = updates.get("keywords")
             if isinstance(keywords, list):
                 payload["keywords"] = [str(v).strip() for v in keywords if str(v).strip()]
+            else:
+                payload.pop("keywords", None)
         elif isinstance(current.get("keywords"), list):
             payload["keywords"] = [
                 str(v).strip() for v in current.get("keywords", []) if str(v).strip()
@@ -271,6 +293,8 @@ class SubscriptionService:
             affiliations = updates.get("affiliations")
             if isinstance(affiliations, list):
                 payload["affiliations"] = [str(v).strip() for v in affiliations if str(v).strip()]
+            else:
+                payload.pop("affiliations", None)
         elif isinstance(current.get("affiliations"), list):
             payload["affiliations"] = [
                 str(v).strip() for v in current.get("affiliations", []) if str(v).strip()
@@ -282,10 +306,37 @@ class SubscriptionService:
                 payload["research_fields"] = [
                     str(v).strip() for v in research_fields if str(v).strip()
                 ]
+            else:
+                payload.pop("research_fields", None)
         elif isinstance(current.get("research_fields"), list):
             payload["research_fields"] = [
                 str(v).strip() for v in current.get("research_fields", []) if str(v).strip()
             ]
+
+        if updates.get("muted") is not None:
+            payload["muted"] = bool(updates.get("muted"))
+        elif current.get("muted") is not None:
+            payload["muted"] = bool(current.get("muted"))
+
+        if updates.get("last_seen_at") is not None:
+            payload["last_seen_at"] = str(updates.get("last_seen_at") or "").strip()
+        elif current.get("last_seen_at") is not None:
+            payload["last_seen_at"] = str(current.get("last_seen_at") or "").strip()
+
+        if updates.get("last_seen_cached_papers") is not None:
+            try:
+                payload["last_seen_cached_papers"] = max(
+                    0, int(updates.get("last_seen_cached_papers") or 0)
+                )
+            except Exception:
+                payload["last_seen_cached_papers"] = 0
+        elif current.get("last_seen_cached_papers") is not None:
+            try:
+                payload["last_seen_cached_papers"] = max(
+                    0, int(current.get("last_seen_cached_papers") or 0)
+                )
+            except Exception:
+                payload["last_seen_cached_papers"] = 0
 
         scholars[target_index] = payload
         self.save_config()

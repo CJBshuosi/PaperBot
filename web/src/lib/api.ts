@@ -235,6 +235,9 @@ export async function fetchScholars(): Promise<Scholar[]> {
                 status?: "active" | "idle"
                 cached_papers?: number
                 last_updated?: string | null
+                muted?: boolean
+                last_seen_at?: string | null
+                last_seen_cached_papers?: number
             }>
         }
         return (data.items || []).map((row) => ({
@@ -249,6 +252,9 @@ export async function fetchScholars(): Promise<Scholar[]> {
             keywords: row.keywords || [],
             cached_papers: Number(row.cached_papers || 0),
             last_updated: row.last_updated || null,
+            muted: !!row.muted,
+            last_seen_at: row.last_seen_at || null,
+            last_seen_cached_papers: Number(row.last_seen_cached_papers || 0),
         }))
     } catch {
         return []

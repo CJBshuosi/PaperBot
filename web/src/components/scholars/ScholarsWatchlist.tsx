@@ -47,8 +47,23 @@ type ScholarInsight = {
   riskLabel: "low" | "medium" | "high"
 }
 
-const LAST_SEEN_KEY = "paperbot.scholars.last_seen.v1"
-const MUTED_KEY = "paperbot.scholars.muted.v1"
+type ScholarApiRow = {
+  id?: string
+  scholar_id?: string
+  semantic_scholar_id?: string | null
+  name?: string
+  affiliation?: string
+  keywords?: string[]
+  h_index?: number
+  paper_count?: number
+  recent_activity?: string
+  status?: "active" | "idle"
+  cached_papers?: number
+  last_updated?: string | null
+  muted?: boolean
+  last_seen_at?: string | null
+  last_seen_cached_papers?: number
+}
 
 function toResearchLink(scholar: Scholar): string {
   const keyword = scholar.keywords?.[0] || scholar.name
@@ -86,29 +101,22 @@ function deriveRisk(scholar: Scholar): "low" | "medium" | "high" {
   return "low"
 }
 
-function parseLastSeenMap(value: string | null): Record<string, number> {
-  if (!value) return {}
-  try {
-    const parsed = JSON.parse(value) as Record<string, unknown>
-    const clean: Record<string, number> = {}
-    for (const [key, raw] of Object.entries(parsed)) {
-      const num = Number(raw)
-      if (Number.isFinite(num) && num >= 0) clean[key] = num
-    }
-    return clean
-  } catch {
-    return {}
-  }
-}
-
-function parseMutedSet(value: string | null): Set<string> {
-  if (!value) return new Set()
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!Array.isArray(parsed)) return new Set()
-    return new Set(parsed.map((item) => String(item)))
-  } catch {
-    return new Set()
+function mapScholarRow(row: ScholarApiRow): Scholar {
+  return {
+    id: String(row.id || row.semantic_scholar_id || row.scholar_id || row.name || "unknown"),
+    semantic_scholar_id: row.semantic_scholar_id || undefined,
+    name: String(row.name || "Unknown"),
+    affiliation: String(row.affiliation || "Unknown affiliation"),
+    h_index: Number(row.h_index || 0),
+    papers_tracked: Number(row.paper_count || 0),
+    recent_activity: String(row.recent_activity || "No tracking runs yet"),
+    status: row.status === "active" ? "active" : "idle",
+    keywords: row.keywords || [],
+    cached_papers: Number(row.cached_papers || 0),
+    last_updated: row.last_updated || null,
+    muted: !!row.muted,
+    last_seen_at: row.last_seen_at || null,
+    last_seen_cached_papers: Number(row.last_seen_cached_papers || 0),
   }
 }
 
@@ -124,9 +132,6 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
   const [showMuted, setShowMuted] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
-  const [lastSeenMap, setLastSeenMap] = useState<Record<string, number>>({})
-  const [mutedIds, setMutedIds] = useState<Set<string>>(new Set())
-
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState("")
   const [createSemanticId, setCreateSemanticId] = useState("")
@@ -140,11 +145,6 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
   useEffect(() => {
     setItems(scholars)
   }, [scholars])
-
-  useEffect(() => {
-    setLastSeenMap(parseLastSeenMap(window.localStorage.getItem(LAST_SEEN_KEY)))
-    setMutedIds(parseMutedSet(window.localStorage.getItem(MUTED_KEY)))
-  }, [])
 
   useEffect(() => {
     const loadTracks = async () => {
@@ -165,8 +165,8 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
     if (!res.ok) {
       throw new Error(`Failed to refresh scholars: ${res.status}`)
     }
-    const payload = (await res.json()) as { items?: Scholar[] }
-    setItems(payload.items || [])
+    const payload = (await res.json()) as { items?: ScholarApiRow[] }
+    setItems((payload.items || []).map(mapScholarRow))
   }, [])
 
   const insights = useMemo<ScholarInsight[]>(() => {
@@ -181,7 +181,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
       })
 
       const momentum = deriveMomentum(scholar)
-      const baseline = lastSeenMap[scholar.id] || 0
+      const baseline = Number(scholar.last_seen_cached_papers || 0)
       const newSinceLastSeen = Math.max(0, (scholar.cached_papers || 0) - baseline)
       const riskLabel = deriveRisk(scholar)
 
@@ -194,7 +194,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
         riskLabel,
       }
     })
-  }, [items, tracks, lastSeenMap])
+  }, [items, tracks])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -204,7 +204,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
       .filter((item) => {
         const scholar = item.scholar
         if (status !== "all" && scholar.status !== status) return false
-        if (!showMuted && mutedIds.has(scholar.id)) return false
+        if (!showMuted && scholar.muted) return false
         if (trackMatchFilter === "matched" && item.matchedTracks.length === 0) return false
         if (trackMatchFilter === "unmatched" && item.matchedTracks.length > 0) return false
 
@@ -221,26 +221,16 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
         if (a.newSinceLastSeen !== b.newSinceLastSeen) return b.newSinceLastSeen - a.newSinceLastSeen
         return (b.scholar.h_index || 0) - (a.scholar.h_index || 0)
       })
-  }, [insights, query, institutionQuery, status, trackMatchFilter, showMuted, mutedIds])
+  }, [insights, query, institutionQuery, status, trackMatchFilter, showMuted])
 
   const activeCount = items.filter((item) => item.status === "active").length
-  const mutedCount = mutedIds.size
+  const mutedCount = items.filter((item) => item.muted).length
 
   const selectedInsights = useMemo(() => {
     return insights.filter((row) => selectedIds.has(row.scholar.id))
   }, [insights, selectedIds])
 
   const selectedForTrack = selectedInsights.length === 1 ? selectedInsights[0].scholar : null
-
-  function persistMuted(next: Set<string>) {
-    setMutedIds(next)
-    window.localStorage.setItem(MUTED_KEY, JSON.stringify(Array.from(next)))
-  }
-
-  function persistLastSeen(next: Record<string, number>) {
-    setLastSeenMap(next)
-    window.localStorage.setItem(LAST_SEEN_KEY, JSON.stringify(next))
-  }
 
   function toggleSelected(id: string) {
     setSelectedIds((prev) => {
@@ -251,27 +241,52 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
     })
   }
 
-  function markSeen(scholar: Scholar) {
-    const next = {
-      ...lastSeenMap,
-      [scholar.id]: Number(scholar.cached_papers || 0),
+  async function patchScholarState(
+    scholar: Scholar,
+    patch: {
+      muted?: boolean
+      last_seen_cached_papers?: number
+      last_seen_at?: string
+    },
+  ) {
+    const res = await fetch(`/api/research/scholars/${encodeURIComponent(scholar.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(text || `HTTP ${res.status}`)
     }
-    persistLastSeen(next)
   }
 
-  function toggleMuteScholar(id: string) {
-    const next = new Set(mutedIds)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    persistMuted(next)
+  async function markSeen(scholar: Scholar) {
+    await patchScholarState(scholar, {
+      last_seen_cached_papers: Number(scholar.cached_papers || 0),
+      last_seen_at: new Date().toISOString(),
+    })
+    await refreshScholars()
   }
 
-  function muteSelected() {
+  async function toggleMuteScholar(scholar: Scholar) {
+    await patchScholarState(scholar, { muted: !scholar.muted })
+    await refreshScholars()
+  }
+
+  async function muteSelected() {
     if (selectedIds.size === 0) return
-    const next = new Set(mutedIds)
-    for (const id of selectedIds) next.add(id)
-    persistMuted(next)
-    setSelectedIds(new Set())
+    const targets = items.filter((item) => selectedIds.has(item.id) && !item.muted)
+    if (!targets.length) {
+      setSelectedIds(new Set())
+      return
+    }
+    try {
+      await Promise.all(targets.map((item) => patchScholarState(item, { muted: true })))
+      setSelectedIds(new Set())
+      await refreshScholars()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function handleCreateScholar() {
@@ -334,9 +349,11 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
       const trackId = payload.track?.id
       const queryValue = scholar.keywords?.[0] || scholar.name
 
-      markSeen(scholar)
+      await markSeen(scholar)
       if (trackId) {
-        router.push(`/research?track_id=${encodeURIComponent(String(trackId))}&query=${encodeURIComponent(queryValue)}`)
+        router.push(
+          `/research?track_id=${encodeURIComponent(String(trackId))}&query=${encodeURIComponent(queryValue)}`,
+        )
       } else {
         router.push(toResearchLink(scholar))
       }
@@ -384,7 +401,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
                 <Plus className="mr-1 h-4 w-4" />
                 Add to Watchlist
               </Button>
-              <Button variant="outline" onClick={muteSelected} disabled={selectedIds.size === 0}>
+              <Button variant="outline" onClick={() => muteSelected().catch(() => {})} disabled={selectedIds.size === 0}>
                 <BellOff className="mr-1 h-4 w-4" />
                 Mute
               </Button>
@@ -491,7 +508,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
               {filtered.map((row) => {
                 const scholar = row.scholar
                 const isSelected = selectedIds.has(scholar.id)
-                const isMuted = mutedIds.has(scholar.id)
+                const isMuted = !!scholar.muted
 
                 return (
                   <Card key={scholar.id} className={isSelected ? "border-primary" : "border-border/60"}>
@@ -557,7 +574,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
                           size="sm"
                           className="h-8"
                           onClick={() => {
-                            markSeen(scholar)
+                            markSeen(scholar).catch(() => {})
                             router.push(`/scholars/${encodeURIComponent(scholar.id)}`)
                           }}
                         >
@@ -584,9 +601,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
                           size="sm"
                           variant="ghost"
                           className="h-8"
-                          onClick={() => {
-                            markSeen(scholar)
-                          }}
+                          onClick={() => markSeen(scholar).catch(() => {})}
                         >
                           Mark Seen
                         </Button>
@@ -594,7 +609,7 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
                           size="sm"
                           variant="ghost"
                           className="h-8"
-                          onClick={() => toggleMuteScholar(scholar.id)}
+                          onClick={() => toggleMuteScholar(scholar).catch(() => {})}
                         >
                           <BellOff className="mr-1 h-3.5 w-3.5" />
                           {isMuted ? "Unmute" : "Mute"}

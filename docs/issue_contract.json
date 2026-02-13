@@ -62,6 +62,20 @@
       "owner": "unassigned",
       "updated_at": "2026-02-13",
       "notes": "Completed in this change set."
+    },
+    {
+      "id": "SCHOLAR-P2",
+      "title": "Persist watchlist state on backend",
+      "scope": "Move muted/last-seen scholar state from browser local cache to subscription-backed backend persistence.",
+      "acceptance_criteria": [
+        "Scholar PATCH accepts muted and last-seen fields",
+        "Scholar list response exposes muted and last-seen fields",
+        "Watchlist UI reads/writes state through backend API"
+      ],
+      "status": "done",
+      "owner": "unassigned",
+      "updated_at": "2026-02-13",
+      "notes": "Completed in continued scholar refactor."
     }
   ]
 }

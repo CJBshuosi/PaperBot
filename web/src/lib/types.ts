@@ -10,6 +10,9 @@ export interface Scholar {
     keywords?: string[]
     cached_papers?: number
     last_updated?: string | null
+    muted?: boolean
+    last_seen_at?: string | null
+    last_seen_cached_papers?: number
 }
 
 export interface Paper {
