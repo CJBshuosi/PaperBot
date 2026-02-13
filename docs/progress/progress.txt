@@ -99,3 +99,24 @@ Format:
   - Automation preferences are still stored in shared subscription config, not per-user account rows.
 - Next:
   - Add per-user/team scoping for scholar automation preferences when user identity model is finalized.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Added Vercel + Supabase deployment guide at `docs/DEPLOY_VERCEL_SUPABASE.md`.
+  - Updated `README.md` with cloud deployment section and demo-link configuration notes.
+  - Added `PAPERBOT_DB_URL`, `PAPERBOT_API_BASE_URL`, and `NEXT_PUBLIC_DEMO_URL` examples to `env.example`.
+  - Added `psycopg[binary]` to requirements for Supabase/Postgres SQLAlchemy connectivity.
+  - Added sidebar `Live Demo` button driven by `NEXT_PUBLIC_DEMO_URL` for public体验入口。
+- Validation:
+  - (cd web && ./node_modules/.bin/eslint src/components/layout/Sidebar.tsx)
+  - (cd web && ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/lib/api.ts src/lib/types.ts)
+  - (cd web && ./node_modules/.bin/tsc --noEmit)
+  - ./scripts/session_bootstrap.sh
+- Risks/Notes:
+  - FastAPI backend is still expected to run on long-lived compute (Render/Railway/Fly) for SSE/worker reliability.
+- Next:
+  - After first production deploy, fill `NEXT_PUBLIC_DEMO_URL` with the real Vercel URL and verify sidebar CTA in prod.

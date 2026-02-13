@@ -290,6 +290,18 @@ arq paperbot.infrastructure.queue.arq_worker.WorkerSettings
 - CLI：`PAPERBOT_API_URL=http://<host>:8000`
 - Web：`PAPERBOT_API_BASE_URL=http://<host>:8000`
 
+### 云部署（Vercel + Supabase）
+
+推荐架构：
+- 前端：Vercel（`web/`）
+- 数据库：Supabase Postgres（`PAPERBOT_DB_URL`）
+- API：FastAPI（Render / Railway / Fly.io）
+
+快速入口：`docs/DEPLOY_VERCEL_SUPABASE.md`
+
+体验链接按钮（侧边栏）：
+- `NEXT_PUBLIC_DEMO_URL=https://<your-web>.vercel.app`
+
 ## API 端点
 
 | 端点 | 方法 | 描述 |

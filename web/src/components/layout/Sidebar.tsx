@@ -15,6 +15,7 @@ import {
   Workflow,
   PanelLeftClose,
   PanelLeft,
+  Rocket,
 } from "lucide-react"
 
 type SidebarProps = React.HTMLAttributes<HTMLDivElement> & {
@@ -35,6 +36,7 @@ const routes = [
 
 export function Sidebar({ className, collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname()
+  const demoUrl = process.env.NEXT_PUBLIC_DEMO_URL
 
   return (
     <div className={cn("flex min-h-screen flex-col border-r bg-background pb-12", className)}>
@@ -79,6 +81,21 @@ export function Sidebar({ className, collapsed, onToggle }: SidebarProps) {
           </div>
         </div>
       </div>
+
+      {demoUrl ? (
+        <div className={cn("mt-auto px-3 pb-4", collapsed && "px-2")}>          <Button
+            asChild
+            variant="outline"
+            className={cn("w-full", collapsed ? "justify-center px-0" : "justify-start")}
+            title={collapsed ? "Live Demo" : undefined}
+          >
+            <a href={demoUrl} target="_blank" rel="noreferrer">
+              <Rocket className={cn("h-4 w-4", !collapsed && "mr-2")} />
+              {!collapsed && "Live Demo"}
+            </a>
+          </Button>
+        </div>
+      ) : null}
     </div>
   )
 }
