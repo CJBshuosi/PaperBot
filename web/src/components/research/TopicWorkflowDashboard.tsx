@@ -100,6 +100,7 @@ type StepStatus = "pending" | "running" | "done" | "error" | "skipped"
 /* ── Helpers ──────────────────────────────────────────── */
 
 const DEFAULT_QUERIES = ["ICL压缩", "ICL隐式偏置", "KV Cache加速"]
+const DAILY_STREAM_IDLE_TIMEOUT_MS = 90_000
 
 const REC_COLORS: Record<string, string> = {
   must_read: "bg-green-100 text-green-800 border-green-300",
@@ -914,6 +915,21 @@ export default function TopicWorkflowDashboard({ initialQueries }: TopicWorkflow
     }
 
     let streamFailed = false
+    let streamIdleTimedOut = false
+    let streamIdleTimer: ReturnType<typeof setTimeout> | null = null
+    const clearStreamIdleTimer = () => {
+      if (streamIdleTimer) {
+        clearTimeout(streamIdleTimer)
+        streamIdleTimer = null
+      }
+    }
+    const armStreamIdleTimer = () => {
+      clearStreamIdleTimer()
+      streamIdleTimer = setTimeout(() => {
+        streamIdleTimedOut = true
+        controller.abort()
+      }, DAILY_STREAM_IDLE_TIMEOUT_MS)
+    }
     try {
       const res = await fetch("/api/research/paperscool/daily", {
         method: "POST",
@@ -937,7 +953,9 @@ export default function TopicWorkflowDashboard({ initialQueries }: TopicWorkflow
       // SSE streaming path
       if (!res.body) throw new Error("No response body for SSE stream")
 
+      armStreamIdleTimer()
       for await (const rawEvent of readSSE(res.body)) {
+        armStreamIdleTimer()
         const event = normalizeSSEMessage(rawEvent, "paperscool_daily")
         if (event.type === "progress") {
           const d = (event.data || {}) as { phase?: string; message?: string; total?: number }
@@ -1142,15 +1160,24 @@ export default function TopicWorkflowDashboard({ initialQueries }: TopicWorkflow
           break
         }
       }
+      clearStreamIdleTimer()
       if (!streamFailed) {
         store.setPhase("reported")
       }
     } catch (err) {
       streamFailed = true
-      setError(String(err))
+      if (streamIdleTimedOut) {
+        const timeoutSec = Math.round(DAILY_STREAM_IDLE_TIMEOUT_MS / 1000)
+        const message = `DailyPaper stream stalled for ${timeoutSec}s and was aborted.`
+        addStreamLog(`[error] ${message}`)
+        setError(message)
+      } else {
+        setError(String(err))
+      }
       setStreamPhase("error")
       store.setPhase("error")
     } finally {
+      clearStreamIdleTimer()
       setLoadingDaily(false)
       streamStartRef.current = null
       streamAbortRef.current = null
