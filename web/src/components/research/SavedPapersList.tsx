@@ -939,211 +939,217 @@ export default function SavedPapersList() {
       </CardContent>
 
       <Dialog open={collectionsOpen} onOpenChange={setCollectionsOpen}>
-        <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Collections Workspace</DialogTitle>
-            <DialogDescription>
-              Group saved papers, attach note/tags, and reuse collection-scoped context.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-            <div className="space-y-4">
-              <div className="space-y-3 rounded-md border bg-muted/20 p-3">
-                <p className="text-sm font-medium">Create Collection</p>
-                <Input
-                  placeholder="Collection name"
-                  value={newCollectionName}
-                  onChange={(event) => setNewCollectionName(event.target.value)}
-                  disabled={collectionsLoading}
-                />
-                <Textarea
-                  placeholder="Description (optional)"
-                  value={newCollectionDesc}
-                  onChange={(event) => setNewCollectionDesc(event.target.value)}
-                  disabled={collectionsLoading}
-                  className="min-h-[80px]"
-                />
-                <Button
-                  size="sm"
-                  onClick={createCollection}
-                  disabled={collectionsLoading || !newCollectionName.trim()}
-                >
-                  Create Collection
-                </Button>
-              </div>
-
-              <div className="space-y-2 rounded-md border p-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">Collections</p>
-                  <Badge variant="outline">{collections.length}</Badge>
-                </div>
-                <div className="max-h-[380px] space-y-2 overflow-auto pr-1">
-                  {collections.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                      No collections yet. Create one to start grouping papers.
-                    </p>
-                  ) : (
-                    collections.map((collection) => (
-                      <button
-                        key={collection.id}
-                        className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
-                          selectedCollectionId === collection.id
-                            ? "border-primary bg-muted"
-                            : "hover:bg-muted/40"
-                        }`}
-                        onClick={() => {
-                          setSelectedCollectionId(collection.id)
-                          cancelEditingCollectionItem()
-                          loadCollectionItems(collection.id).catch(() => {})
-                        }}
-                        type="button"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">{collection.name}</p>
-                            {collection.description ? (
-                              <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-                                {collection.description}
-                              </p>
-                            ) : null}
-                          </div>
-                          <Badge variant="secondary">{collection.item_count || 0}</Badge>
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-3 rounded-md border p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-medium">
-                    {selectedCollection?.name || "Select a collection"}
-                  </p>
-                  {selectedCollection?.description ? (
-                    <p className="text-xs text-muted-foreground">{selectedCollection.description}</p>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">
-                    {selectedCollection?.item_count ?? collectionItems.length} papers
-                  </Badge>
+        <DialogContent className="h-[90vh] w-[min(96vw,1280px)] max-w-none overflow-hidden p-0 sm:max-w-none">
+          <div className="flex h-full flex-col">
+            <DialogHeader className="border-b px-6 py-4">
+              <DialogTitle>Collections Workspace</DialogTitle>
+              <DialogDescription>
+                Group saved papers, attach note/tags, and reuse collection-scoped context.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid min-h-0 flex-1 gap-4 px-6 py-4 lg:grid-cols-[320px_1fr]">
+              <div className="min-h-0 min-w-0 space-y-4">
+                <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+                  <p className="text-sm font-medium">Create Collection</p>
+                  <Input
+                    placeholder="Collection name"
+                    value={newCollectionName}
+                    onChange={(event) => setNewCollectionName(event.target.value)}
+                    disabled={collectionsLoading}
+                  />
+                  <Textarea
+                    placeholder="Description (optional)"
+                    value={newCollectionDesc}
+                    onChange={(event) => setNewCollectionDesc(event.target.value)}
+                    disabled={collectionsLoading}
+                    className="min-h-[80px]"
+                  />
                   <Button
                     size="sm"
-                    variant="outline"
-                    disabled={!selectedCollectionId || selectedIds.size === 0 || collectionsLoading}
-                    onClick={addSelectedToCollection}
+                    onClick={createCollection}
+                    disabled={collectionsLoading || !newCollectionName.trim()}
                   >
-                    Add Selected ({selectedIds.size})
+                    Create Collection
                   </Button>
+                </div>
+
+                <div className="flex min-h-0 flex-col space-y-2 rounded-md border p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Collections</p>
+                    <Badge variant="outline">{collections.length}</Badge>
+                  </div>
+                  <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                    {collections.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No collections yet. Create one to start grouping papers.
+                      </p>
+                    ) : (
+                      collections.map((collection) => (
+                        <button
+                          key={collection.id}
+                          className={`min-w-0 w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                            selectedCollectionId === collection.id
+                              ? "border-primary bg-muted"
+                              : "hover:bg-muted/40"
+                          }`}
+                          onClick={() => {
+                            setSelectedCollectionId(collection.id)
+                            cancelEditingCollectionItem()
+                            loadCollectionItems(collection.id).catch(() => {})
+                          }}
+                          type="button"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="line-clamp-2 break-words text-sm font-medium">
+                                {collection.name}
+                              </p>
+                              {collection.description ? (
+                                <p className="mt-0.5 line-clamp-2 break-words text-xs text-muted-foreground">
+                                  {collection.description}
+                                </p>
+                              ) : null}
+                            </div>
+                            <Badge variant="secondary">{collection.item_count || 0}</Badge>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {collectionsMessage ? (
-                <p className="rounded-md border bg-muted/20 px-2 py-1 text-sm text-muted-foreground">
-                  {collectionsMessage}
-                </p>
-              ) : null}
+              <div className="flex min-h-0 min-w-0 flex-col space-y-3 rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-medium">
+                      {selectedCollection?.name || "Select a collection"}
+                    </p>
+                    {selectedCollection?.description ? (
+                      <p className="break-words text-xs text-muted-foreground">
+                        {selectedCollection.description}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">
+                      {selectedCollection?.item_count ?? collectionItems.length} papers
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!selectedCollectionId || selectedIds.size === 0 || collectionsLoading}
+                      onClick={addSelectedToCollection}
+                    >
+                      Add Selected ({selectedIds.size})
+                    </Button>
+                  </div>
+                </div>
 
-              {!selectedCollectionId ? (
-                <p className="text-sm text-muted-foreground">Choose a collection from the left.</p>
-              ) : collectionItems.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No items in this collection yet.</p>
-              ) : (
-                <div className="max-h-[520px] space-y-2 overflow-auto pr-1">
-                  {collectionItems.map((item) => {
-                    const isEditing = editingCollectionPaperId === item.paper_id
-                    return (
-                      <div key={item.id} className="rounded-md border p-3">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium">
-                              {item.paper?.title || `Paper #${item.paper_id}`}
-                            </p>
-                            {(item.paper?.authors || []).length > 0 ? (
-                              <p className="text-xs text-muted-foreground">
-                                {(item.paper?.authors || []).slice(0, 4).join(", ")}
+                {collectionsMessage ? (
+                  <p className="rounded-md border bg-muted/20 px-2 py-1 text-sm text-muted-foreground">
+                    {collectionsMessage}
+                  </p>
+                ) : null}
+
+                {!selectedCollectionId ? (
+                  <p className="text-sm text-muted-foreground">Choose a collection from the left.</p>
+                ) : collectionItems.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No items in this collection yet.</p>
+                ) : (
+                  <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                    {collectionItems.map((item) => {
+                      const isEditing = editingCollectionPaperId === item.paper_id
+                      return (
+                        <div key={item.id} className="min-w-0 rounded-md border p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="break-words text-sm font-medium">
+                                {item.paper?.title || `Paper #${item.paper_id}`}
                               </p>
-                            ) : null}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => startEditingCollectionItem(item)}
-                              disabled={collectionsLoading}
-                            >
-                              Edit note/tags
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => removeCollectionItem(item.paper_id).catch(() => {})}
-                              disabled={collectionsLoading}
-                            >
-                              Remove
-                            </Button>
-                          </div>
-                        </div>
-
-                        {isEditing ? (
-                          <div className="mt-3 space-y-2 rounded-md border bg-muted/20 p-2">
-                            <Textarea
-                              placeholder="Add a note for this paper..."
-                              value={editingCollectionNote}
-                              onChange={(event) => setEditingCollectionNote(event.target.value)}
-                              disabled={collectionsLoading}
-                              className="min-h-[80px]"
-                            />
-                            <Input
-                              placeholder="tags: theory, baseline, survey"
-                              value={editingCollectionTags}
-                              onChange={(event) => setEditingCollectionTags(event.target.value)}
-                              disabled={collectionsLoading}
-                            />
+                              {(item.paper?.authors || []).length > 0 ? (
+                                <p className="break-words text-xs text-muted-foreground">
+                                  {(item.paper?.authors || []).slice(0, 4).join(", ")}
+                                </p>
+                              ) : null}
+                            </div>
                             <div className="flex items-center gap-2">
                               <Button
                                 size="sm"
-                                onClick={() => saveEditingCollectionItem().catch(() => {})}
+                                variant="outline"
+                                onClick={() => startEditingCollectionItem(item)}
                                 disabled={collectionsLoading}
                               >
-                                Save
+                                Edit note/tags
                               </Button>
                               <Button
                                 size="sm"
-                                variant="outline"
-                                onClick={cancelEditingCollectionItem}
+                                variant="ghost"
+                                onClick={() => removeCollectionItem(item.paper_id).catch(() => {})}
                                 disabled={collectionsLoading}
                               >
-                                Cancel
+                                Remove
                               </Button>
                             </div>
                           </div>
-                        ) : (
-                          <div className="mt-2 space-y-1">
-                            <div className="flex flex-wrap gap-1">
-                              {(item.tags || []).length > 0 ? (
-                                (item.tags || []).map((tag) => (
-                                  <Badge key={tag} variant="secondary">
-                                    {tag}
-                                  </Badge>
-                                ))
-                              ) : (
-                                <span className="text-xs text-muted-foreground">No tags</span>
-                              )}
+
+                          {isEditing ? (
+                            <div className="mt-3 space-y-2 rounded-md border bg-muted/20 p-2">
+                              <Textarea
+                                placeholder="Add a note for this paper..."
+                                value={editingCollectionNote}
+                                onChange={(event) => setEditingCollectionNote(event.target.value)}
+                                disabled={collectionsLoading}
+                                className="min-h-[80px]"
+                              />
+                              <Input
+                                placeholder="tags: theory, baseline, survey"
+                                value={editingCollectionTags}
+                                onChange={(event) => setEditingCollectionTags(event.target.value)}
+                                disabled={collectionsLoading}
+                              />
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => saveEditingCollectionItem().catch(() => {})}
+                                  disabled={collectionsLoading}
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={cancelEditingCollectionItem}
+                                  disabled={collectionsLoading}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                              {item.note?.trim() ? item.note : "No note yet."}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+                          ) : (
+                            <div className="mt-2 space-y-1">
+                              <div className="flex flex-wrap gap-1">
+                                {(item.tags || []).length > 0 ? (
+                                  (item.tags || []).map((tag) => (
+                                    <Badge key={tag} variant="secondary">
+                                      {tag}
+                                    </Badge>
+                                  ))
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">No tags</span>
+                                )}
+                              </div>
+                              <p className="break-words text-xs text-muted-foreground">
+                                {item.note?.trim() ? item.note : "No note yet."}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </DialogContent>
