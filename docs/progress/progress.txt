@@ -149,3 +149,35 @@ Format:
 - Next:
   - Add secure per-user integration settings for Zotero credentials and sync presets.
   - Start issue #125/#126 implementation (seed expansion + graph timeline UX).
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Implemented issue #125 seed-based discovery backend: `POST /api/research/discovery/seed` with S2/OpenAlex expansion (related/cited/citing/coauthor), graph payload, and optional personalization rerank.
+  - Added OpenAlex connector (`openalex_connector.py`) for work resolving and related/referenced/citing expansion.
+  - Implemented issue #126 UI: new `DiscoveryGraphWorkspace` in Research page with seed input, edge filters, graph rendering, ranked explanations, and one-click save to library.
+  - Implemented issue #127 collections backend + UI:
+    - APIs for create/list/update collections and collection items CRUD.
+    - Store/model support for collection and collection-item persistence.
+    - Saved Papers Collections workspace with create/add/edit/remove flows.
+  - Added Next.js proxy routes for discovery seed and collections endpoints.
+  - Added unit tests for OpenAlex connector and discovery/collections routes.
+  - Fixed collections dialog state issue found during Playwright E2E: reopening dialog now auto-loads selected collection items.
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py
+  - python -m isort src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py
+  - pytest -q -p no:capture tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - (cd web && npx eslint src/components/research/ResearchPageNew.tsx src/components/research/DiscoveryGraphWorkspace.tsx src/components/research/SavedPapersList.tsx src/components/research/TopicWorkflowDashboard.tsx src/app/api/research/discovery/seed/route.ts src/app/api/research/collections/route.ts src/app/api/research/collections/[collectionId]/route.ts src/app/api/research/collections/[collectionId]/items/route.ts src/app/api/research/collections/[collectionId]/items/[paperId]/route.ts)
+  - (cd web && npx tsc --noEmit)
+  - Playwright MCP smoke:
+    - `/research`: search -> discovery run -> discovery save (`POST /api/research/papers/feedback` 200)
+    - `/papers`: collections create -> add selected -> edit note/tags -> remove item (all related API calls 200)
+- Risks/Notes:
+  - Discovery quality depends on external source coverage and can return off-topic related papers for broad DOI seeds.
+  - Collection note/tag editing currently uses browser prompts; can be upgraded to inline form UX later.
+- Next:
+  - Implement #128 timeline/temporal controls and graph interactions (zoom/layout/time slicing).

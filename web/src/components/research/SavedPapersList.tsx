@@ -100,6 +100,24 @@ type ZoteroPushResponse = {
   errors?: string[]
 }
 
+type CollectionSummary = {
+  id: number
+  name: string
+  description?: string
+  item_count?: number
+}
+
+type CollectionItem = {
+  id: number
+  paper_id: number
+  note?: string
+  tags?: string[]
+  paper?: {
+    title?: string
+    authors?: string[]
+  }
+}
+
 const PAGE_SIZE = 20
 const SORT_OPTIONS: Array<{ value: SavedPaperSort; label: string }> = [
   { value: "saved_at", label: "Saved Time" },
@@ -156,6 +174,16 @@ export default function SavedPapersList() {
   const [zoteroDryRun, setZoteroDryRun] = useState(true)
   const [zoteroTrackName, setZoteroTrackName] = useState("")
   const [zoteroResult, setZoteroResult] = useState<string | null>(null)
+
+  // Collections state
+  const [collectionsOpen, setCollectionsOpen] = useState(false)
+  const [collectionsLoading, setCollectionsLoading] = useState(false)
+  const [collections, setCollections] = useState<CollectionSummary[]>([])
+  const [collectionItems, setCollectionItems] = useState<CollectionItem[]>([])
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null)
+  const [newCollectionName, setNewCollectionName] = useState("")
+  const [newCollectionDesc, setNewCollectionDesc] = useState("")
+  const [collectionsMessage, setCollectionsMessage] = useState<string | null>(null)
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -459,6 +487,168 @@ export default function SavedPapersList() {
     zoteroTrackName,
   ])
 
+  const loadCollections = useCallback(async () => {
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const qs = new URLSearchParams({ user_id: "default", limit: "200" })
+      if (selectedTrackId) qs.set("track_id", String(selectedTrackId))
+      const res = await fetch(`/api/research/collections?${qs.toString()}`, { cache: "no-store" })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const payload = await res.json()
+      const rows = (payload.items || []) as CollectionSummary[]
+      setCollections(rows)
+      const nextSelectedId =
+        rows.find((row) => row.id === selectedCollectionId)?.id ?? rows[0]?.id ?? null
+      setSelectedCollectionId(nextSelectedId)
+      if (!nextSelectedId) {
+        setCollectionItems([])
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Failed to load collections: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [selectedCollectionId, selectedTrackId])
+
+  const loadCollectionItems = useCallback(async (collectionId: number) => {
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const qs = new URLSearchParams({ user_id: "default", limit: "500" })
+      const res = await fetch(`/api/research/collections/${collectionId}/items?${qs.toString()}`, {
+        cache: "no-store",
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const payload = await res.json()
+      setCollectionItems((payload.items || []) as CollectionItem[])
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Failed to load collection items: ${detail}`)
+      setCollectionItems([])
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [])
+
+  const createCollection = useCallback(async () => {
+    if (!newCollectionName.trim()) return
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const res = await fetch("/api/research/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          name: newCollectionName.trim(),
+          description: newCollectionDesc.trim(),
+          track_id: selectedTrackId ?? undefined,
+        }),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      setNewCollectionName("")
+      setNewCollectionDesc("")
+      await loadCollections()
+      setCollectionsMessage("Collection created.")
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Create failed: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [loadCollections, newCollectionDesc, newCollectionName, selectedTrackId])
+
+  const addSelectedToCollection = useCallback(async () => {
+    if (!selectedCollectionId || selectedIds.size === 0) return
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      for (const paperId of selectedIds) {
+        await fetch(`/api/research/collections/${selectedCollectionId}/items`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: "default",
+            paper_id: String(paperId),
+            note: "",
+            tags: [],
+          }),
+        })
+      }
+      await loadCollectionItems(selectedCollectionId)
+      await loadCollections()
+      setCollectionsMessage(`Added ${selectedIds.size} papers to collection.`)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Add failed: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [loadCollectionItems, loadCollections, selectedCollectionId, selectedIds])
+
+  const saveCollectionItemMeta = useCallback(
+    async (item: CollectionItem, note: string, tagsRaw: string) => {
+      if (!selectedCollectionId) return
+      setCollectionsLoading(true)
+      setCollectionsMessage(null)
+      try {
+        const tags = tagsRaw.split(",").map((tag) => tag.trim()).filter(Boolean)
+        const res = await fetch(
+          `/api/research/collections/${selectedCollectionId}/items/${item.paper_id}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              user_id: "default",
+              note,
+              tags,
+            }),
+          },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        await loadCollectionItems(selectedCollectionId)
+        setCollectionsMessage("Note/tags updated.")
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        setCollectionsMessage(`Update failed: ${detail}`)
+      } finally {
+        setCollectionsLoading(false)
+      }
+    },
+    [loadCollectionItems, selectedCollectionId],
+  )
+
+  const removeCollectionItem = useCallback(
+    async (paperId: number) => {
+      if (!selectedCollectionId) return
+      setCollectionsLoading(true)
+      setCollectionsMessage(null)
+      try {
+        const qs = new URLSearchParams({ user_id: "default" })
+        const res = await fetch(
+          `/api/research/collections/${selectedCollectionId}/items/${paperId}?${qs.toString()}`,
+          { method: "DELETE" },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        await loadCollectionItems(selectedCollectionId)
+        await loadCollections()
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        setCollectionsMessage(`Remove failed: ${detail}`)
+      } finally {
+        setCollectionsLoading(false)
+      }
+    },
+    [loadCollectionItems, loadCollections, selectedCollectionId],
+  )
+
+  useEffect(() => {
+    if (!collectionsOpen || !selectedCollectionId) return
+    loadCollectionItems(selectedCollectionId).catch(() => {})
+  }, [collectionsOpen, selectedCollectionId, loadCollectionItems])
+
   return (
     <Card>
       <CardHeader className="space-y-3">
@@ -524,6 +714,17 @@ export default function SavedPapersList() {
             >
               <FileText className="mr-1 h-4 w-4" />
               Related Work
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => {
+                setCollectionsOpen(true)
+                loadCollections().catch(() => {})
+              }}
+            >
+              Collections
             </Button>
             <Button
               variant="outline"
@@ -687,6 +888,131 @@ export default function SavedPapersList() {
           </>
         )}
       </CardContent>
+
+      <Dialog open={collectionsOpen} onOpenChange={setCollectionsOpen}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Collections Workspace</DialogTitle>
+            <DialogDescription>
+              Group saved papers, attach note/tags, and reuse collection-scoped context.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 md:grid-cols-[280px_1fr]">
+            <div className="space-y-3 rounded-md border p-3">
+              <p className="text-sm font-medium">Create Collection</p>
+              <Input
+                placeholder="Collection name"
+                value={newCollectionName}
+                onChange={(event) => setNewCollectionName(event.target.value)}
+                disabled={collectionsLoading}
+              />
+              <Input
+                placeholder="Description (optional)"
+                value={newCollectionDesc}
+                onChange={(event) => setNewCollectionDesc(event.target.value)}
+                disabled={collectionsLoading}
+              />
+              <Button
+                size="sm"
+                onClick={createCollection}
+                disabled={collectionsLoading || !newCollectionName.trim()}
+              >
+                Create
+              </Button>
+
+              <div className="pt-2">
+                <p className="mb-2 text-sm font-medium">Collections</p>
+                <div className="space-y-1">
+                  {collections.map((collection) => (
+                    <button
+                      key={collection.id}
+                      className={`w-full rounded-md border px-2 py-1.5 text-left text-sm ${
+                        selectedCollectionId === collection.id ? "border-primary bg-muted" : ""
+                      }`}
+                      onClick={() => {
+                        setSelectedCollectionId(collection.id)
+                        loadCollectionItems(collection.id).catch(() => {})
+                      }}
+                      type="button"
+                    >
+                      <div className="font-medium">{collection.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {collection.item_count || 0} papers
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">
+                  {selectedCollectionId
+                    ? collections.find((item) => item.id === selectedCollectionId)?.name || "Collection"
+                    : "Select a collection"}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!selectedCollectionId || selectedIds.size === 0 || collectionsLoading}
+                  onClick={addSelectedToCollection}
+                >
+                  Add Selected ({selectedIds.size})
+                </Button>
+              </div>
+
+              {collectionsMessage ? (
+                <p className="text-sm text-muted-foreground">{collectionsMessage}</p>
+              ) : null}
+
+              {!selectedCollectionId ? (
+                <p className="text-sm text-muted-foreground">Choose a collection from the left.</p>
+              ) : collectionItems.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No items in this collection.</p>
+              ) : (
+                <div className="space-y-2">
+                  {collectionItems.map((item) => (
+                    <div key={item.id} className="rounded-md border p-2">
+                      <p className="text-sm font-medium">{item.paper?.title || `Paper #${item.paper_id}`}</p>
+                      <p className="text-xs text-muted-foreground">
+                        tags: {(item.tags || []).join(", ") || "-"}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        note: {item.note || "-"}
+                      </p>
+                      <div className="mt-2 flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const nextNote = window.prompt("Update note", item.note || "")
+                            if (nextNote === null) return
+                            const nextTags = window.prompt("Update tags (comma separated)", (item.tags || []).join(", "))
+                            if (nextTags === null) return
+                            saveCollectionItemMeta(item, nextNote, nextTags).catch(() => {})
+                          }}
+                          disabled={collectionsLoading}
+                        >
+                          Edit note/tags
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => removeCollectionItem(item.paper_id).catch(() => {})}
+                          disabled={collectionsLoading}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="max-w-2xl">

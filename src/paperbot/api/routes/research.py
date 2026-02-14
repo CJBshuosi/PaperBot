@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import re
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import Response
@@ -37,6 +37,32 @@ _anchor_service: Optional["AnchorService"] = None
 _subscription_service: Optional["SubscriptionService"] = None
 
 ENABLE_ANCHOR_AUTHORS = os.getenv("PAPERBOT_ENABLE_ANCHOR_AUTHORS", "true").lower() == "true"
+
+_DISCOVERY_STOPWORDS: Set[str] = {
+    "about",
+    "across",
+    "after",
+    "also",
+    "analysis",
+    "approach",
+    "based",
+    "between",
+    "beyond",
+    "dataset",
+    "from",
+    "into",
+    "method",
+    "methods",
+    "model",
+    "models",
+    "paper",
+    "study",
+    "their",
+    "these",
+    "this",
+    "using",
+    "with",
+}
 
 _DEADLINE_RADAR_DATA: List[Dict[str, Any]] = [
     {
@@ -1021,6 +1047,71 @@ class SavedPapersResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class DiscoverySeedRequest(BaseModel):
+    user_id: str = "default"
+    track_id: Optional[int] = None
+    seed_type: str = Field(..., pattern="^(doi|arxiv|openalex|semantic_scholar|author)$")
+    seed_id: str = Field(..., min_length=1)
+    limit: int = Field(default=30, ge=1, le=200)
+    include_related: bool = True
+    include_cited: bool = True
+    include_citing: bool = True
+    include_coauthor: bool = True
+    personalized: bool = True
+    year_from: Optional[int] = Field(default=None, ge=1900, le=2100)
+    year_to: Optional[int] = Field(default=None, ge=1900, le=2100)
+
+
+class DiscoverySeedResponse(BaseModel):
+    seed: Dict[str, Any]
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
+    items: List[Dict[str, Any]]
+    stats: Dict[str, Any]
+
+
+class PaperCollectionCreateRequest(BaseModel):
+    user_id: str = "default"
+    name: str = Field(..., min_length=1, max_length=128)
+    description: str = ""
+    track_id: Optional[int] = Field(default=None, ge=1)
+
+
+class PaperCollectionUpdateRequest(BaseModel):
+    user_id: str = "default"
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    description: Optional[str] = None
+    archived: Optional[bool] = None
+
+
+class PaperCollectionItemUpsertRequest(BaseModel):
+    user_id: str = "default"
+    paper_id: str = Field(..., min_length=1)
+    note: Optional[str] = ""
+    tags: Optional[List[str]] = []
+
+
+class PaperCollectionItemPatchRequest(BaseModel):
+    user_id: str = "default"
+    note: Optional[str] = ""
+    tags: Optional[List[str]] = []
+
+
+class PaperCollectionListResponse(BaseModel):
+    user_id: str
+    items: List[Dict[str, Any]]
+
+
+class PaperCollectionResponse(BaseModel):
+    collection: Dict[str, Any]
+
+
+class PaperCollectionItemsResponse(BaseModel):
+    user_id: str
+    collection_id: int
+    items: List[Dict[str, Any]]
+
+
 class TrackFeedResponse(BaseModel):
     user_id: str
     track_id: int
@@ -1081,16 +1172,372 @@ def update_paper_status(paper_id: str, req: PaperReadingStatusRequest):
 def list_saved_papers(
     user_id: str = "default",
     track_id: Optional[int] = None,
+    collection_id: Optional[int] = None,
     sort_by: str = Query("saved_at"),
     limit: int = Query(200, ge=1, le=1000),
 ):
     items = _research_store.list_saved_papers(
         user_id=user_id,
         track_id=track_id,
+        collection_id=collection_id,
         sort_by=sort_by,
         limit=limit,
     )
     return SavedPapersResponse(user_id=user_id, items=items)
+
+
+@router.post("/research/discovery/seed", response_model=DiscoverySeedResponse)
+async def discover_from_seed(req: DiscoverySeedRequest):
+    if req.year_from and req.year_to and req.year_from > req.year_to:
+        raise HTTPException(status_code=400, detail="year_from must be <= year_to")
+
+    from paperbot.infrastructure.connectors.openalex_connector import OpenAlexConnector
+
+    client = SemanticScholarClient(
+        api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or os.getenv("S2_API_KEY")
+    )
+    openalex = OpenAlexConnector()
+    seed_node_id = f"seed:{req.seed_type}:{req.seed_id}"
+    candidate_map: Dict[str, Dict[str, Any]] = {}
+    edge_map: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    seed_info: Dict[str, Any] = {"seed_type": req.seed_type, "seed_id": req.seed_id}
+
+    try:
+        if req.seed_type == "author":
+            author = await client.get_author(
+                req.seed_id,
+                fields=["name", "paperCount", "citationCount", "hIndex", "affiliations"],
+            )
+            papers = await client.get_author_papers(
+                req.seed_id,
+                limit=max(20, req.limit * 2),
+                fields=[
+                    "title",
+                    "abstract",
+                    "year",
+                    "citationCount",
+                    "authors",
+                    "venue",
+                    "url",
+                    "paperId",
+                    "externalIds",
+                ],
+            )
+            seed_info["name"] = (author or {}).get("name") or req.seed_id
+            seed_info["paper_count"] = int((author or {}).get("paperCount") or 0)
+            seed_info["citation_count"] = int((author or {}).get("citationCount") or 0)
+
+            if req.include_coauthor:
+                for row in papers:
+                    paper = _normalize_discovery_candidate(row, source="semantic_scholar")
+                    _add_discovery_candidate(
+                        candidate_map,
+                        edge_map,
+                        seed_node_id=seed_node_id,
+                        edge_type="coauthor",
+                        paper=paper,
+                    )
+        else:
+            seed_s2 = _build_s2_seed_id(req.seed_type, req.seed_id)
+            seed_paper = await client.get_paper(
+                seed_s2,
+                fields=[
+                    "paperId",
+                    "title",
+                    "abstract",
+                    "year",
+                    "citationCount",
+                    "authors",
+                    "venue",
+                    "url",
+                    "externalIds",
+                    "references",
+                    "citations",
+                ],
+            )
+            if seed_paper:
+                seed_info.update(
+                    {
+                        "title": seed_paper.get("title") or req.seed_id,
+                        "year": seed_paper.get("year"),
+                        "citation_count": int(seed_paper.get("citationCount") or 0),
+                    }
+                )
+                if req.include_cited:
+                    for row in seed_paper.get("references") or []:
+                        wrapped = row.get("citedPaper") if isinstance(row, dict) else row
+                        paper = _normalize_discovery_candidate(
+                            wrapped,
+                            source="semantic_scholar",
+                        )
+                        _add_discovery_candidate(
+                            candidate_map,
+                            edge_map,
+                            seed_node_id=seed_node_id,
+                            edge_type="cited",
+                            paper=paper,
+                        )
+                if req.include_citing:
+                    for row in seed_paper.get("citations") or []:
+                        wrapped = row.get("citingPaper") if isinstance(row, dict) else row
+                        paper = _normalize_discovery_candidate(
+                            wrapped,
+                            source="semantic_scholar",
+                        )
+                        _add_discovery_candidate(
+                            candidate_map,
+                            edge_map,
+                            seed_node_id=seed_node_id,
+                            edge_type="citing",
+                            paper=paper,
+                        )
+
+            try:
+                openalex_work = openalex.resolve_work(seed_type=req.seed_type, seed_id=req.seed_id)
+            except Exception:
+                openalex_work = None
+            if openalex_work:
+                if "title" not in seed_info and openalex_work.get("title"):
+                    seed_info["title"] = openalex_work.get("title")
+                if "year" not in seed_info and openalex_work.get("publication_year"):
+                    seed_info["year"] = openalex_work.get("publication_year")
+                if req.include_related:
+                    try:
+                        related_rows = openalex.get_related_works(openalex_work, limit=req.limit)
+                    except Exception:
+                        related_rows = []
+                    for row in related_rows:
+                        paper = _normalize_discovery_candidate(row, source="openalex")
+                        _add_discovery_candidate(
+                            candidate_map,
+                            edge_map,
+                            seed_node_id=seed_node_id,
+                            edge_type="related",
+                            paper=paper,
+                        )
+                if req.include_cited:
+                    try:
+                        cited_rows = openalex.get_referenced_works(openalex_work, limit=req.limit)
+                    except Exception:
+                        cited_rows = []
+                    for row in cited_rows:
+                        paper = _normalize_discovery_candidate(row, source="openalex")
+                        _add_discovery_candidate(
+                            candidate_map,
+                            edge_map,
+                            seed_node_id=seed_node_id,
+                            edge_type="cited",
+                            paper=paper,
+                        )
+                if req.include_citing:
+                    try:
+                        citing_rows = openalex.get_citing_works(openalex_work, limit=req.limit)
+                    except Exception:
+                        citing_rows = []
+                    for row in citing_rows:
+                        paper = _normalize_discovery_candidate(row, source="openalex")
+                        _add_discovery_candidate(
+                            candidate_map,
+                            edge_map,
+                            seed_node_id=seed_node_id,
+                            edge_type="citing",
+                            paper=paper,
+                        )
+    finally:
+        await client.close()
+
+    candidates = list(candidate_map.values())
+    filtered = _filter_discovery_candidates(
+        candidates,
+        year_from=req.year_from,
+        year_to=req.year_to,
+    )
+    feedback_profile = (
+        _build_feedback_profile(user_id=req.user_id, track_id=req.track_id)
+        if req.personalized
+        else {}
+    )
+    scored = _rank_discovery_candidates(
+        filtered,
+        feedback_profile=feedback_profile,
+        limit=req.limit,
+    )
+
+    scored_keys = {str(item.get("_candidate_key") or "") for item in scored}
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": seed_node_id,
+            "type": "seed",
+            "label": seed_info.get("title") or seed_info.get("name") or req.seed_id,
+            "year": seed_info.get("year"),
+            "seed_type": req.seed_type,
+        }
+    ]
+    for row in scored:
+        nodes.append(
+            {
+                "id": str(row.get("_candidate_key") or ""),
+                "type": "paper",
+                "label": str(row.get("paper", {}).get("title") or "Untitled"),
+                "year": row.get("paper", {}).get("year"),
+                "edge_types": row.get("edge_types") or [],
+                "score": row.get("score"),
+            }
+        )
+
+    edges: List[Dict[str, Any]] = []
+    for _, payload in edge_map.items():
+        candidate_key = str(payload.get("target_key") or "")
+        if candidate_key not in scored_keys:
+            continue
+        edges.append(payload)
+
+    items: List[Dict[str, Any]] = []
+    for row in scored:
+        items.append(
+            {
+                "candidate_key": str(row.get("_candidate_key") or ""),
+                "paper": row.get("paper"),
+                "edge_types": row.get("edge_types") or [],
+                "score": row.get("score"),
+                "why_this_paper": row.get("why_this_paper") or [],
+            }
+        )
+
+    relation_counts: Dict[str, int] = defaultdict(int)
+    for row in items:
+        for relation in row.get("edge_types") or []:
+            relation_counts[str(relation)] += 1
+
+    return DiscoverySeedResponse(
+        seed=seed_info,
+        nodes=nodes,
+        edges=edges,
+        items=items,
+        stats={
+            "candidate_count": len(candidates),
+            "filtered_count": len(filtered),
+            "returned_count": len(items),
+            "relation_counts": dict(relation_counts),
+            "personalized": bool(req.personalized),
+        },
+    )
+
+
+@router.post("/research/collections", response_model=PaperCollectionResponse)
+def create_collection(req: PaperCollectionCreateRequest):
+    try:
+        collection = _research_store.create_collection(
+            user_id=req.user_id,
+            name=req.name,
+            description=req.description,
+            track_id=req.track_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PaperCollectionResponse(collection=collection)
+
+
+@router.get("/research/collections", response_model=PaperCollectionListResponse)
+def list_collections(
+    user_id: str = "default",
+    include_archived: bool = Query(False),
+    track_id: Optional[int] = Query(default=None),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    items = _research_store.list_collections(
+        user_id=user_id,
+        include_archived=include_archived,
+        track_id=track_id,
+        limit=limit,
+    )
+    return PaperCollectionListResponse(user_id=user_id, items=items)
+
+
+@router.patch("/research/collections/{collection_id}", response_model=PaperCollectionResponse)
+def update_collection(collection_id: int, req: PaperCollectionUpdateRequest):
+    try:
+        collection = _research_store.update_collection(
+            user_id=req.user_id,
+            collection_id=collection_id,
+            name=req.name,
+            description=req.description,
+            archived=req.archived,
+        )
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Collection name already exists") from exc
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return PaperCollectionResponse(collection=collection)
+
+
+@router.get(
+    "/research/collections/{collection_id}/items",
+    response_model=PaperCollectionItemsResponse,
+)
+def list_collection_items(
+    collection_id: int,
+    user_id: str = "default",
+    limit: int = Query(500, ge=1, le=5000),
+):
+    items = _research_store.list_collection_items(
+        user_id=user_id,
+        collection_id=collection_id,
+        limit=limit,
+    )
+    return PaperCollectionItemsResponse(user_id=user_id, collection_id=collection_id, items=items)
+
+
+@router.post(
+    "/research/collections/{collection_id}/items",
+    response_model=PaperCollectionItemsResponse,
+)
+def upsert_collection_item(collection_id: int, req: PaperCollectionItemUpsertRequest):
+    item = _research_store.upsert_collection_item(
+        user_id=req.user_id,
+        collection_id=collection_id,
+        paper_id=req.paper_id,
+        note=req.note,
+        tags=req.tags,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="Collection or paper not found")
+    items = _research_store.list_collection_items(user_id=req.user_id, collection_id=collection_id)
+    return PaperCollectionItemsResponse(
+        user_id=req.user_id, collection_id=collection_id, items=items
+    )
+
+
+@router.patch(
+    "/research/collections/{collection_id}/items/{paper_id}",
+    response_model=PaperCollectionItemsResponse,
+)
+def patch_collection_item(collection_id: int, paper_id: str, req: PaperCollectionItemPatchRequest):
+    item = _research_store.upsert_collection_item(
+        user_id=req.user_id,
+        collection_id=collection_id,
+        paper_id=paper_id,
+        note=req.note,
+        tags=req.tags,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="Collection or paper not found")
+    items = _research_store.list_collection_items(user_id=req.user_id, collection_id=collection_id)
+    return PaperCollectionItemsResponse(
+        user_id=req.user_id, collection_id=collection_id, items=items
+    )
+
+
+@router.delete("/research/collections/{collection_id}/items/{paper_id}")
+def delete_collection_item(collection_id: int, paper_id: str, user_id: str = "default"):
+    ok = _research_store.remove_collection_item(
+        user_id=user_id,
+        collection_id=collection_id,
+        paper_id=paper_id,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Collection item not found")
+    return {"ok": True}
 
 
 @router.get("/research/tracks/{track_id}/feed", response_model=TrackFeedResponse)
@@ -2477,6 +2924,335 @@ async def scholar_trends(req: ScholarTrendsRequest):
 # ---------------------------------------------------------------------------
 # Paper export (BibTeX / RIS / Markdown)
 # ---------------------------------------------------------------------------
+
+
+def _build_s2_seed_id(seed_type: str, seed_id: str) -> str:
+    value = str(seed_id or "").strip()
+    kind = str(seed_type or "").strip().lower()
+    if kind == "doi":
+        doi = normalize_doi(value) or value
+        return f"DOI:{doi}"
+    if kind == "arxiv":
+        arxiv_id = normalize_arxiv_id(value) or value
+        return f"ARXIV:{arxiv_id}"
+    if kind == "semantic_scholar":
+        return value
+    if kind == "openalex":
+        return value
+    return value
+
+
+def _normalize_discovery_candidate(raw: Any, *, source: str) -> Dict[str, Any]:
+    row = raw if isinstance(raw, dict) else {}
+    external_ids = row.get("externalIds") if isinstance(row.get("externalIds"), dict) else {}
+    ids_raw = row.get("ids") if isinstance(row.get("ids"), dict) else {}
+    primary_location = (
+        row.get("primary_location") if isinstance(row.get("primary_location"), dict) else {}
+    )
+    publication_venue = (
+        row.get("publicationVenue") if isinstance(row.get("publicationVenue"), dict) else {}
+    )
+    host_venue = row.get("host_venue") if isinstance(row.get("host_venue"), dict) else {}
+    doi = normalize_doi(row.get("doi") or external_ids.get("DOI") or ids_raw.get("doi"))
+    arxiv_id = normalize_arxiv_id(
+        row.get("arxiv_id")
+        or external_ids.get("ArXiv")
+        or external_ids.get("ARXIV")
+        or ids_raw.get("arxiv")
+        or (
+            (row.get("locations") or [{}])[0].get("landing_page_url")
+            if isinstance(row.get("locations"), list) and row.get("locations")
+            else None
+        )
+        or row.get("url")
+    )
+    openalex_id = (
+        str(row.get("id") or "").split("/")[-1]
+        if str(row.get("id") or "").startswith("https://openalex.org/")
+        else str(row.get("openalex_id") or "").strip()
+    )
+    semantic_scholar_id = str(
+        row.get("paperId") or row.get("paper_id") or external_ids.get("CorpusId") or ""
+    ).strip()
+
+    title = str(row.get("title") or "").strip()
+    year_raw = row.get("year") or row.get("publication_year")
+    try:
+        year = int(year_raw) if year_raw is not None else None
+    except Exception:
+        year = None
+    citation_raw = row.get("citationCount") or row.get("cited_by_count") or 0
+    try:
+        citation_count = int(citation_raw or 0)
+    except Exception:
+        citation_count = 0
+
+    authors: List[str] = []
+    for author in row.get("authors") or row.get("authorships") or []:
+        if isinstance(author, dict):
+            name = str(
+                author.get("name")
+                or (author.get("author") or {}).get("display_name")
+                or author.get("display_name")
+                or ""
+            ).strip()
+            if name:
+                authors.append(name)
+        elif isinstance(author, str):
+            if author.strip():
+                authors.append(author.strip())
+
+    venue = str(
+        row.get("venue")
+        or publication_venue.get("name")
+        or host_venue.get("display_name")
+        or (
+            (primary_location.get("source") or {}).get("display_name")
+            if isinstance(primary_location.get("source"), dict)
+            else ""
+        )
+        or ""
+    ).strip()
+    url = str(
+        row.get("url")
+        or row.get("landing_page_url")
+        or primary_location.get("landing_page_url")
+        or ""
+    ).strip()
+
+    abstract = str(row.get("abstract") or row.get("abstract_inverted_index") or "").strip()
+    candidate: Dict[str, Any] = {
+        "title": title,
+        "authors": authors,
+        "year": year,
+        "venue": venue,
+        "citation_count": citation_count,
+        "url": url,
+        "abstract": abstract,
+        "doi": doi,
+        "arxiv_id": arxiv_id,
+        "openalex_id": openalex_id or None,
+        "semantic_scholar_id": semantic_scholar_id or None,
+        "source": source,
+    }
+    candidate["_candidate_key"] = _discovery_candidate_key(candidate)
+    return candidate
+
+
+def _discovery_candidate_key(candidate: Dict[str, Any]) -> str:
+    doi = normalize_doi(candidate.get("doi"))
+    if doi:
+        return f"doi:{doi}"
+    arxiv_id = normalize_arxiv_id(candidate.get("arxiv_id"))
+    if arxiv_id:
+        return f"arxiv:{arxiv_id.lower()}"
+    s2 = str(candidate.get("semantic_scholar_id") or "").strip()
+    if s2:
+        return f"s2:{s2}"
+    openalex_id = str(candidate.get("openalex_id") or "").strip()
+    if openalex_id:
+        return f"openalex:{openalex_id}"
+    title = re.sub(r"\s+", " ", str(candidate.get("title") or "").strip().lower())
+    year = str(candidate.get("year") or "")
+    if title:
+        return f"title:{title}|{year}"
+    return ""
+
+
+def _add_discovery_candidate(
+    candidate_map: Dict[str, Dict[str, Any]],
+    edge_map: Dict[Tuple[str, str, str], Dict[str, Any]],
+    *,
+    seed_node_id: str,
+    edge_type: str,
+    paper: Dict[str, Any],
+) -> None:
+    key = str(paper.get("_candidate_key") or "")
+    if not key:
+        return
+    if not str(paper.get("title") or "").strip():
+        return
+
+    row = candidate_map.get(key)
+    if row is None:
+        row = {
+            "_candidate_key": key,
+            "paper": paper,
+            "edge_types": set(),
+            "_source_set": set(),
+        }
+        candidate_map[key] = row
+    row["edge_types"].add(edge_type)
+    row["_source_set"].add(str(paper.get("source") or ""))
+
+    edge_key = (seed_node_id, key, edge_type)
+    edge_map[edge_key] = {
+        "source": seed_node_id,
+        "target": key,
+        "target_key": key,
+        "type": edge_type,
+        "weight": _edge_weight(edge_type),
+    }
+
+
+def _filter_discovery_candidates(
+    rows: List[Dict[str, Any]],
+    *,
+    year_from: Optional[int],
+    year_to: Optional[int],
+) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        year = row.get("paper", {}).get("year")
+        if year_from is not None and isinstance(year, int) and year < year_from:
+            continue
+        if year_to is not None and isinstance(year, int) and year > year_to:
+            continue
+        row["edge_types"] = sorted(list(row.get("edge_types") or []))
+        result.append(row)
+    return result
+
+
+def _edge_weight(edge_type: str) -> float:
+    return {
+        "related": 1.8,
+        "cited": 1.3,
+        "citing": 1.1,
+        "coauthor": 1.0,
+    }.get(str(edge_type or "").strip().lower(), 1.0)
+
+
+def _extract_profile_terms(text: str) -> List[str]:
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9\\-]{2,}", str(text or "").lower())
+    terms = []
+    for token in words:
+        if token in _DISCOVERY_STOPWORDS:
+            continue
+        terms.append(token)
+    return terms
+
+
+def _build_feedback_profile(user_id: str, track_id: Optional[int]) -> Dict[str, float]:
+    profile: Dict[str, float] = {}
+    action_weight = {
+        "save": 1.3,
+        "like": 1.0,
+        "cite": 1.1,
+        "dislike": -1.2,
+        "skip": -0.6,
+    }
+    limit = 400
+    feedback_rows: List[Dict[str, Any]]
+    if track_id is not None:
+        feedback_rows = _research_store.list_paper_feedback(
+            user_id=user_id,
+            track_id=int(track_id),
+            action=None,
+            limit=limit,
+        )
+    else:
+        feedback_rows = []
+        for track in _research_store.list_tracks(user_id=user_id, include_archived=False, limit=20):
+            feedback_rows.extend(
+                _research_store.list_paper_feedback(
+                    user_id=user_id,
+                    track_id=int(track.get("id") or 0),
+                    action=None,
+                    limit=100,
+                )
+            )
+            if len(feedback_rows) >= limit:
+                break
+        feedback_rows = feedback_rows[:limit]
+
+    paper_store = _get_paper_store()
+    for row in feedback_rows:
+        action = str(row.get("action") or "").strip().lower()
+        coeff = float(action_weight.get(action, 0.0))
+        if abs(coeff) < 1e-6:
+            continue
+        paper_ref_id = row.get("paper_ref_id")
+        if paper_ref_id is None:
+            continue
+        paper_model = paper_store.get_paper_by_source_id_any(str(paper_ref_id))
+        if paper_model is None:
+            continue
+        paper_text = " ".join(
+            [
+                str(paper_model.title or ""),
+                str(paper_model.venue or ""),
+                " ".join(paper_model.get_keywords() or []),
+                " ".join(paper_model.get_fields_of_study() or []),
+            ]
+        )
+        for term in _extract_profile_terms(paper_text):
+            profile[term] = profile.get(term, 0.0) + coeff
+
+    saved_rows = _research_store.list_saved_papers(user_id=user_id, track_id=track_id, limit=200)
+    for item in saved_rows:
+        paper = item.get("paper") or {}
+        paper_text = " ".join(
+            [
+                str(paper.get("title") or ""),
+                str(paper.get("venue") or ""),
+                " ".join(paper.get("keywords") or []),
+            ]
+        )
+        for term in _extract_profile_terms(paper_text):
+            profile[term] = profile.get(term, 0.0) + 0.5
+    return profile
+
+
+def _rank_discovery_candidates(
+    rows: List[Dict[str, Any]],
+    *,
+    feedback_profile: Dict[str, float],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    scored: List[Dict[str, Any]] = []
+    for row in rows:
+        paper = row.get("paper") or {}
+        edge_types = list(row.get("edge_types") or [])
+        base_score = sum(_edge_weight(edge) for edge in edge_types)
+        citation_score = min(float(paper.get("citation_count") or 0) / 500.0, 2.0)
+        text_blob = " ".join(
+            [
+                str(paper.get("title") or ""),
+                str(paper.get("abstract") or ""),
+                str(paper.get("venue") or ""),
+            ]
+        )
+        overlap_terms = []
+        personalization_score = 0.0
+        if feedback_profile:
+            for term in _extract_profile_terms(text_blob):
+                weight = float(feedback_profile.get(term, 0.0))
+                if abs(weight) > 1e-6:
+                    personalization_score += weight
+                    if weight > 0:
+                        overlap_terms.append(term)
+
+        why = [f"linked via {', '.join(edge_types)}"] if edge_types else []
+        if overlap_terms:
+            why.append("matches your profile: " + ", ".join(sorted(set(overlap_terms))[:3]))
+        score = round(base_score + citation_score + personalization_score * 0.2, 4)
+        scored.append(
+            {
+                **row,
+                "score": score,
+                "why_this_paper": why,
+            }
+        )
+
+    scored.sort(
+        key=lambda item: (
+            float(item.get("score") or 0.0),
+            int((item.get("paper") or {}).get("citation_count") or 0),
+            int((item.get("paper") or {}).get("year") or 0),
+        ),
+        reverse=True,
+    )
+    return scored[: max(1, int(limit))]
 
 
 def _find_track_by_name(*, user_id: str, track_name: str) -> Optional[Dict[str, Any]]:

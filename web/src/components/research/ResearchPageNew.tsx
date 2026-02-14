@@ -26,6 +26,7 @@ import { SearchBox } from "./SearchBox"
 import { TrackPills } from "./TrackPills"
 import { SearchResults } from "./SearchResults"
 import { MemoryTab } from "./MemoryTab"
+import DiscoveryGraphWorkspace from "./DiscoveryGraphWorkspace"
 import { CreateTrackModal } from "./CreateTrackModal"
 import { EditTrackModal } from "./EditTrackModal"
 import { ManageTracksModal } from "./ManageTracksModal"
@@ -397,11 +398,48 @@ export default function ResearchPageNew() {
       body.paper_venue = paper.venue
       body.paper_citation_count = paper.citation_count
       body.paper_url = paper.url
+      body.paper_source = paper.source || "semantic_scholar"
     }
 
     await fetchJson(`/api/research/papers/feedback`, {
       method: "POST",
       body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    })
+  }
+
+  async function handleDiscoverySave(paper: {
+    paper_id: string
+    title: string
+    abstract?: string
+    authors?: string[]
+    year?: number
+    venue?: string
+    citation_count?: number
+    url?: string
+    source?: string
+  }) {
+    await fetchJson(`/api/research/papers/feedback`, {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: userId,
+        track_id: activeTrackId,
+        paper_id: paper.paper_id,
+        action: "save",
+        weight: 1.0,
+        metadata: {
+          import_source: "discovery_graph",
+          anchor_mode: anchorPersonalized ? "personalized" : "global",
+        },
+        paper_title: paper.title,
+        paper_abstract: paper.abstract || "",
+        paper_authors: paper.authors || [],
+        paper_year: paper.year,
+        paper_venue: paper.venue,
+        paper_citation_count: paper.citation_count || 0,
+        paper_url: paper.url || "",
+        paper_source: paper.source || "semantic_scholar",
+      }),
       headers: { "Content-Type": "application/json" },
     })
   }
@@ -563,17 +601,24 @@ export default function ResearchPageNew() {
 
         {/* Search Results - only shown after search */}
         {hasSearched && (
-          <SearchResults
-            papers={papers}
-            reasons={reasons}
-            isSearching={isSearching}
-            hasSearched={hasSearched}
-            selectedSources={searchSources}
-            onToggleSource={toggleSearchSource}
-            onLike={(paperId, rank, paper) => handleFeedback(paperId, "like", rank, paper)}
-            onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
-            onDislike={(paperId, rank, paper) => handleFeedback(paperId, "dislike", rank, paper)}
-          />
+          <>
+            <SearchResults
+              papers={papers}
+              reasons={reasons}
+              isSearching={isSearching}
+              hasSearched={hasSearched}
+              selectedSources={searchSources}
+              onToggleSource={toggleSearchSource}
+              onLike={(paperId, rank, paper) => handleFeedback(paperId, "like", rank, paper)}
+              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
+              onDislike={(paperId, rank, paper) => handleFeedback(paperId, "dislike", rank, paper)}
+            />
+            <DiscoveryGraphWorkspace
+              userId={userId}
+              trackId={activeTrackId}
+              onSavePaper={handleDiscoverySave}
+            />
+          </>
         )}
 
         {/* Memory Sheet Drawer */}
