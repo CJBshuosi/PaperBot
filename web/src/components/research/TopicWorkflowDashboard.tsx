@@ -244,14 +244,14 @@ const PHASE_LABELS: Record<StreamPhase, string> = {
 const PHASE_ORDER: StreamPhase[] = ["search", "build", "llm", "insight", "judge", "filter", "save", "notify", "done"]
 
 function useElapsed(startTime: number | null) {
-  const [elapsed, setElapsed] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    if (!startTime) { setElapsed(0); return }
-    setElapsed(Math.round((Date.now() - startTime) / 1000))
-    const id = setInterval(() => setElapsed(Math.round((Date.now() - startTime) / 1000)), 1000)
+    if (!startTime) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [startTime])
-  return elapsed
+  if (!startTime) return 0
+  return Math.max(0, Math.round((now - startTime) / 1000))
 }
 
 function StreamProgressCard({
@@ -638,14 +638,24 @@ function NewsletterSubscribeWidget() {
   const [message, setMessage] = useState("")
   const [subCount, setSubCount] = useState<{ active: number; total: number } | null>(null)
 
-  const fetchCount = useCallback(async () => {
+  const fetchCount = useCallback(async (): Promise<{ active: number; total: number } | null> => {
     try {
       const res = await fetch("/api/newsletter/subscribers")
-      if (res.ok) setSubCount(await res.json())
+      if (!res.ok) return null
+      return await res.json()
     } catch { /* ignore */ }
+    return null
   }, [])
 
-  useEffect(() => { fetchCount() }, [fetchCount])
+  useEffect(() => {
+    let cancelled = false
+    void fetchCount().then((data) => {
+      if (!cancelled && data) setSubCount(data)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [fetchCount])
 
   async function handleSubscribe() {
     if (!email.trim()) return
@@ -659,7 +669,8 @@ function NewsletterSubscribeWidget() {
       const data = await res.json()
       if (res.ok) {
         setStatus("ok"); setMessage(data.message || "Subscribed!"); setEmail("")
-        fetchCount()
+        const latest = await fetchCount()
+        if (latest) setSubCount(latest)
       } else {
         setStatus("error"); setMessage(data.detail || "Failed to subscribe")
       }
@@ -1915,7 +1926,7 @@ export default function TopicWorkflowDashboard({ initialQueries }: TopicWorkflow
                       </table>
                     </ScrollArea>
                   ) : (
-                    <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">Click "Find Repos" to enrich papers with code repositories.</div>
+                    <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">Click &quot;Find Repos&quot; to enrich papers with code repositories.</div>
                   )}
                 </CardContent>
               </Card>
