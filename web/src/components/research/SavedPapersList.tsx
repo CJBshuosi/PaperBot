@@ -59,10 +59,11 @@ type SavedPaperItem = {
 }
 
 type SavedPapersResponse = {
-  papers: SavedPaperItem[]
-  total: number
-  limit: number
-  offset: number
+  items?: SavedPaperItem[]
+  papers?: SavedPaperItem[]
+  total?: number
+  limit?: number
+  offset?: number
 }
 
 type UpdatingAction = "toggleRead" | "unsave"
@@ -133,14 +134,13 @@ export default function SavedPapersList() {
     try {
       const qs = new URLSearchParams({
         sort_by: sortBy,
-        sort_order: "desc",
         limit: "500",
         user_id: "default",
       })
       if (selectedTrackId) {
         qs.set("track_id", String(selectedTrackId))
       }
-      const res = await fetch(`/api/papers/library?${qs.toString()}`, { cache: "no-store" })
+      const res = await fetch(`/api/research/papers/saved?${qs.toString()}`, { cache: "no-store" })
       if (!res.ok) {
         const errorText = await res.text()
         // Avoid showing raw HTML in error messages
@@ -150,7 +150,7 @@ export default function SavedPapersList() {
         throw new Error(errorText)
       }
       const payload = (await res.json()) as SavedPapersResponse
-      setItems(payload.papers || [])
+      setItems(payload.items || payload.papers || [])
       setPage(1)
       setSelectedIds(new Set()) // Clear selection on reload
     } catch (err) {
@@ -231,16 +231,13 @@ export default function SavedPapersList() {
       setError(null)
       const newStatus = currentStatus === "read" ? "reading" : "read"
       try {
-        // Use the paper feedback endpoint with action to track reading status
-        const res = await fetch(`/api/research/papers/feedback`, {
+        // Persist reading status so refreshes keep the latest state
+        const res = await fetch(`/api/research/papers/${paperId}/status`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             user_id: "default",
-            paper_id: String(paperId),
-            action: newStatus,
-            weight: 1.0,
-            metadata: { reading_status: newStatus },
+            status: newStatus,
           }),
         })
 
