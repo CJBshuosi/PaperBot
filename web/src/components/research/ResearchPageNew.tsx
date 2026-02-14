@@ -109,6 +109,7 @@ export default function ResearchPageNew() {
   const papers = contextPack?.paper_recommendations || []
   const reasons = contextPack?.paper_recommendation_reasons || {}
   const routeTrackId = Number(searchParams.get("track_id") || 0)
+  const routeQuery = searchParams.get("query")?.trim() || ""
 
   // Load tracks on mount
   useEffect(() => {
@@ -123,6 +124,12 @@ export default function ResearchPageNew() {
     activateTrack(routeTrackId).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeTrackId, tracks, activeTrackId])
+
+  useEffect(() => {
+    if (!routeQuery || hasSearched) return
+    if (query === routeQuery) return
+    setQuery(routeQuery)
+  }, [routeQuery, query, hasSearched])
 
   async function refreshTracks(): Promise<number | null> {
     const data = await fetchJson<{ tracks: Track[] }>(
@@ -228,6 +235,15 @@ export default function ResearchPageNew() {
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchSources, anchorPersonalized, yearFrom, yearTo])
+
+  // If the page is opened with a query parameter, run it once automatically.
+  useEffect(() => {
+    if (!routeQuery || hasSearched || isSearching || loading) return
+    if (query.trim() !== routeQuery) return
+    if (routeTrackId && Number.isFinite(routeTrackId) && activeTrackId !== routeTrackId) return
+    handleSearch().catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeQuery, query, hasSearched, isSearching, loading, routeTrackId, activeTrackId])
 
   async function handleCreateTrack(data: {
     name: string
