@@ -31,6 +31,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -392,6 +393,9 @@ function PaperDetailDialog({ item, open, onClose }: { item: SearchItem | null; o
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-base leading-snug pr-8">{item.title}</DialogTitle>
+          <DialogDescription className="sr-only">
+            Paper metadata, matched queries, and judge scoring details.
+          </DialogDescription>
         </DialogHeader>
         {item.url && <a href={item.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">{item.url}</a>}
         <div className="flex flex-wrap gap-1.5 mt-1">
