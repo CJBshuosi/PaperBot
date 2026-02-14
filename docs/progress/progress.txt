@@ -120,3 +120,91 @@ Format:
   - FastAPI backend is still expected to run on long-lived compute (Render/Railway/Fly) for SSE/worker reliability.
 - Next:
   - After first production deploy, fill `NEXT_PUBLIC_DEMO_URL` with the real Vercel URL and verify sidebar CTA in prod.
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Created ResearchRabbit-style bridge implementation foundation on a dedicated branch.
+  - Added BibTeX import API (`POST /api/research/papers/import/bibtex`) with track resolution + save feedback wiring.
+  - Added Zotero connector and integration APIs:
+    - `POST /api/research/integrations/zotero/pull`
+    - `POST /api/research/integrations/zotero/push`
+  - Added Next.js proxy routes for BibTeX import and Zotero pull/push.
+  - Added Saved Papers UI entrypoints: `Import BibTeX` and `Zotero Sync` dialogs.
+  - Added unit tests for BibTeX parser mapping, Zotero connector mapping/dedupe, and integration routes.
+  - Added integration notes in `docs/RESEARCHRABBIT_INTEGRATION.md` with issue mapping (#124-#130).
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - python -m isort src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - (cd web && npx eslint src/components/research/SavedPapersList.tsx src/app/api/research/papers/import/bibtex/route.ts src/app/api/research/integrations/zotero/pull/route.ts src/app/api/research/integrations/zotero/push/route.ts)
+  - (cd web && npx tsc --noEmit)
+  - pytest -q tests/unit/test_export.py tests/unit/test_zotero_connector.py tests/unit/test_research_import_integrations_routes.py (environment returns exit -1 with no stdout in current harness)
+- Risks/Notes:
+  - BibTeX parsing intentionally focuses on common entry shapes; extremely custom BibTeX macros may need follow-up normalization.
+  - Zotero API key remains request-scoped and is not persisted yet.
+- Next:
+  - Add secure per-user integration settings for Zotero credentials and sync presets.
+  - Start issue #125/#126 implementation (seed expansion + graph timeline UX).
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Implemented issue #125 seed-based discovery backend: `POST /api/research/discovery/seed` with S2/OpenAlex expansion (related/cited/citing/coauthor), graph payload, and optional personalization rerank.
+  - Added OpenAlex connector (`openalex_connector.py`) for work resolving and related/referenced/citing expansion.
+  - Implemented issue #126 UI: new `DiscoveryGraphWorkspace` in Research page with seed input, edge filters, graph rendering, ranked explanations, and one-click save to library.
+  - Implemented issue #127 collections backend + UI:
+    - APIs for create/list/update collections and collection items CRUD.
+    - Store/model support for collection and collection-item persistence.
+    - Saved Papers Collections workspace with create/add/edit/remove flows.
+  - Added Next.js proxy routes for discovery seed and collections endpoints.
+  - Added unit tests for OpenAlex connector and discovery/collections routes.
+  - Fixed collections dialog state issue found during Playwright E2E: reopening dialog now auto-loads selected collection items.
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py
+  - python -m isort src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py
+  - pytest -q -p no:capture tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - (cd web && npx eslint src/components/research/ResearchPageNew.tsx src/components/research/DiscoveryGraphWorkspace.tsx src/components/research/SavedPapersList.tsx src/components/research/TopicWorkflowDashboard.tsx src/app/api/research/discovery/seed/route.ts src/app/api/research/collections/route.ts src/app/api/research/collections/[collectionId]/route.ts src/app/api/research/collections/[collectionId]/items/route.ts src/app/api/research/collections/[collectionId]/items/[paperId]/route.ts)
+  - (cd web && npx tsc --noEmit)
+  - Playwright MCP smoke:
+    - `/research`: search -> discovery run -> discovery save (`POST /api/research/papers/feedback` 200)
+    - `/papers`: collections create -> add selected -> edit note/tags -> remove item (all related API calls 200)
+- Risks/Notes:
+  - Discovery quality depends on external source coverage and can return off-topic related papers for broad DOI seeds.
+  - Collection note/tag editing currently uses browser prompts; can be upgraded to inline form UX later.
+- Next:
+  - Implement #128 timeline/temporal controls and graph interactions (zoom/layout/time slicing).
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Polished Collections Workspace UI (`SavedPapersList`) with clearer two-panel layout and collection metadata cards.
+  - Replaced `window.prompt` editing flow with inline note/tags editor (edit/save/cancel) for collection items.
+  - Added timeline/time-slice interactions to Discovery Graph (`DiscoveryGraphWorkspace`):
+    - year range request inputs (`year_from`/`year_to`) when calling discovery API
+    - timeline window controls (from/to sliders)
+    - yearly histogram chips for quick single-year slicing
+    - visible item count badge to reflect active slice
+  - Kept existing collection reopen-state fix and verified together with the new UI.
+- Validation:
+  - (cd web && npx eslint src/components/research/DiscoveryGraphWorkspace.tsx src/components/research/SavedPapersList.tsx src/components/research/TopicWorkflowDashboard.tsx)
+  - (cd web && npx tsc --noEmit)
+  - pytest -q -p no:capture tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - Playwright MCP smoke:
+    - `/research`: discovery timeline appears, year bucket slicing + reset works
+    - `/papers`: collections inline edit (note/tags) + remove item works, APIs return 200
+- Risks/Notes:
+  - Timeline currently uses static radial layout; no pan/zoom yet.
+  - Collection editor currently supports one-row-at-a-time editing to keep UX simple.
+- Next:
+  - If needed, add graph pan/zoom/layout modes and timeline playback animation as follow-up polish.

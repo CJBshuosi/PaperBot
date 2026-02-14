@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 
 
 type SavedPaperSort = "saved_at" | "judge_score" | "published_at"
@@ -74,6 +75,49 @@ type Track = {
   is_active?: boolean
 }
 
+type BibtexImportResponse = {
+  parsed?: number
+  imported?: number
+  created?: number
+  updated?: number
+  skipped?: number
+  errors?: string[]
+}
+
+type ZoteroPullResponse = {
+  imported?: number
+  created?: number
+  updated?: number
+  skipped?: number
+  errors?: string[]
+}
+
+type ZoteroPushResponse = {
+  to_push?: number
+  pushed?: number
+  skipped?: number
+  dry_run?: boolean
+  errors?: string[]
+}
+
+type CollectionSummary = {
+  id: number
+  name: string
+  description?: string
+  item_count?: number
+}
+
+type CollectionItem = {
+  id: number
+  paper_id: number
+  note?: string
+  tags?: string[]
+  paper?: {
+    title?: string
+    authors?: string[]
+  }
+}
+
 const PAGE_SIZE = 20
 const SORT_OPTIONS: Array<{ value: SavedPaperSort; label: string }> = [
   { value: "saved_at", label: "Saved Time" },
@@ -112,6 +156,37 @@ export default function SavedPapersList() {
   const [rwLoading, setRwLoading] = useState(false)
   const [rwMarkdown, setRwMarkdown] = useState<string | null>(null)
   const [rwCopied, setRwCopied] = useState(false)
+
+  // BibTeX import state
+  const [importOpen, setImportOpen] = useState(false)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importTrackName, setImportTrackName] = useState("")
+  const [importBibtex, setImportBibtex] = useState("")
+  const [importResult, setImportResult] = useState<string | null>(null)
+
+  // Zotero sync state
+  const [zoteroOpen, setZoteroOpen] = useState(false)
+  const [zoteroLoading, setZoteroLoading] = useState(false)
+  const [zoteroMode, setZoteroMode] = useState<"pull" | "push">("pull")
+  const [zoteroLibraryType, setZoteroLibraryType] = useState<"user" | "group">("user")
+  const [zoteroLibraryId, setZoteroLibraryId] = useState("")
+  const [zoteroApiKey, setZoteroApiKey] = useState("")
+  const [zoteroDryRun, setZoteroDryRun] = useState(true)
+  const [zoteroTrackName, setZoteroTrackName] = useState("")
+  const [zoteroResult, setZoteroResult] = useState<string | null>(null)
+
+  // Collections state
+  const [collectionsOpen, setCollectionsOpen] = useState(false)
+  const [collectionsLoading, setCollectionsLoading] = useState(false)
+  const [collections, setCollections] = useState<CollectionSummary[]>([])
+  const [collectionItems, setCollectionItems] = useState<CollectionItem[]>([])
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null)
+  const [newCollectionName, setNewCollectionName] = useState("")
+  const [newCollectionDesc, setNewCollectionDesc] = useState("")
+  const [collectionsMessage, setCollectionsMessage] = useState<string | null>(null)
+  const [editingCollectionPaperId, setEditingCollectionPaperId] = useState<number | null>(null)
+  const [editingCollectionNote, setEditingCollectionNote] = useState("")
+  const [editingCollectionTags, setEditingCollectionTags] = useState("")
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -177,6 +252,10 @@ export default function SavedPapersList() {
   }, [items, page, totalPages])
 
   const hasSelection = selectedIds.size > 0
+  const selectedCollection = useMemo(
+    () => collections.find((item) => item.id === selectedCollectionId) || null,
+    [collections, selectedCollectionId],
+  )
 
   const toggleSelect = useCallback((paperId: number) => {
     setSelectedIds((prev) => {
@@ -323,6 +402,302 @@ export default function SavedPapersList() {
     setTimeout(() => setRwCopied(false), 2000)
   }, [rwMarkdown])
 
+  const handleBibtexImport = useCallback(async () => {
+    if (!importBibtex.trim()) return
+    setImportLoading(true)
+    setImportResult(null)
+    setError(null)
+    try {
+      const res = await fetch("/api/research/papers/import/bibtex", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          content: importBibtex,
+          track_id: selectedTrackId ?? undefined,
+          track_name: selectedTrackId ? undefined : (importTrackName.trim() || undefined),
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(detail || `HTTP ${res.status}`)
+      }
+      const payload = (await res.json()) as BibtexImportResponse
+      const parsed = payload.parsed ?? 0
+      const imported = payload.imported ?? 0
+      const skipped = payload.skipped ?? 0
+      setImportResult(`Imported ${imported}/${parsed}, skipped ${skipped}.`)
+      await loadSavedPapers()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setImportResult(`Import failed: ${detail}`)
+    } finally {
+      setImportLoading(false)
+    }
+  }, [importBibtex, importTrackName, loadSavedPapers, selectedTrackId])
+
+  const handleZoteroSync = useCallback(async () => {
+    if (!zoteroLibraryId.trim() || !zoteroApiKey.trim()) return
+    setZoteroLoading(true)
+    setZoteroResult(null)
+    setError(null)
+    try {
+      const endpoint =
+        zoteroMode === "pull"
+          ? "/api/research/integrations/zotero/pull"
+          : "/api/research/integrations/zotero/push"
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          track_id: selectedTrackId ?? undefined,
+          track_name: selectedTrackId ? undefined : (zoteroTrackName.trim() || undefined),
+          library_type: zoteroLibraryType,
+          library_id: zoteroLibraryId.trim(),
+          api_key: zoteroApiKey.trim(),
+          max_items: 200,
+          dry_run: zoteroMode === "push" ? zoteroDryRun : undefined,
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(detail || `HTTP ${res.status}`)
+      }
+
+      if (zoteroMode === "pull") {
+        const payload = (await res.json()) as ZoteroPullResponse
+        setZoteroResult(
+          `Pulled ${payload.imported ?? 0} (created ${payload.created ?? 0}, updated ${payload.updated ?? 0}).`,
+        )
+        await loadSavedPapers()
+      } else {
+        const payload = (await res.json()) as ZoteroPushResponse
+        setZoteroResult(
+          `Push ${payload.dry_run ? "preview" : "done"}: ${payload.pushed ?? 0}/${payload.to_push ?? 0}.`,
+        )
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setZoteroResult(`Zotero sync failed: ${detail}`)
+    } finally {
+      setZoteroLoading(false)
+    }
+  }, [
+    loadSavedPapers,
+    selectedTrackId,
+    zoteroApiKey,
+    zoteroDryRun,
+    zoteroLibraryId,
+    zoteroLibraryType,
+    zoteroMode,
+    zoteroTrackName,
+  ])
+
+  const loadCollections = useCallback(async () => {
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const qs = new URLSearchParams({ user_id: "default", limit: "200" })
+      if (selectedTrackId) qs.set("track_id", String(selectedTrackId))
+      const res = await fetch(`/api/research/collections?${qs.toString()}`, { cache: "no-store" })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const payload = await res.json()
+      const rows = (payload.items || []) as CollectionSummary[]
+      setCollections(rows)
+      const nextSelectedId =
+        rows.find((row) => row.id === selectedCollectionId)?.id ?? rows[0]?.id ?? null
+      setSelectedCollectionId(nextSelectedId)
+      if (!nextSelectedId) {
+        setCollectionItems([])
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Failed to load collections: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [selectedCollectionId, selectedTrackId])
+
+  const loadCollectionItems = useCallback(async (collectionId: number) => {
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const qs = new URLSearchParams({ user_id: "default", limit: "500" })
+      const res = await fetch(`/api/research/collections/${collectionId}/items?${qs.toString()}`, {
+        cache: "no-store",
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const payload = await res.json()
+      setCollectionItems((payload.items || []) as CollectionItem[])
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Failed to load collection items: ${detail}`)
+      setCollectionItems([])
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [])
+
+  const createCollection = useCallback(async () => {
+    if (!newCollectionName.trim()) return
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const res = await fetch("/api/research/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          name: newCollectionName.trim(),
+          description: newCollectionDesc.trim(),
+          track_id: selectedTrackId ?? undefined,
+        }),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      setNewCollectionName("")
+      setNewCollectionDesc("")
+      await loadCollections()
+      setCollectionsMessage("Collection created.")
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Create failed: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [loadCollections, newCollectionDesc, newCollectionName, selectedTrackId])
+
+  const addSelectedToCollection = useCallback(async () => {
+    if (!selectedCollectionId || selectedIds.size === 0) return
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      for (const paperId of selectedIds) {
+        await fetch(`/api/research/collections/${selectedCollectionId}/items`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: "default",
+            paper_id: String(paperId),
+            note: "",
+            tags: [],
+          }),
+        })
+      }
+      await loadCollectionItems(selectedCollectionId)
+      await loadCollections()
+      setCollectionsMessage(`Added ${selectedIds.size} papers to collection.`)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Add failed: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [loadCollectionItems, loadCollections, selectedCollectionId, selectedIds])
+
+  const saveCollectionItemMeta = useCallback(
+    async (item: CollectionItem, note: string, tagsRaw: string) => {
+      if (!selectedCollectionId) return
+      setCollectionsLoading(true)
+      setCollectionsMessage(null)
+      try {
+        const tags = tagsRaw.split(",").map((tag) => tag.trim()).filter(Boolean)
+        const res = await fetch(
+          `/api/research/collections/${selectedCollectionId}/items/${item.paper_id}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              user_id: "default",
+              note,
+              tags,
+            }),
+          },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        await loadCollectionItems(selectedCollectionId)
+        setCollectionsMessage("Note/tags updated.")
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        setCollectionsMessage(`Update failed: ${detail}`)
+      } finally {
+        setCollectionsLoading(false)
+      }
+    },
+    [loadCollectionItems, selectedCollectionId],
+  )
+
+  const startEditingCollectionItem = useCallback((item: CollectionItem) => {
+    setEditingCollectionPaperId(item.paper_id)
+    setEditingCollectionNote(item.note || "")
+    setEditingCollectionTags((item.tags || []).join(", "))
+  }, [])
+
+  const cancelEditingCollectionItem = useCallback(() => {
+    setEditingCollectionPaperId(null)
+    setEditingCollectionNote("")
+    setEditingCollectionTags("")
+  }, [])
+
+  const saveEditingCollectionItem = useCallback(async () => {
+    if (editingCollectionPaperId === null) return
+    const item = collectionItems.find((row) => row.paper_id === editingCollectionPaperId)
+    if (!item) return
+    await saveCollectionItemMeta(item, editingCollectionNote, editingCollectionTags)
+    cancelEditingCollectionItem()
+  }, [
+    cancelEditingCollectionItem,
+    collectionItems,
+    editingCollectionNote,
+    editingCollectionPaperId,
+    editingCollectionTags,
+    saveCollectionItemMeta,
+  ])
+
+  const removeCollectionItem = useCallback(
+    async (paperId: number) => {
+      if (!selectedCollectionId) return
+      setCollectionsLoading(true)
+      setCollectionsMessage(null)
+      try {
+        const qs = new URLSearchParams({ user_id: "default" })
+        const res = await fetch(
+          `/api/research/collections/${selectedCollectionId}/items/${paperId}?${qs.toString()}`,
+          { method: "DELETE" },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        await loadCollectionItems(selectedCollectionId)
+        await loadCollections()
+        if (editingCollectionPaperId === paperId) {
+          cancelEditingCollectionItem()
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        setCollectionsMessage(`Remove failed: ${detail}`)
+      } finally {
+        setCollectionsLoading(false)
+      }
+    },
+    [
+      cancelEditingCollectionItem,
+      editingCollectionPaperId,
+      loadCollectionItems,
+      loadCollections,
+      selectedCollectionId,
+    ],
+  )
+
+  useEffect(() => {
+    if (!collectionsOpen || !selectedCollectionId) return
+    loadCollectionItems(selectedCollectionId).catch(() => {})
+  }, [collectionsOpen, selectedCollectionId, loadCollectionItems])
+
+  useEffect(() => {
+    if (!collectionsOpen) {
+      cancelEditingCollectionItem()
+    }
+  }, [cancelEditingCollectionItem, collectionsOpen])
+
   return (
     <Card>
       <CardHeader className="space-y-3">
@@ -388,6 +763,33 @@ export default function SavedPapersList() {
             >
               <FileText className="mr-1 h-4 w-4" />
               Related Work
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => {
+                setCollectionsOpen(true)
+                loadCollections().catch(() => {})
+              }}
+            >
+              Collections
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => { setImportOpen(true); setImportResult(null) }}
+            >
+              Import BibTeX
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => { setZoteroOpen(true); setZoteroResult(null) }}
+            >
+              Zotero Sync
             </Button>
             {hasSelection && (
               <DropdownMenu>
@@ -535,6 +937,328 @@ export default function SavedPapersList() {
           </>
         )}
       </CardContent>
+
+      <Dialog open={collectionsOpen} onOpenChange={setCollectionsOpen}>
+        <DialogContent className="h-[90vh] w-[min(96vw,1280px)] max-w-none overflow-hidden p-0 sm:max-w-none">
+          <div className="flex h-full flex-col">
+            <DialogHeader className="border-b px-6 py-4">
+              <DialogTitle>Collections Workspace</DialogTitle>
+              <DialogDescription>
+                Group saved papers, attach note/tags, and reuse collection-scoped context.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid min-h-0 flex-1 gap-4 px-6 py-4 lg:grid-cols-[320px_1fr]">
+              <div className="min-h-0 min-w-0 space-y-4">
+                <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+                  <p className="text-sm font-medium">Create Collection</p>
+                  <Input
+                    placeholder="Collection name"
+                    value={newCollectionName}
+                    onChange={(event) => setNewCollectionName(event.target.value)}
+                    disabled={collectionsLoading}
+                  />
+                  <Textarea
+                    placeholder="Description (optional)"
+                    value={newCollectionDesc}
+                    onChange={(event) => setNewCollectionDesc(event.target.value)}
+                    disabled={collectionsLoading}
+                    className="min-h-[80px]"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={createCollection}
+                    disabled={collectionsLoading || !newCollectionName.trim()}
+                  >
+                    Create Collection
+                  </Button>
+                </div>
+
+                <div className="flex min-h-0 flex-col space-y-2 rounded-md border p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Collections</p>
+                    <Badge variant="outline">{collections.length}</Badge>
+                  </div>
+                  <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                    {collections.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No collections yet. Create one to start grouping papers.
+                      </p>
+                    ) : (
+                      collections.map((collection) => (
+                        <button
+                          key={collection.id}
+                          className={`min-w-0 w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                            selectedCollectionId === collection.id
+                              ? "border-primary bg-muted"
+                              : "hover:bg-muted/40"
+                          }`}
+                          onClick={() => {
+                            setSelectedCollectionId(collection.id)
+                            cancelEditingCollectionItem()
+                            loadCollectionItems(collection.id).catch(() => {})
+                          }}
+                          type="button"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="line-clamp-2 break-words text-sm font-medium">
+                                {collection.name}
+                              </p>
+                              {collection.description ? (
+                                <p className="mt-0.5 line-clamp-2 break-words text-xs text-muted-foreground">
+                                  {collection.description}
+                                </p>
+                              ) : null}
+                            </div>
+                            <Badge variant="secondary">{collection.item_count || 0}</Badge>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 min-w-0 flex-col space-y-3 rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-medium">
+                      {selectedCollection?.name || "Select a collection"}
+                    </p>
+                    {selectedCollection?.description ? (
+                      <p className="break-words text-xs text-muted-foreground">
+                        {selectedCollection.description}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">
+                      {selectedCollection?.item_count ?? collectionItems.length} papers
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!selectedCollectionId || selectedIds.size === 0 || collectionsLoading}
+                      onClick={addSelectedToCollection}
+                    >
+                      Add Selected ({selectedIds.size})
+                    </Button>
+                  </div>
+                </div>
+
+                {collectionsMessage ? (
+                  <p className="rounded-md border bg-muted/20 px-2 py-1 text-sm text-muted-foreground">
+                    {collectionsMessage}
+                  </p>
+                ) : null}
+
+                {!selectedCollectionId ? (
+                  <p className="text-sm text-muted-foreground">Choose a collection from the left.</p>
+                ) : collectionItems.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No items in this collection yet.</p>
+                ) : (
+                  <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                    {collectionItems.map((item) => {
+                      const isEditing = editingCollectionPaperId === item.paper_id
+                      return (
+                        <div key={item.id} className="min-w-0 rounded-md border p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="break-words text-sm font-medium">
+                                {item.paper?.title || `Paper #${item.paper_id}`}
+                              </p>
+                              {(item.paper?.authors || []).length > 0 ? (
+                                <p className="break-words text-xs text-muted-foreground">
+                                  {(item.paper?.authors || []).slice(0, 4).join(", ")}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => startEditingCollectionItem(item)}
+                                disabled={collectionsLoading}
+                              >
+                                Edit note/tags
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => removeCollectionItem(item.paper_id).catch(() => {})}
+                                disabled={collectionsLoading}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+
+                          {isEditing ? (
+                            <div className="mt-3 space-y-2 rounded-md border bg-muted/20 p-2">
+                              <Textarea
+                                placeholder="Add a note for this paper..."
+                                value={editingCollectionNote}
+                                onChange={(event) => setEditingCollectionNote(event.target.value)}
+                                disabled={collectionsLoading}
+                                className="min-h-[80px]"
+                              />
+                              <Input
+                                placeholder="tags: theory, baseline, survey"
+                                value={editingCollectionTags}
+                                onChange={(event) => setEditingCollectionTags(event.target.value)}
+                                disabled={collectionsLoading}
+                              />
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => saveEditingCollectionItem().catch(() => {})}
+                                  disabled={collectionsLoading}
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={cancelEditingCollectionItem}
+                                  disabled={collectionsLoading}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-2 space-y-1">
+                              <div className="flex flex-wrap gap-1">
+                                {(item.tags || []).length > 0 ? (
+                                  (item.tags || []).map((tag) => (
+                                    <Badge key={tag} variant="secondary">
+                                      {tag}
+                                    </Badge>
+                                  ))
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">No tags</span>
+                                )}
+                              </div>
+                              <p className="break-words text-xs text-muted-foreground">
+                                {item.note?.trim() ? item.note : "No note yet."}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Import BibTeX</DialogTitle>
+            <DialogDescription>
+              Paste BibTeX entries to import and save to current track.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input
+              placeholder="Track name (optional when no track filter)"
+              value={importTrackName}
+              onChange={(event) => setImportTrackName(event.target.value)}
+              disabled={importLoading || selectedTrackId !== null}
+            />
+            <Textarea
+              placeholder="@article{key, title={...}, author={...}}"
+              value={importBibtex}
+              onChange={(event) => setImportBibtex(event.target.value)}
+              disabled={importLoading}
+              className="min-h-[220px] font-mono text-xs"
+            />
+            {importResult ? <p className="text-sm text-muted-foreground">{importResult}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button onClick={handleBibtexImport} disabled={importLoading || !importBibtex.trim()}>
+              {importLoading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={zoteroOpen} onOpenChange={setZoteroOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Zotero Sync</DialogTitle>
+            <DialogDescription>
+              Pull from Zotero into PaperBot or push saved papers to Zotero.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                className="h-9 rounded-md border bg-background px-2 text-sm"
+                value={zoteroMode}
+                onChange={(event) => setZoteroMode(event.target.value as "pull" | "push")}
+                disabled={zoteroLoading}
+              >
+                <option value="pull">Pull from Zotero</option>
+                <option value="push">Push to Zotero</option>
+              </select>
+              <select
+                className="h-9 rounded-md border bg-background px-2 text-sm"
+                value={zoteroLibraryType}
+                onChange={(event) => setZoteroLibraryType(event.target.value as "user" | "group")}
+                disabled={zoteroLoading}
+              >
+                <option value="user">User Library</option>
+                <option value="group">Group Library</option>
+              </select>
+            </div>
+            <Input
+              placeholder="Library ID"
+              value={zoteroLibraryId}
+              onChange={(event) => setZoteroLibraryId(event.target.value)}
+              disabled={zoteroLoading}
+            />
+            <Input
+              type="password"
+              placeholder="Zotero API Key"
+              value={zoteroApiKey}
+              onChange={(event) => setZoteroApiKey(event.target.value)}
+              disabled={zoteroLoading}
+            />
+            <Input
+              placeholder="Track name (optional when no track filter)"
+              value={zoteroTrackName}
+              onChange={(event) => setZoteroTrackName(event.target.value)}
+              disabled={zoteroLoading || selectedTrackId !== null}
+            />
+            {zoteroMode === "push" ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Checkbox
+                  checked={zoteroDryRun}
+                  onCheckedChange={(checked) => setZoteroDryRun(Boolean(checked))}
+                  disabled={zoteroLoading}
+                />
+                Dry run (preview only)
+              </div>
+            ) : null}
+            {zoteroResult ? <p className="text-sm text-muted-foreground">{zoteroResult}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleZoteroSync}
+              disabled={zoteroLoading || !zoteroLibraryId.trim() || !zoteroApiKey.trim()}
+            >
+              {zoteroLoading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              {zoteroMode === "pull" ? "Start Pull" : "Start Push"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Related Work Dialog */}
       <Dialog open={rwOpen} onOpenChange={setRwOpen}>

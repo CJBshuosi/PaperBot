@@ -5,12 +5,15 @@ from __future__ import annotations
 import pytest
 
 from paperbot.api.routes.research import (
+    _bibtex_entry_to_paper,
+    _clean_bibtex_text,
     _dedup_citation_keys,
     _escape_bibtex,
     _make_citation_key,
     _paper_to_bibtex,
     _paper_to_markdown,
     _paper_to_ris,
+    _parse_bibtex_entries,
 )
 
 # ---- fixtures ---------------------------------------------------------------
@@ -48,6 +51,7 @@ _PAPER_CONF = {
 
 # ---- citation key -----------------------------------------------------------
 
+
 class TestCitationKey:
     def test_normal(self):
         assert _make_citation_key(["John Smith", "Jane Doe"], 2025) == "smith2025"
@@ -80,6 +84,7 @@ class TestDedupKeys:
 
 # ---- BibTeX -----------------------------------------------------------------
 
+
 class TestBibtex:
     def test_full_paper(self):
         bib = _paper_to_bibtex(_PAPER_FULL, "vaswani2017")
@@ -98,8 +103,57 @@ class TestBibtex:
     def test_escape(self):
         assert _escape_bibtex("a {b} c") == "a \\{b\\} c"
 
+    def test_parse_bibtex_entries(self):
+        blob = """
+@article{vaswani2017,
+  title = {Attention Is All You Need},
+  author = {Vaswani, Ashish and Shazeer, Noam},
+  year = {2017},
+  doi = {10.5555/3295222.3295349},
+  url = {https://arxiv.org/abs/1706.03762}
+}
+
+@inproceedings{foo2024,
+  title = {A Nice Paper},
+  author = {Alice Smith and Bob Doe},
+  year = "2024",
+  booktitle = {ICML}
+}
+"""
+        entries = _parse_bibtex_entries(blob)
+        assert len(entries) == 2
+        assert entries[0]["key"] == "vaswani2017"
+        assert entries[1]["entry_type"] == "inproceedings"
+
+    def test_bibtex_entry_to_paper(self):
+        entry = {
+            "key": "x",
+            "entry_type": "article",
+            "fields": {
+                "title": "Paper X",
+                "author": "Doe, Jane and John Smith",
+                "year": "2025",
+                "journal": "Nature",
+                "doi": "https://doi.org/10.1000/xyz.1",
+                "url": "https://arxiv.org/abs/2501.12345",
+                "abstract": "A test.",
+            },
+        }
+        paper = _bibtex_entry_to_paper(entry)
+        assert paper["title"] == "Paper X"
+        assert paper["authors"] == ["Jane Doe", "John Smith"]
+        assert paper["year"] == 2025
+        assert paper["doi"] == "10.1000/xyz.1"
+        assert paper["arxiv_id"] == "2501.12345"
+        assert paper["venue"] == "Nature"
+        assert paper["source"] == "bibtex"
+
+    def test_clean_bibtex_text(self):
+        assert _clean_bibtex_text("{A  \\&  B}") == "A & B"
+
 
 # ---- RIS --------------------------------------------------------------------
+
 
 class TestRis:
     def test_journal_paper(self):
@@ -123,6 +177,7 @@ class TestRis:
 
 
 # ---- Markdown ---------------------------------------------------------------
+
 
 class TestMarkdown:
     def test_full_paper(self):

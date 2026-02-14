@@ -407,6 +407,9 @@ class ResearchTrackModel(Base):
     paper_feedback = relationship(
         "PaperFeedbackModel", back_populates="track", cascade="all, delete-orphan"
     )
+    collections = relationship(
+        "PaperCollectionModel", back_populates="track", cascade="all, delete-orphan"
+    )
     embeddings = relationship(
         "ResearchTrackEmbeddingModel", back_populates="track", cascade="all, delete-orphan"
     )
@@ -611,6 +614,60 @@ class PaperReadingStatusModel(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
     paper = relationship("PaperModel", back_populates="reading_status_rows")
+
+
+class PaperCollectionModel(Base):
+    """User-defined collection for grouping saved papers and notes."""
+
+    __tablename__ = "paper_collections"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_paper_collections_user_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    track_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("research_tracks.id"), nullable=True, index=True
+    )
+
+    name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    track = relationship("ResearchTrackModel", back_populates="collections")
+    items = relationship(
+        "PaperCollectionItemModel", back_populates="collection", cascade="all, delete-orphan"
+    )
+
+
+class PaperCollectionItemModel(Base):
+    """Collection membership row with optional per-paper note/tags."""
+
+    __tablename__ = "paper_collection_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "collection_id", "paper_id", name="uq_paper_collection_items_collection_paper"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("paper_collections.id", ondelete="CASCADE"), index=True
+    )
+    paper_id: Mapped[int] = mapped_column(Integer, ForeignKey("papers.id"), index=True)
+
+    note: Mapped[str] = mapped_column(Text, default="")
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    collection = relationship("PaperCollectionModel", back_populates="items")
+    paper = relationship("PaperModel", back_populates="collection_items")
 
 
 class ResearchTrackEmbeddingModel(Base):
@@ -875,6 +932,7 @@ class PaperModel(Base):
     feedback_rows = relationship("PaperFeedbackModel", back_populates="paper")
     judge_scores = relationship("PaperJudgeScoreModel", back_populates="paper")
     reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
+    collection_items = relationship("PaperCollectionItemModel", back_populates="paper")
     repo_rows = relationship("PaperRepoModel", back_populates="paper")
     identifiers = relationship(
         "PaperIdentifierModel", back_populates="paper", cascade="all, delete-orphan"
