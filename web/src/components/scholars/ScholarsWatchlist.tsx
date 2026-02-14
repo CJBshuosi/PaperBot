@@ -377,6 +377,16 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
   async function handleCreateTrackFromScholar(scholar: Scholar) {
     setRowBusy((prev) => ({ ...prev, [scholar.id]: true }))
     try {
+      const existingMatch = insights.find((row) => row.scholar.id === scholar.id)?.matchedTracks[0]
+      const queryValue = scholar.keywords?.[0] || scholar.name
+      if (existingMatch?.id) {
+        await markSeen(scholar)
+        router.push(
+          `/research?track_id=${encodeURIComponent(String(existingMatch.id))}&query=${encodeURIComponent(queryValue)}`,
+        )
+        return
+      }
+
       const trackName = buildUniqueTrackName(`${scholar.name} Watch`)
       const fallbackKeywords = [scholar.name]
       const keywords = (scholar.keywords || []).length > 0 ? scholar.keywords || [] : fallbackKeywords
@@ -400,7 +410,6 @@ export function ScholarsWatchlist({ scholars }: ScholarsWatchlistProps) {
 
       const payload = (await res.json()) as { track?: { id?: number } }
       const trackId = payload.track?.id
-      const queryValue = scholar.keywords?.[0] || scholar.name
 
       await markSeen(scholar)
       if (trackId) {
