@@ -88,7 +88,13 @@ export default async function WikiPage({ searchParams }: { searchParams: WikiSea
             <Tabs defaultValue="All" className="w-full">
                 <TabsList className="mb-6 bg-muted/50">
                     {categories.map(cat => (
-                        <TabsTrigger key={cat} value={cat} className="data-[state=active]:bg-background">
+                        <TabsTrigger
+                            key={cat}
+                            value={cat}
+                            id={`wiki-tab-${cat.toLowerCase()}`}
+                            aria-controls={`wiki-panel-${cat.toLowerCase()}`}
+                            className="data-[state=active]:bg-background"
+                        >
                             {cat}
                         </TabsTrigger>
                     ))}
@@ -99,7 +105,12 @@ export default async function WikiPage({ searchParams }: { searchParams: WikiSea
                         (c) => (cat === "All" || c.category === cat) && conceptMatchesKeyword(keyword, c),
                     )
                     return (
-                    <TabsContent key={cat} value={cat}>
+                    <TabsContent
+                        key={cat}
+                        value={cat}
+                        id={`wiki-panel-${cat.toLowerCase()}`}
+                        aria-labelledby={`wiki-tab-${cat.toLowerCase()}`}
+                    >
                         {filteredConcepts.length === 0 ? (
                             <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
                                 No concepts matched this filter.
