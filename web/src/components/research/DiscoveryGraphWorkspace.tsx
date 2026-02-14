@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -82,6 +82,14 @@ function toSavePayload(item: DiscoveryItem): SavePaperPayload | null {
   }
 }
 
+function toValidYear(value: string): number | undefined {
+  const text = value.trim()
+  if (!text) return undefined
+  const num = Number(text)
+  if (!Number.isInteger(num) || num < 1900 || num > 2100) return undefined
+  return num
+}
+
 interface DiscoveryGraphWorkspaceProps {
   userId: string
   trackId: number | null
@@ -93,9 +101,13 @@ export default function DiscoveryGraphWorkspace({
   trackId,
   onSavePaper,
 }: DiscoveryGraphWorkspaceProps) {
-  const [seedType, setSeedType] = useState<"doi" | "arxiv" | "openalex" | "semantic_scholar" | "author">("doi")
+  const [seedType, setSeedType] = useState<"doi" | "arxiv" | "openalex" | "semantic_scholar" | "author">(
+    "doi",
+  )
   const [seedId, setSeedId] = useState("")
   const [limit, setLimit] = useState("30")
+  const [requestYearFrom, setRequestYearFrom] = useState("")
+  const [requestYearTo, setRequestYearTo] = useState("")
   const [edgeFilter, setEdgeFilter] = useState<Record<string, boolean>>({
     related: true,
     cited: true,
@@ -107,10 +119,50 @@ export default function DiscoveryGraphWorkspace({
   const [payload, setPayload] = useState<DiscoveryResponse | null>(null)
   const [savingKey, setSavingKey] = useState<string | null>(null)
 
+  const [timelineFrom, setTimelineFrom] = useState<number | null>(null)
+  const [timelineTo, setTimelineTo] = useState<number | null>(null)
+
+  const timelineYearCounts = useMemo(() => {
+    const rows = new Map<number, number>()
+    for (const item of payload?.items || []) {
+      const year = Number(item.paper?.year)
+      if (Number.isInteger(year) && year >= 1900 && year <= 2100) {
+        rows.set(year, (rows.get(year) || 0) + 1)
+      }
+    }
+    return Array.from(rows.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([year, count]) => ({ year, count }))
+  }, [payload])
+
+  useEffect(() => {
+    if (timelineYearCounts.length === 0) {
+      setTimelineFrom(null)
+      setTimelineTo(null)
+      return
+    }
+    setTimelineFrom(timelineYearCounts[0].year)
+    setTimelineTo(timelineYearCounts[timelineYearCounts.length - 1].year)
+  }, [timelineYearCounts])
+
+  const maxTimelineCount = useMemo(() => {
+    return Math.max(1, ...timelineYearCounts.map((row) => row.count))
+  }, [timelineYearCounts])
+
   const filteredItems = useMemo(() => {
-    const items = payload?.items || []
-    return items.filter((item) => (item.edge_types || []).some((edge) => edgeFilter[edge]))
-  }, [payload, edgeFilter])
+    return (payload?.items || []).filter((item) => {
+      if (!(item.edge_types || []).some((edge) => edgeFilter[edge])) {
+        return false
+      }
+
+      const year = Number(item.paper?.year)
+      if (timelineFrom !== null && timelineTo !== null) {
+        if (!Number.isInteger(year)) return false
+        if (year < timelineFrom || year > timelineTo) return false
+      }
+      return true
+    })
+  }, [payload, edgeFilter, timelineFrom, timelineTo])
 
   const filteredNodeIds = useMemo(() => {
     const rows = new Set<string>()
@@ -123,7 +175,9 @@ export default function DiscoveryGraphWorkspace({
 
   const displayEdges = useMemo(() => {
     const edges = payload?.edges || []
-    return edges.filter((edge) => edgeFilter[edge.type] && (filteredNodeIds.size === 0 || filteredNodeIds.has(edge.target)))
+    return edges.filter(
+      (edge) => edgeFilter[edge.type] && (filteredNodeIds.size === 0 || filteredNodeIds.has(edge.target)),
+    )
   }, [payload, edgeFilter, filteredNodeIds])
 
   const graphPoints = useMemo(() => {
@@ -166,6 +220,8 @@ export default function DiscoveryGraphWorkspace({
           include_citing: true,
           include_coauthor: true,
           personalized: true,
+          year_from: toValidYear(requestYearFrom),
+          year_to: toValidYear(requestYearTo),
         }),
       })
       if (!res.ok) {
@@ -197,10 +253,12 @@ export default function DiscoveryGraphWorkspace({
     <Card className="mt-6">
       <CardHeader>
         <CardTitle>Discovery Graph</CardTitle>
-        <CardDescription>Seed paper/author expansion with graph + explainable ranking.</CardDescription>
+        <CardDescription>
+          Seed paper/author expansion with graph, explainable ranking, and timeline slicing.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-2 md:grid-cols-4">
+        <div className="grid gap-2 md:grid-cols-6">
           <select
             className="h-9 rounded-md border bg-background px-2 text-sm"
             value={seedType}
@@ -220,11 +278,23 @@ export default function DiscoveryGraphWorkspace({
             disabled={loading}
             className="md:col-span-2"
           />
+          <Input
+            value={limit}
+            onChange={(event) => setLimit(event.target.value)}
+            placeholder="30"
+            disabled={loading}
+          />
+          <Input
+            value={requestYearFrom}
+            onChange={(event) => setRequestYearFrom(event.target.value)}
+            placeholder="Year from"
+            disabled={loading}
+          />
           <div className="flex items-center gap-2">
             <Input
-              value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-              placeholder="30"
+              value={requestYearTo}
+              onChange={(event) => setRequestYearTo(event.target.value)}
+              placeholder="Year to"
               disabled={loading}
             />
             <Button onClick={runDiscovery} disabled={loading || !seedId.trim()}>
@@ -246,9 +316,84 @@ export default function DiscoveryGraphWorkspace({
             </label>
           ))}
           {payload?.stats ? (
-            <Badge variant="outline">Candidates: {String(payload.stats.candidate_count || 0)}</Badge>
+            <>
+              <Badge variant="outline">Candidates: {String(payload.stats.candidate_count || 0)}</Badge>
+              <Badge variant="outline">Visible: {filteredItems.length}</Badge>
+            </>
           ) : null}
         </div>
+
+        {timelineYearCounts.length > 0 && timelineFrom !== null && timelineTo !== null ? (
+          <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium">
+                Timeline window: {timelineFrom} - {timelineTo}
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setTimelineFrom(timelineYearCounts[0].year)
+                  setTimelineTo(timelineYearCounts[timelineYearCounts.length - 1].year)
+                }}
+              >
+                Reset Timeline
+              </Button>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-2">
+              <label className="space-y-1 text-xs text-muted-foreground">
+                From year
+                <Input
+                  type="range"
+                  min={timelineYearCounts[0].year}
+                  max={timelineYearCounts[timelineYearCounts.length - 1].year}
+                  value={timelineFrom}
+                  onChange={(event) => {
+                    const nextFrom = Number(event.target.value)
+                    setTimelineFrom(nextFrom)
+                    setTimelineTo((prev) => (prev !== null ? Math.max(prev, nextFrom) : nextFrom))
+                  }}
+                />
+              </label>
+              <label className="space-y-1 text-xs text-muted-foreground">
+                To year
+                <Input
+                  type="range"
+                  min={timelineYearCounts[0].year}
+                  max={timelineYearCounts[timelineYearCounts.length - 1].year}
+                  value={timelineTo}
+                  onChange={(event) => {
+                    const nextTo = Number(event.target.value)
+                    setTimelineTo(nextTo)
+                    setTimelineFrom((prev) => (prev !== null ? Math.min(prev, nextTo) : nextTo))
+                  }}
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-6 gap-1 md:grid-cols-10">
+              {timelineYearCounts.map((row) => (
+                <button
+                  key={row.year}
+                  type="button"
+                  className="group rounded-sm border bg-background p-1 text-[10px] hover:bg-muted"
+                  onClick={() => {
+                    setTimelineFrom(row.year)
+                    setTimelineTo(row.year)
+                  }}
+                  title={`${row.year}: ${row.count} papers`}
+                >
+                  <div
+                    className="mx-auto w-full bg-primary/70 transition-opacity group-hover:opacity-90"
+                    style={{ height: `${Math.max(8, (row.count / maxTimelineCount) * 36)}px` }}
+                  />
+                  <p className="mt-1 truncate text-[10px] text-muted-foreground">{row.year}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
@@ -308,9 +453,14 @@ export default function DiscoveryGraphWorkspace({
                         <p className="text-xs text-muted-foreground">
                           {(paper.authors || []).slice(0, 3).join(", ") || "Unknown authors"}
                         </p>
+                        <p className="text-xs text-muted-foreground">
+                          {[paper.year, paper.venue].filter(Boolean).join(" · ") || "-"}
+                        </p>
                         <div className="mt-1 flex flex-wrap gap-1">
                           {(item.edge_types || []).map((edge) => (
-                            <Badge key={edge} variant="secondary">{edge}</Badge>
+                            <Badge key={edge} variant="secondary">
+                              {edge}
+                            </Badge>
                           ))}
                           <Badge variant="outline">score {item.score.toFixed(2)}</Badge>
                         </div>

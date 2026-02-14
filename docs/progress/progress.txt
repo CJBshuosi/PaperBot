@@ -181,3 +181,30 @@ Format:
   - Collection note/tag editing currently uses browser prompts; can be upgraded to inline form UX later.
 - Next:
   - Implement #128 timeline/temporal controls and graph interactions (zoom/layout/time slicing).
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Polished Collections Workspace UI (`SavedPapersList`) with clearer two-panel layout and collection metadata cards.
+  - Replaced `window.prompt` editing flow with inline note/tags editor (edit/save/cancel) for collection items.
+  - Added timeline/time-slice interactions to Discovery Graph (`DiscoveryGraphWorkspace`):
+    - year range request inputs (`year_from`/`year_to`) when calling discovery API
+    - timeline window controls (from/to sliders)
+    - yearly histogram chips for quick single-year slicing
+    - visible item count badge to reflect active slice
+  - Kept existing collection reopen-state fix and verified together with the new UI.
+- Validation:
+  - (cd web && npx eslint src/components/research/DiscoveryGraphWorkspace.tsx src/components/research/SavedPapersList.tsx src/components/research/TopicWorkflowDashboard.tsx)
+  - (cd web && npx tsc --noEmit)
+  - pytest -q -p no:capture tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - Playwright MCP smoke:
+    - `/research`: discovery timeline appears, year bucket slicing + reset works
+    - `/papers`: collections inline edit (note/tags) + remove item works, APIs return 200
+- Risks/Notes:
+  - Timeline currently uses static radial layout; no pan/zoom yet.
+  - Collection editor currently supports one-row-at-a-time editing to keep UX simple.
+- Next:
+  - If needed, add graph pan/zoom/layout modes and timeline playback animation as follow-up polish.

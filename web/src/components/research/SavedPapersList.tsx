@@ -184,6 +184,9 @@ export default function SavedPapersList() {
   const [newCollectionName, setNewCollectionName] = useState("")
   const [newCollectionDesc, setNewCollectionDesc] = useState("")
   const [collectionsMessage, setCollectionsMessage] = useState<string | null>(null)
+  const [editingCollectionPaperId, setEditingCollectionPaperId] = useState<number | null>(null)
+  const [editingCollectionNote, setEditingCollectionNote] = useState("")
+  const [editingCollectionTags, setEditingCollectionTags] = useState("")
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -249,6 +252,10 @@ export default function SavedPapersList() {
   }, [items, page, totalPages])
 
   const hasSelection = selectedIds.size > 0
+  const selectedCollection = useMemo(
+    () => collections.find((item) => item.id === selectedCollectionId) || null,
+    [collections, selectedCollectionId],
+  )
 
   const toggleSelect = useCallback((paperId: number) => {
     setSelectedIds((prev) => {
@@ -620,6 +627,33 @@ export default function SavedPapersList() {
     [loadCollectionItems, selectedCollectionId],
   )
 
+  const startEditingCollectionItem = useCallback((item: CollectionItem) => {
+    setEditingCollectionPaperId(item.paper_id)
+    setEditingCollectionNote(item.note || "")
+    setEditingCollectionTags((item.tags || []).join(", "))
+  }, [])
+
+  const cancelEditingCollectionItem = useCallback(() => {
+    setEditingCollectionPaperId(null)
+    setEditingCollectionNote("")
+    setEditingCollectionTags("")
+  }, [])
+
+  const saveEditingCollectionItem = useCallback(async () => {
+    if (editingCollectionPaperId === null) return
+    const item = collectionItems.find((row) => row.paper_id === editingCollectionPaperId)
+    if (!item) return
+    await saveCollectionItemMeta(item, editingCollectionNote, editingCollectionTags)
+    cancelEditingCollectionItem()
+  }, [
+    cancelEditingCollectionItem,
+    collectionItems,
+    editingCollectionNote,
+    editingCollectionPaperId,
+    editingCollectionTags,
+    saveCollectionItemMeta,
+  ])
+
   const removeCollectionItem = useCallback(
     async (paperId: number) => {
       if (!selectedCollectionId) return
@@ -634,6 +668,9 @@ export default function SavedPapersList() {
         if (!res.ok) throw new Error(`${res.status}`)
         await loadCollectionItems(selectedCollectionId)
         await loadCollections()
+        if (editingCollectionPaperId === paperId) {
+          cancelEditingCollectionItem()
+        }
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err)
         setCollectionsMessage(`Remove failed: ${detail}`)
@@ -641,13 +678,25 @@ export default function SavedPapersList() {
         setCollectionsLoading(false)
       }
     },
-    [loadCollectionItems, loadCollections, selectedCollectionId],
+    [
+      cancelEditingCollectionItem,
+      editingCollectionPaperId,
+      loadCollectionItems,
+      loadCollections,
+      selectedCollectionId,
+    ],
   )
 
   useEffect(() => {
     if (!collectionsOpen || !selectedCollectionId) return
     loadCollectionItems(selectedCollectionId).catch(() => {})
   }, [collectionsOpen, selectedCollectionId, loadCollectionItems])
+
+  useEffect(() => {
+    if (!collectionsOpen) {
+      cancelEditingCollectionItem()
+    }
+  }, [cancelEditingCollectionItem, collectionsOpen])
 
   return (
     <Card>
@@ -890,123 +939,209 @@ export default function SavedPapersList() {
       </CardContent>
 
       <Dialog open={collectionsOpen} onOpenChange={setCollectionsOpen}>
-        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-5xl max-h-[88vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Collections Workspace</DialogTitle>
             <DialogDescription>
               Group saved papers, attach note/tags, and reuse collection-scoped context.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 md:grid-cols-[280px_1fr]">
-            <div className="space-y-3 rounded-md border p-3">
-              <p className="text-sm font-medium">Create Collection</p>
-              <Input
-                placeholder="Collection name"
-                value={newCollectionName}
-                onChange={(event) => setNewCollectionName(event.target.value)}
-                disabled={collectionsLoading}
-              />
-              <Input
-                placeholder="Description (optional)"
-                value={newCollectionDesc}
-                onChange={(event) => setNewCollectionDesc(event.target.value)}
-                disabled={collectionsLoading}
-              />
-              <Button
-                size="sm"
-                onClick={createCollection}
-                disabled={collectionsLoading || !newCollectionName.trim()}
-              >
-                Create
-              </Button>
+          <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+            <div className="space-y-4">
+              <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+                <p className="text-sm font-medium">Create Collection</p>
+                <Input
+                  placeholder="Collection name"
+                  value={newCollectionName}
+                  onChange={(event) => setNewCollectionName(event.target.value)}
+                  disabled={collectionsLoading}
+                />
+                <Textarea
+                  placeholder="Description (optional)"
+                  value={newCollectionDesc}
+                  onChange={(event) => setNewCollectionDesc(event.target.value)}
+                  disabled={collectionsLoading}
+                  className="min-h-[80px]"
+                />
+                <Button
+                  size="sm"
+                  onClick={createCollection}
+                  disabled={collectionsLoading || !newCollectionName.trim()}
+                >
+                  Create Collection
+                </Button>
+              </div>
 
-              <div className="pt-2">
-                <p className="mb-2 text-sm font-medium">Collections</p>
-                <div className="space-y-1">
-                  {collections.map((collection) => (
-                    <button
-                      key={collection.id}
-                      className={`w-full rounded-md border px-2 py-1.5 text-left text-sm ${
-                        selectedCollectionId === collection.id ? "border-primary bg-muted" : ""
-                      }`}
-                      onClick={() => {
-                        setSelectedCollectionId(collection.id)
-                        loadCollectionItems(collection.id).catch(() => {})
-                      }}
-                      type="button"
-                    >
-                      <div className="font-medium">{collection.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {collection.item_count || 0} papers
-                      </div>
-                    </button>
-                  ))}
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Collections</p>
+                  <Badge variant="outline">{collections.length}</Badge>
+                </div>
+                <div className="max-h-[380px] space-y-2 overflow-auto pr-1">
+                  {collections.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No collections yet. Create one to start grouping papers.
+                    </p>
+                  ) : (
+                    collections.map((collection) => (
+                      <button
+                        key={collection.id}
+                        className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                          selectedCollectionId === collection.id
+                            ? "border-primary bg-muted"
+                            : "hover:bg-muted/40"
+                        }`}
+                        onClick={() => {
+                          setSelectedCollectionId(collection.id)
+                          cancelEditingCollectionItem()
+                          loadCollectionItems(collection.id).catch(() => {})
+                        }}
+                        type="button"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{collection.name}</p>
+                            {collection.description ? (
+                              <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                                {collection.description}
+                              </p>
+                            ) : null}
+                          </div>
+                          <Badge variant="secondary">{collection.item_count || 0}</Badge>
+                        </div>
+                      </button>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
 
             <div className="space-y-3 rounded-md border p-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">
-                  {selectedCollectionId
-                    ? collections.find((item) => item.id === selectedCollectionId)?.name || "Collection"
-                    : "Select a collection"}
-                </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!selectedCollectionId || selectedIds.size === 0 || collectionsLoading}
-                  onClick={addSelectedToCollection}
-                >
-                  Add Selected ({selectedIds.size})
-                </Button>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium">
+                    {selectedCollection?.name || "Select a collection"}
+                  </p>
+                  {selectedCollection?.description ? (
+                    <p className="text-xs text-muted-foreground">{selectedCollection.description}</p>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline">
+                    {selectedCollection?.item_count ?? collectionItems.length} papers
+                  </Badge>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!selectedCollectionId || selectedIds.size === 0 || collectionsLoading}
+                    onClick={addSelectedToCollection}
+                  >
+                    Add Selected ({selectedIds.size})
+                  </Button>
+                </div>
               </div>
 
               {collectionsMessage ? (
-                <p className="text-sm text-muted-foreground">{collectionsMessage}</p>
+                <p className="rounded-md border bg-muted/20 px-2 py-1 text-sm text-muted-foreground">
+                  {collectionsMessage}
+                </p>
               ) : null}
 
               {!selectedCollectionId ? (
                 <p className="text-sm text-muted-foreground">Choose a collection from the left.</p>
               ) : collectionItems.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No items in this collection.</p>
+                <p className="text-sm text-muted-foreground">No items in this collection yet.</p>
               ) : (
-                <div className="space-y-2">
-                  {collectionItems.map((item) => (
-                    <div key={item.id} className="rounded-md border p-2">
-                      <p className="text-sm font-medium">{item.paper?.title || `Paper #${item.paper_id}`}</p>
-                      <p className="text-xs text-muted-foreground">
-                        tags: {(item.tags || []).join(", ") || "-"}
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        note: {item.note || "-"}
-                      </p>
-                      <div className="mt-2 flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const nextNote = window.prompt("Update note", item.note || "")
-                            if (nextNote === null) return
-                            const nextTags = window.prompt("Update tags (comma separated)", (item.tags || []).join(", "))
-                            if (nextTags === null) return
-                            saveCollectionItemMeta(item, nextNote, nextTags).catch(() => {})
-                          }}
-                          disabled={collectionsLoading}
-                        >
-                          Edit note/tags
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => removeCollectionItem(item.paper_id).catch(() => {})}
-                          disabled={collectionsLoading}
-                        >
-                          Remove
-                        </Button>
+                <div className="max-h-[520px] space-y-2 overflow-auto pr-1">
+                  {collectionItems.map((item) => {
+                    const isEditing = editingCollectionPaperId === item.paper_id
+                    return (
+                      <div key={item.id} className="rounded-md border p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">
+                              {item.paper?.title || `Paper #${item.paper_id}`}
+                            </p>
+                            {(item.paper?.authors || []).length > 0 ? (
+                              <p className="text-xs text-muted-foreground">
+                                {(item.paper?.authors || []).slice(0, 4).join(", ")}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => startEditingCollectionItem(item)}
+                              disabled={collectionsLoading}
+                            >
+                              Edit note/tags
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => removeCollectionItem(item.paper_id).catch(() => {})}
+                              disabled={collectionsLoading}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+
+                        {isEditing ? (
+                          <div className="mt-3 space-y-2 rounded-md border bg-muted/20 p-2">
+                            <Textarea
+                              placeholder="Add a note for this paper..."
+                              value={editingCollectionNote}
+                              onChange={(event) => setEditingCollectionNote(event.target.value)}
+                              disabled={collectionsLoading}
+                              className="min-h-[80px]"
+                            />
+                            <Input
+                              placeholder="tags: theory, baseline, survey"
+                              value={editingCollectionTags}
+                              onChange={(event) => setEditingCollectionTags(event.target.value)}
+                              disabled={collectionsLoading}
+                            />
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() => saveEditingCollectionItem().catch(() => {})}
+                                disabled={collectionsLoading}
+                              >
+                                Save
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={cancelEditingCollectionItem}
+                                disabled={collectionsLoading}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-2 space-y-1">
+                            <div className="flex flex-wrap gap-1">
+                              {(item.tags || []).length > 0 ? (
+                                (item.tags || []).map((tag) => (
+                                  <Badge key={tag} variant="secondary">
+                                    {tag}
+                                  </Badge>
+                                ))
+                              ) : (
+                                <span className="text-xs text-muted-foreground">No tags</span>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {item.note?.trim() ? item.note : "No note yet."}
+                            </p>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
