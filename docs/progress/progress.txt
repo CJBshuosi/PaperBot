@@ -120,3 +120,32 @@ Format:
   - FastAPI backend is still expected to run on long-lived compute (Render/Railway/Fly) for SSE/worker reliability.
 - Next:
   - After first production deploy, fill `NEXT_PUBLIC_DEMO_URL` with the real Vercel URL and verify sidebar CTA in prod.
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Created ResearchRabbit-style bridge implementation foundation on a dedicated branch.
+  - Added BibTeX import API (`POST /api/research/papers/import/bibtex`) with track resolution + save feedback wiring.
+  - Added Zotero connector and integration APIs:
+    - `POST /api/research/integrations/zotero/pull`
+    - `POST /api/research/integrations/zotero/push`
+  - Added Next.js proxy routes for BibTeX import and Zotero pull/push.
+  - Added Saved Papers UI entrypoints: `Import BibTeX` and `Zotero Sync` dialogs.
+  - Added unit tests for BibTeX parser mapping, Zotero connector mapping/dedupe, and integration routes.
+  - Added integration notes in `docs/RESEARCHRABBIT_INTEGRATION.md` with issue mapping (#124-#130).
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - python -m isort src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - (cd web && npx eslint src/components/research/SavedPapersList.tsx src/app/api/research/papers/import/bibtex/route.ts src/app/api/research/integrations/zotero/pull/route.ts src/app/api/research/integrations/zotero/push/route.ts)
+  - (cd web && npx tsc --noEmit)
+  - pytest -q tests/unit/test_export.py tests/unit/test_zotero_connector.py tests/unit/test_research_import_integrations_routes.py (environment returns exit -1 with no stdout in current harness)
+- Risks/Notes:
+  - BibTeX parsing intentionally focuses on common entry shapes; extremely custom BibTeX macros may need follow-up normalization.
+  - Zotero API key remains request-scoped and is not persisted yet.
+- Next:
+  - Add secure per-user integration settings for Zotero credentials and sync presets.
+  - Start issue #125/#126 implementation (seed expansion + graph timeline UX).

@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 
 
 type SavedPaperSort = "saved_at" | "judge_score" | "published_at"
@@ -74,6 +75,31 @@ type Track = {
   is_active?: boolean
 }
 
+type BibtexImportResponse = {
+  parsed?: number
+  imported?: number
+  created?: number
+  updated?: number
+  skipped?: number
+  errors?: string[]
+}
+
+type ZoteroPullResponse = {
+  imported?: number
+  created?: number
+  updated?: number
+  skipped?: number
+  errors?: string[]
+}
+
+type ZoteroPushResponse = {
+  to_push?: number
+  pushed?: number
+  skipped?: number
+  dry_run?: boolean
+  errors?: string[]
+}
+
 const PAGE_SIZE = 20
 const SORT_OPTIONS: Array<{ value: SavedPaperSort; label: string }> = [
   { value: "saved_at", label: "Saved Time" },
@@ -112,6 +138,24 @@ export default function SavedPapersList() {
   const [rwLoading, setRwLoading] = useState(false)
   const [rwMarkdown, setRwMarkdown] = useState<string | null>(null)
   const [rwCopied, setRwCopied] = useState(false)
+
+  // BibTeX import state
+  const [importOpen, setImportOpen] = useState(false)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importTrackName, setImportTrackName] = useState("")
+  const [importBibtex, setImportBibtex] = useState("")
+  const [importResult, setImportResult] = useState<string | null>(null)
+
+  // Zotero sync state
+  const [zoteroOpen, setZoteroOpen] = useState(false)
+  const [zoteroLoading, setZoteroLoading] = useState(false)
+  const [zoteroMode, setZoteroMode] = useState<"pull" | "push">("pull")
+  const [zoteroLibraryType, setZoteroLibraryType] = useState<"user" | "group">("user")
+  const [zoteroLibraryId, setZoteroLibraryId] = useState("")
+  const [zoteroApiKey, setZoteroApiKey] = useState("")
+  const [zoteroDryRun, setZoteroDryRun] = useState(true)
+  const [zoteroTrackName, setZoteroTrackName] = useState("")
+  const [zoteroResult, setZoteroResult] = useState<string | null>(null)
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -323,6 +367,98 @@ export default function SavedPapersList() {
     setTimeout(() => setRwCopied(false), 2000)
   }, [rwMarkdown])
 
+  const handleBibtexImport = useCallback(async () => {
+    if (!importBibtex.trim()) return
+    setImportLoading(true)
+    setImportResult(null)
+    setError(null)
+    try {
+      const res = await fetch("/api/research/papers/import/bibtex", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          content: importBibtex,
+          track_id: selectedTrackId ?? undefined,
+          track_name: selectedTrackId ? undefined : (importTrackName.trim() || undefined),
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(detail || `HTTP ${res.status}`)
+      }
+      const payload = (await res.json()) as BibtexImportResponse
+      const parsed = payload.parsed ?? 0
+      const imported = payload.imported ?? 0
+      const skipped = payload.skipped ?? 0
+      setImportResult(`Imported ${imported}/${parsed}, skipped ${skipped}.`)
+      await loadSavedPapers()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setImportResult(`Import failed: ${detail}`)
+    } finally {
+      setImportLoading(false)
+    }
+  }, [importBibtex, importTrackName, loadSavedPapers, selectedTrackId])
+
+  const handleZoteroSync = useCallback(async () => {
+    if (!zoteroLibraryId.trim() || !zoteroApiKey.trim()) return
+    setZoteroLoading(true)
+    setZoteroResult(null)
+    setError(null)
+    try {
+      const endpoint =
+        zoteroMode === "pull"
+          ? "/api/research/integrations/zotero/pull"
+          : "/api/research/integrations/zotero/push"
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          track_id: selectedTrackId ?? undefined,
+          track_name: selectedTrackId ? undefined : (zoteroTrackName.trim() || undefined),
+          library_type: zoteroLibraryType,
+          library_id: zoteroLibraryId.trim(),
+          api_key: zoteroApiKey.trim(),
+          max_items: 200,
+          dry_run: zoteroMode === "push" ? zoteroDryRun : undefined,
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(detail || `HTTP ${res.status}`)
+      }
+
+      if (zoteroMode === "pull") {
+        const payload = (await res.json()) as ZoteroPullResponse
+        setZoteroResult(
+          `Pulled ${payload.imported ?? 0} (created ${payload.created ?? 0}, updated ${payload.updated ?? 0}).`,
+        )
+        await loadSavedPapers()
+      } else {
+        const payload = (await res.json()) as ZoteroPushResponse
+        setZoteroResult(
+          `Push ${payload.dry_run ? "preview" : "done"}: ${payload.pushed ?? 0}/${payload.to_push ?? 0}.`,
+        )
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setZoteroResult(`Zotero sync failed: ${detail}`)
+    } finally {
+      setZoteroLoading(false)
+    }
+  }, [
+    loadSavedPapers,
+    selectedTrackId,
+    zoteroApiKey,
+    zoteroDryRun,
+    zoteroLibraryId,
+    zoteroLibraryType,
+    zoteroMode,
+    zoteroTrackName,
+  ])
+
   return (
     <Card>
       <CardHeader className="space-y-3">
@@ -388,6 +524,22 @@ export default function SavedPapersList() {
             >
               <FileText className="mr-1 h-4 w-4" />
               Related Work
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => { setImportOpen(true); setImportResult(null) }}
+            >
+              Import BibTeX
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => { setZoteroOpen(true); setZoteroResult(null) }}
+            >
+              Zotero Sync
             </Button>
             {hasSelection && (
               <DropdownMenu>
@@ -535,6 +687,111 @@ export default function SavedPapersList() {
           </>
         )}
       </CardContent>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Import BibTeX</DialogTitle>
+            <DialogDescription>
+              Paste BibTeX entries to import and save to current track.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input
+              placeholder="Track name (optional when no track filter)"
+              value={importTrackName}
+              onChange={(event) => setImportTrackName(event.target.value)}
+              disabled={importLoading || selectedTrackId !== null}
+            />
+            <Textarea
+              placeholder="@article{key, title={...}, author={...}}"
+              value={importBibtex}
+              onChange={(event) => setImportBibtex(event.target.value)}
+              disabled={importLoading}
+              className="min-h-[220px] font-mono text-xs"
+            />
+            {importResult ? <p className="text-sm text-muted-foreground">{importResult}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button onClick={handleBibtexImport} disabled={importLoading || !importBibtex.trim()}>
+              {importLoading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={zoteroOpen} onOpenChange={setZoteroOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Zotero Sync</DialogTitle>
+            <DialogDescription>
+              Pull from Zotero into PaperBot or push saved papers to Zotero.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                className="h-9 rounded-md border bg-background px-2 text-sm"
+                value={zoteroMode}
+                onChange={(event) => setZoteroMode(event.target.value as "pull" | "push")}
+                disabled={zoteroLoading}
+              >
+                <option value="pull">Pull from Zotero</option>
+                <option value="push">Push to Zotero</option>
+              </select>
+              <select
+                className="h-9 rounded-md border bg-background px-2 text-sm"
+                value={zoteroLibraryType}
+                onChange={(event) => setZoteroLibraryType(event.target.value as "user" | "group")}
+                disabled={zoteroLoading}
+              >
+                <option value="user">User Library</option>
+                <option value="group">Group Library</option>
+              </select>
+            </div>
+            <Input
+              placeholder="Library ID"
+              value={zoteroLibraryId}
+              onChange={(event) => setZoteroLibraryId(event.target.value)}
+              disabled={zoteroLoading}
+            />
+            <Input
+              type="password"
+              placeholder="Zotero API Key"
+              value={zoteroApiKey}
+              onChange={(event) => setZoteroApiKey(event.target.value)}
+              disabled={zoteroLoading}
+            />
+            <Input
+              placeholder="Track name (optional when no track filter)"
+              value={zoteroTrackName}
+              onChange={(event) => setZoteroTrackName(event.target.value)}
+              disabled={zoteroLoading || selectedTrackId !== null}
+            />
+            {zoteroMode === "push" ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Checkbox
+                  checked={zoteroDryRun}
+                  onCheckedChange={(checked) => setZoteroDryRun(Boolean(checked))}
+                  disabled={zoteroLoading}
+                />
+                Dry run (preview only)
+              </div>
+            ) : null}
+            {zoteroResult ? <p className="text-sm text-muted-foreground">{zoteroResult}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleZoteroSync}
+              disabled={zoteroLoading || !zoteroLibraryId.trim() || !zoteroApiKey.trim()}
+            >
+              {zoteroLoading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              {zoteroMode === "pull" ? "Start Pull" : "Start Push"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Related Work Dialog */}
       <Dialog open={rwOpen} onOpenChange={setRwOpen}>
