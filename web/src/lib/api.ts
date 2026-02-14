@@ -275,50 +275,142 @@ export async function fetchScholars(): Promise<Scholar[]> {
 }
 
 export async function fetchPaperDetails(id: string): Promise<PaperDetails> {
-    // Mock data
-    return {
-        id,
-        title: "Attention Is All You Need",
-        venue: "NeurIPS 2017",
-        authors: "Vaswani et al.",
-        citations: "100k+",
-        status: "Reproduced",
-        tags: ["Transformer", "NLP"],
-        abstract: "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder. The best performing models also connect the encoder and decoder through an attention mechanism. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
-        tldr: "PROPOSED the Transformer, a novel network architecture based solely on attention mechanisms, which achieves state-of-the-art results in machine translation tasks while being parallelizable and requiring significantly less training time.",
-        pis_score: 98,
-        impact_radar: [
-            { subject: 'Novelty', A: 120, fullMark: 150 },
-            { subject: 'Accessibility', A: 98, fullMark: 150 },
-            { subject: 'Rigor', A: 86, fullMark: 150 },
-            { subject: 'Reproducibility', A: 99, fullMark: 150 },
-            { subject: 'Impact', A: 145, fullMark: 150 },
-            { subject: 'Clarity', A: 110, fullMark: 150 },
-        ],
-        sentiment_analysis: [
-            { name: 'Positive', value: 400, fill: '#4ade80' },
-            { name: 'Neutral', value: 300, fill: '#94a3b8' },
-            { name: 'Critical', value: 50, fill: '#f87171' },
-        ],
-        citation_velocity: [
-            { month: 'Jan', citations: 400 },
-            { month: 'Feb', citations: 800 },
-            { month: 'Mar', citations: 1200 },
-            { month: 'Apr', citations: 2000 },
-            { month: 'May', citations: 3500 },
-            { month: 'Jun', citations: 5000 },
-        ],
-        reproduction: {
-            status: "Success",
-            logs: [
-                "[INFO] Environment inferred: PyTorch 2.1, CUDA 12.1",
-                "[INFO] Installing dependencies...",
-                "[SUCCESS] Dependencies installed",
-                "[INFO] Starting training loop...",
-                "[INFO] Epoch 1: Loss 2.45",
-                "[SUCCESS] Reproduction verification passed (BLEU > 28.0)"
+    type PaperDetailPayload = {
+        detail?: {
+            paper?: {
+                title?: string
+                abstract?: string
+                authors?: string[]
+                venue?: string
+                year?: number | null
+                citation_count?: number | null
+                fields_of_study?: string[]
+            }
+            latest_judge?: {
+                overall?: number | null
+                one_line_summary?: string | null
+                novelty?: number | null
+                rigor?: number | null
+                impact?: number | null
+                clarity?: number | null
+            } | null
+            feedback_summary?: Record<string, number> | null
+            repos?: Array<{ name?: string; stars?: number | null }> | null
+        }
+    }
+
+    try {
+        const res = await fetch(
+            `${API_BASE_URL}/research/papers/${encodeURIComponent(id)}?user_id=default`,
+            { cache: "no-store" },
+        )
+        if (!res.ok) throw new Error("paper detail unavailable")
+        const data = await res.json() as PaperDetailPayload
+        const detail = data.detail || {}
+        const paper = detail.paper || {}
+        const judge = detail.latest_judge || null
+        const feedback = detail.feedback_summary || {}
+        const repos = detail.repos || []
+
+        const title = (paper.title || "").trim() || `Paper #${id}`
+        const authorsList = Array.isArray(paper.authors) ? paper.authors.filter(Boolean) : []
+        const authors = authorsList.length > 0 ? authorsList.join(", ") : "Unknown authors"
+        const abstract = (paper.abstract || "").trim() || "No abstract available."
+        const citations = Number(paper.citation_count || 0)
+        const judgeOverall = Number(judge?.overall || 0)
+        const pisScore = Math.max(0, Math.min(100, Math.round(judgeOverall * 20)))
+        const tldr =
+            (judge?.one_line_summary || "").trim() ||
+            abstract.split(".").slice(0, 2).join(". ").trim() ||
+            "No summary available."
+
+        const positive = Number(feedback.like || 0)
+        const neutral = Number(feedback.save || 0)
+        const critical = Number(feedback.dislike || 0) + Number(feedback.skip || 0)
+
+        return {
+            id,
+            title,
+            venue: [paper.venue, paper.year].filter(Boolean).join(" • ") || "Unknown venue",
+            authors,
+            citations: citations > 0 ? `${citations}` : "0",
+            status: "Saved",
+            tags: Array.isArray(paper.fields_of_study) ? paper.fields_of_study.slice(0, 4) : [],
+            abstract,
+            tldr,
+            pis_score: pisScore,
+            impact_radar: [
+                { subject: "Novelty", A: Number(judge?.novelty || 0) * 30, fullMark: 150 },
+                { subject: "Accessibility", A: Number(judge?.clarity || 0) * 30, fullMark: 150 },
+                { subject: "Rigor", A: Number(judge?.rigor || 0) * 30, fullMark: 150 },
+                { subject: "Reproducibility", A: Number(judge?.rigor || 0) * 28, fullMark: 150 },
+                { subject: "Impact", A: Number(judge?.impact || 0) * 30, fullMark: 150 },
+                { subject: "Clarity", A: Number(judge?.clarity || 0) * 30, fullMark: 150 },
             ],
-            dockerfile: "FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime\nRUN pip install transformers datasets\nCOPY . /app\nWORKDIR /app\nCMD [\"python\", \"train.py\"]"
+            sentiment_analysis: [
+                { name: "Positive", value: positive, fill: "#4ade80" },
+                { name: "Neutral", value: neutral, fill: "#94a3b8" },
+                { name: "Critical", value: critical, fill: "#f87171" },
+            ],
+            citation_velocity: [
+                { month: "Jan", citations: Math.max(0, Math.round(citations * 0.1)) },
+                { month: "Feb", citations: Math.max(0, Math.round(citations * 0.25)) },
+                { month: "Mar", citations: Math.max(0, Math.round(citations * 0.45)) },
+                { month: "Apr", citations: Math.max(0, Math.round(citations * 0.65)) },
+                { month: "May", citations: Math.max(0, Math.round(citations * 0.82)) },
+                { month: "Jun", citations: Math.max(0, citations) },
+            ],
+            reproduction: {
+                status: repos.length > 0 ? "Linked Repos Available" : "No linked repos",
+                logs:
+                    repos.length > 0
+                        ? repos.slice(0, 6).map((repo) => {
+                            const stars = Number(repo.stars || 0)
+                            return `[REPO] ${repo.name || "unknown"} · ${stars} stars`
+                        })
+                        : ["[INFO] No repository metadata has been linked to this paper yet."],
+                dockerfile:
+                    "# No generated Dockerfile yet.\n# Trigger reproduction workflow to create runnable artifacts.",
+            },
+        }
+    } catch {
+        return {
+            id,
+            title: "Paper details unavailable",
+            venue: "Unknown venue",
+            authors: "Unknown authors",
+            citations: "0",
+            status: "Saved",
+            tags: [],
+            abstract: "Failed to load paper details from backend.",
+            tldr: "Please retry after backend is available.",
+            pis_score: 0,
+            impact_radar: [
+                { subject: "Novelty", A: 0, fullMark: 150 },
+                { subject: "Accessibility", A: 0, fullMark: 150 },
+                { subject: "Rigor", A: 0, fullMark: 150 },
+                { subject: "Reproducibility", A: 0, fullMark: 150 },
+                { subject: "Impact", A: 0, fullMark: 150 },
+                { subject: "Clarity", A: 0, fullMark: 150 },
+            ],
+            sentiment_analysis: [
+                { name: "Positive", value: 0, fill: "#4ade80" },
+                { name: "Neutral", value: 1, fill: "#94a3b8" },
+                { name: "Critical", value: 0, fill: "#f87171" },
+            ],
+            citation_velocity: [
+                { month: "Jan", citations: 0 },
+                { month: "Feb", citations: 0 },
+                { month: "Mar", citations: 0 },
+                { month: "Apr", citations: 0 },
+                { month: "May", citations: 0 },
+                { month: "Jun", citations: 0 },
+            ],
+            reproduction: {
+                status: "Unavailable",
+                logs: ["[ERROR] Failed to load reproduction context."],
+                dockerfile: "# unavailable",
+            },
         }
     }
 }
