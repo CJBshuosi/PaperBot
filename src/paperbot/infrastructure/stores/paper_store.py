@@ -240,8 +240,8 @@ class PaperStore:
             row.title_hash = title_hash
             row.title = title or row.title or ""
             row.abstract = abstract or row.abstract or ""
-            row.url = url or row.url or None
-            row.pdf_url = pdf_url or row.pdf_url or None
+            row.url = url or row.url or ""
+            row.pdf_url = pdf_url or row.pdf_url or ""
             row.venue = venue or row.venue or ""
             row.year = year if year is not None else row.year
             row.publication_date = publication_date or row.publication_date
@@ -565,11 +565,11 @@ class PaperStore:
             abstract=paper.abstract,
             authors_json=json.dumps(paper.authors, ensure_ascii=False),
             year=paper.year,
-            venue=paper.venue,
+            venue=paper.venue or "",
             publication_date=paper.publication_date,
             citation_count=paper.citation_count,
-            url=paper.url,
-            pdf_url=paper.pdf_url,
+            url=paper.url or "",
+            pdf_url=paper.pdf_url or "",
             keywords_json=json.dumps(paper.keywords, ensure_ascii=False),
             fields_of_study_json=json.dumps(paper.fields_of_study, ensure_ascii=False),
             primary_source=paper.source.value,

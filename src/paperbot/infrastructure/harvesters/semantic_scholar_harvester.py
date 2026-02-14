@@ -129,5 +129,4 @@ class SemanticScholarHarvester:
 
     async def close(self) -> None:
         """Close the HTTP client."""
-        # SemanticScholarClient manages its own session
-        pass
+        await self.client.close()
