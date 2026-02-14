@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from paperbot.context_engine import ContextEngine, ContextEngineConfig
 from paperbot.context_engine.track_router import TrackRouter
+from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
 from paperbot.infrastructure.api_clients.semantic_scholar import SemanticScholarClient
 from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
 from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
@@ -1171,6 +1172,317 @@ def export_papers(
     )
 
 
+class BibtexImportRequest(BaseModel):
+    user_id: str = "default"
+    content: str = Field(..., min_length=1)
+    track_id: Optional[int] = Field(default=None, ge=1)
+    track_name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    source_hint: str = "bibtex_import"
+
+
+class BibtexImportResponse(BaseModel):
+    user_id: str
+    track_id: int
+    track_name: str
+    parsed: int
+    imported: int
+    created: int
+    updated: int
+    skipped: int
+    errors: List[str] = []
+
+
+@router.post("/research/papers/import/bibtex", response_model=BibtexImportResponse)
+def import_bibtex(req: BibtexImportRequest):
+    entries = _parse_bibtex_entries(req.content)
+    if not entries:
+        raise HTTPException(status_code=400, detail="No valid BibTeX entries found")
+
+    track = _resolve_or_create_import_track(
+        user_id=req.user_id,
+        track_id=req.track_id,
+        track_name=req.track_name,
+        default_track_name="BibTeX Imports",
+    )
+    track_pk = int(track["id"])
+
+    paper_store = _get_paper_store()
+    existing_saved_ids = _research_store.list_paper_feedback_ids(
+        user_id=req.user_id,
+        track_id=track_pk,
+        action="save",
+        limit=5000,
+    )
+
+    imported = 0
+    created = 0
+    updated = 0
+    skipped = 0
+    errors: List[str] = []
+
+    for index, entry in enumerate(entries, start=1):
+        normalized = _bibtex_entry_to_paper(entry)
+        title = str(normalized.get("title") or "").strip()
+        if not title:
+            skipped += 1
+            errors.append(f"entry {index}: missing title")
+            continue
+
+        try:
+            upserted = paper_store.upsert_paper(paper=normalized, source_hint=req.source_hint)
+            paper_ref = str(upserted.get("id") or "").strip()
+            if not paper_ref:
+                skipped += 1
+                errors.append(f"entry {index}: failed to resolve saved paper id")
+                continue
+
+            imported += 1
+            if bool(upserted.get("_created")):
+                created += 1
+            else:
+                updated += 1
+
+            if paper_ref not in existing_saved_ids:
+                metadata: Dict[str, Any] = {
+                    "import_source": "bibtex",
+                    "citation_key": str(entry.get("key") or ""),
+                    "entry_type": str(entry.get("entry_type") or ""),
+                }
+                _research_store.add_paper_feedback(
+                    user_id=req.user_id,
+                    track_id=track_pk,
+                    paper_id=paper_ref,
+                    action="save",
+                    weight=1.0,
+                    metadata=metadata,
+                )
+                existing_saved_ids.add(paper_ref)
+        except Exception as exc:
+            skipped += 1
+            errors.append(f"entry {index}: {exc}")
+
+    return BibtexImportResponse(
+        user_id=req.user_id,
+        track_id=track_pk,
+        track_name=str(track.get("name") or ""),
+        parsed=len(entries),
+        imported=imported,
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        errors=errors[:100],
+    )
+
+
+class ZoteroSyncRequest(BaseModel):
+    user_id: str = "default"
+    track_id: Optional[int] = Field(default=None, ge=1)
+    track_name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    library_type: str = Field(default="user", pattern="^(user|group)$")
+    library_id: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1)
+    max_items: int = Field(default=100, ge=1, le=1000)
+
+
+class ZoteroPullResponse(BaseModel):
+    user_id: str
+    track_id: int
+    track_name: str
+    total_remote: int
+    imported: int
+    created: int
+    updated: int
+    skipped: int
+    errors: List[str] = []
+
+
+@router.post("/research/integrations/zotero/pull", response_model=ZoteroPullResponse)
+def pull_from_zotero(req: ZoteroSyncRequest):
+    from paperbot.infrastructure.connectors.zotero_connector import ZoteroConnector
+
+    track = _resolve_or_create_import_track(
+        user_id=req.user_id,
+        track_id=req.track_id,
+        track_name=req.track_name,
+        default_track_name="Zotero Imports",
+    )
+    track_pk = int(track["id"])
+
+    connector = ZoteroConnector()
+    try:
+        remote_items = connector.list_all_items(
+            api_key=req.api_key,
+            library_type=req.library_type,
+            library_id=req.library_id,
+            max_items=req.max_items,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to pull from Zotero: {exc}") from exc
+
+    paper_store = _get_paper_store()
+    existing_saved_ids = _research_store.list_paper_feedback_ids(
+        user_id=req.user_id,
+        track_id=track_pk,
+        action="save",
+        limit=5000,
+    )
+
+    imported = 0
+    created = 0
+    updated = 0
+    skipped = 0
+    errors: List[str] = []
+
+    for index, item in enumerate(remote_items, start=1):
+        paper = connector.zotero_item_to_paper(item)
+        if not str(paper.get("title") or "").strip():
+            skipped += 1
+            errors.append(f"item {index}: missing title")
+            continue
+
+        try:
+            upserted = paper_store.upsert_paper(paper=paper, source_hint="zotero")
+            paper_ref = str(upserted.get("id") or "").strip()
+            if not paper_ref:
+                skipped += 1
+                errors.append(f"item {index}: failed to resolve saved paper id")
+                continue
+
+            imported += 1
+            if bool(upserted.get("_created")):
+                created += 1
+            else:
+                updated += 1
+
+            if paper_ref not in existing_saved_ids:
+                metadata: Dict[str, Any] = {
+                    "import_source": "zotero",
+                    "zotero_key": str((item or {}).get("key") or ""),
+                    "zotero_library_type": req.library_type,
+                    "zotero_library_id": req.library_id,
+                }
+                _research_store.add_paper_feedback(
+                    user_id=req.user_id,
+                    track_id=track_pk,
+                    paper_id=paper_ref,
+                    action="save",
+                    weight=1.0,
+                    metadata=metadata,
+                )
+                existing_saved_ids.add(paper_ref)
+        except Exception as exc:
+            skipped += 1
+            errors.append(f"item {index}: {exc}")
+
+    return ZoteroPullResponse(
+        user_id=req.user_id,
+        track_id=track_pk,
+        track_name=str(track.get("name") or ""),
+        total_remote=len(remote_items),
+        imported=imported,
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        errors=errors[:100],
+    )
+
+
+class ZoteroPushRequest(ZoteroSyncRequest):
+    dry_run: bool = False
+
+
+class ZoteroPushResponse(BaseModel):
+    user_id: str
+    track_id: Optional[int] = None
+    local_saved: int
+    remote_items: int
+    to_push: int
+    pushed: int
+    skipped: int
+    dry_run: bool
+    errors: List[str] = []
+
+
+@router.post("/research/integrations/zotero/push", response_model=ZoteroPushResponse)
+def push_to_zotero(req: ZoteroPushRequest):
+    from paperbot.infrastructure.connectors.zotero_connector import ZoteroConnector
+
+    if req.track_id is not None:
+        track = _research_store.get_track(user_id=req.user_id, track_id=req.track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+    connector = ZoteroConnector()
+    local_items = _research_store.list_saved_papers(
+        user_id=req.user_id,
+        track_id=req.track_id,
+        sort_by="saved_at",
+        limit=req.max_items,
+    )
+    local_papers = [item.get("paper") for item in local_items if item.get("paper")]
+
+    try:
+        remote_items = connector.list_all_items(
+            api_key=req.api_key,
+            library_type=req.library_type,
+            library_id=req.library_id,
+            max_items=2000,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to list Zotero items: {exc}") from exc
+
+    existing_keys = {
+        key for key in (connector.item_dedupe_key(item) for item in remote_items) if key
+    }
+    payload: List[Dict[str, Any]] = []
+    skipped = 0
+
+    for paper in local_papers:
+        if not isinstance(paper, dict):
+            continue
+        key = connector.paper_dedupe_key(paper)
+        if key and key in existing_keys:
+            skipped += 1
+            continue
+        payload.append(connector.paper_to_zotero_item(paper))
+        if key:
+            existing_keys.add(key)
+
+    pushed = 0
+    errors: List[str] = []
+    if not req.dry_run:
+        for start in range(0, len(payload), 50):
+            batch = payload[start : start + 50]
+            if not batch:
+                continue
+            try:
+                result = connector.create_items(
+                    api_key=req.api_key,
+                    library_type=req.library_type,
+                    library_id=req.library_id,
+                    items=batch,
+                )
+                successful = result.get("successful")
+                if isinstance(successful, dict):
+                    pushed += len(successful)
+                else:
+                    pushed += len(batch)
+            except Exception as exc:
+                errors.append(f"batch {start // 50 + 1}: {exc}")
+
+    return ZoteroPushResponse(
+        user_id=req.user_id,
+        track_id=req.track_id,
+        local_saved=len(local_papers),
+        remote_items=len(remote_items),
+        to_push=len(payload),
+        pushed=pushed,
+        skipped=skipped,
+        dry_run=req.dry_run,
+        errors=errors[:100],
+    )
+
+
 @router.get("/research/tracks/{track_id}/anchors/discover", response_model=AnchorDiscoverResponse)
 # TODO: IDOR — replace user_id query param with authenticated session user (PR #112 review).
 def discover_track_anchors(
@@ -2165,6 +2477,325 @@ async def scholar_trends(req: ScholarTrendsRequest):
 # ---------------------------------------------------------------------------
 # Paper export (BibTeX / RIS / Markdown)
 # ---------------------------------------------------------------------------
+
+
+def _find_track_by_name(*, user_id: str, track_name: str) -> Optional[Dict[str, Any]]:
+    target = (track_name or "").strip().casefold()
+    if not target:
+        return None
+    tracks = _research_store.list_tracks(user_id=user_id, include_archived=True, limit=500)
+    for track in tracks:
+        if str(track.get("name") or "").strip().casefold() == target:
+            return track
+    return None
+
+
+def _resolve_or_create_import_track(
+    *,
+    user_id: str,
+    track_id: Optional[int],
+    track_name: Optional[str],
+    default_track_name: str,
+) -> Dict[str, Any]:
+    if track_id is not None:
+        track = _research_store.get_track(user_id=user_id, track_id=int(track_id))
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+        return track
+
+    if track_name:
+        found = _find_track_by_name(user_id=user_id, track_name=track_name)
+        if found:
+            return found
+        return _research_store.create_track(
+            user_id=user_id,
+            name=(track_name or "").strip(),
+            description=f"Imported from {default_track_name.lower()}",
+            activate=True,
+        )
+
+    active = _research_store.get_active_track(user_id=user_id)
+    if active:
+        return active
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return _research_store.create_track(
+        user_id=user_id,
+        name=f"{default_track_name} {today}",
+        description=f"Auto-created for {default_track_name.lower()}",
+        activate=True,
+    )
+
+
+def _parse_bibtex_entries(content: str) -> List[Dict[str, Any]]:
+    text = str(content or "")
+    entries: List[Dict[str, Any]] = []
+    cursor = 0
+    size = len(text)
+    while cursor < size:
+        at_index = text.find("@", cursor)
+        if at_index < 0:
+            break
+
+        entry, next_cursor = _parse_single_bibtex_entry(text, at_index)
+        cursor = max(next_cursor, at_index + 1)
+        if entry:
+            entries.append(entry)
+    return entries
+
+
+def _parse_single_bibtex_entry(text: str, start: int) -> Tuple[Optional[Dict[str, Any]], int]:
+    size = len(text)
+    cursor = start + 1
+    while cursor < size and text[cursor].isspace():
+        cursor += 1
+
+    entry_type_start = cursor
+    while cursor < size and (text[cursor].isalnum() or text[cursor] in {"_", "-"}):
+        cursor += 1
+    entry_type = text[entry_type_start:cursor].strip().lower()
+    if not entry_type:
+        return None, cursor
+
+    while cursor < size and text[cursor].isspace():
+        cursor += 1
+    if cursor >= size or text[cursor] not in {"{", "("}:
+        return None, cursor
+
+    opener = text[cursor]
+    closer = "}" if opener == "{" else ")"
+    cursor += 1
+    body_start = cursor
+    depth = 1
+    in_quote = False
+    escaped = False
+
+    while cursor < size and depth > 0:
+        ch = text[cursor]
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == opener:
+                depth += 1
+            elif ch == closer:
+                depth -= 1
+        cursor += 1
+
+    if depth != 0:
+        return None, cursor
+
+    body = text[body_start : cursor - 1].strip()
+    parsed = _parse_bibtex_entry_body(body)
+    if not parsed:
+        return None, cursor
+    parsed["entry_type"] = entry_type
+    return parsed, cursor
+
+
+def _parse_bibtex_entry_body(body: str) -> Optional[Dict[str, Any]]:
+    if not body:
+        return None
+
+    split_idx = _find_top_level_char(body, ",")
+    if split_idx < 0:
+        return None
+
+    citation_key = body[:split_idx].strip()
+    fields_text = body[split_idx + 1 :]
+    fields: Dict[str, str] = {}
+    cursor = 0
+    size = len(fields_text)
+
+    while cursor < size:
+        while cursor < size and fields_text[cursor] in {" ", "\t", "\n", "\r", ","}:
+            cursor += 1
+        if cursor >= size:
+            break
+
+        key_start = cursor
+        while cursor < size and fields_text[cursor] not in {"=", ",", "\n", "\r"}:
+            cursor += 1
+        field_name = fields_text[key_start:cursor].strip().lower()
+        while cursor < size and fields_text[cursor].isspace():
+            cursor += 1
+        if cursor >= size or fields_text[cursor] != "=":
+            cursor += 1
+            continue
+        cursor += 1
+        while cursor < size and fields_text[cursor].isspace():
+            cursor += 1
+
+        value, cursor = _read_bibtex_value(fields_text, cursor)
+        if field_name:
+            fields[field_name] = _clean_bibtex_text(value)
+
+    return {"key": citation_key, "fields": fields}
+
+
+def _read_bibtex_value(text: str, start: int) -> Tuple[str, int]:
+    size = len(text)
+    if start >= size:
+        return "", size
+
+    ch = text[start]
+    if ch == "{":
+        cursor = start + 1
+        depth = 1
+        while cursor < size and depth > 0:
+            token = text[cursor]
+            if token == "{":
+                depth += 1
+            elif token == "}":
+                depth -= 1
+            cursor += 1
+        value = text[start + 1 : max(start + 1, cursor - 1)]
+        return value, _consume_bibtex_value_tail(text, cursor)
+
+    if ch == '"':
+        cursor = start + 1
+        escaped = False
+        while cursor < size:
+            token = text[cursor]
+            if escaped:
+                escaped = False
+            elif token == "\\":
+                escaped = True
+            elif token == '"':
+                cursor += 1
+                break
+            cursor += 1
+        value = text[start + 1 : max(start + 1, cursor - 1)]
+        return value, _consume_bibtex_value_tail(text, cursor)
+
+    cursor = start
+    while cursor < size and text[cursor] not in {",", "\n", "\r"}:
+        cursor += 1
+    value = text[start:cursor]
+    return value, _consume_bibtex_value_tail(text, cursor)
+
+
+def _consume_bibtex_value_tail(text: str, start: int) -> int:
+    cursor = start
+    size = len(text)
+    while cursor < size and text[cursor].isspace():
+        cursor += 1
+    if cursor < size and text[cursor] == ",":
+        cursor += 1
+    return cursor
+
+
+def _find_top_level_char(text: str, token: str) -> int:
+    depth = 0
+    in_quote = False
+    escaped = False
+    for idx, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+            continue
+        if in_quote:
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth = max(0, depth - 1)
+            continue
+        if depth == 0 and ch == token:
+            return idx
+    return -1
+
+
+def _clean_bibtex_text(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    text = text.replace("\\{", "{").replace("\\}", "}")
+    text = text.replace("\\&", "&").replace("\\_", "_").replace("\\%", "%")
+    text = text.replace("{", "").replace("}", "")
+    return text.strip()
+
+
+def _parse_bibtex_authors(raw: str) -> List[str]:
+    normalized = str(raw or "").strip()
+    if not normalized:
+        return []
+    chunks = [part.strip() for part in re.split(r"\s+and\s+", normalized, flags=re.IGNORECASE)]
+    authors: List[str] = []
+    for chunk in chunks:
+        if not chunk:
+            continue
+        if "," in chunk:
+            parts = [item.strip() for item in chunk.split(",") if item.strip()]
+            if len(parts) >= 2:
+                authors.append(f"{parts[1]} {parts[0]}".strip())
+                continue
+        authors.append(chunk)
+    return authors
+
+
+def _extract_year(value: str) -> Optional[int]:
+    match = re.search(r"(19|20)\d{2}", str(value or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(0))
+    except Exception:
+        return None
+
+
+def _bibtex_entry_to_paper(entry: Dict[str, Any]) -> Dict[str, Any]:
+    fields = dict(entry.get("fields") or {})
+    title = str(fields.get("title") or "").strip()
+    authors = _parse_bibtex_authors(str(fields.get("author") or ""))
+    year = _extract_year(str(fields.get("year") or fields.get("date") or ""))
+    venue = (
+        str(fields.get("journal") or "")
+        or str(fields.get("booktitle") or "")
+        or str(fields.get("publisher") or "")
+    ).strip()
+    doi = normalize_doi(fields.get("doi"))
+    url = str(fields.get("url") or "").strip()
+    arxiv_id = normalize_arxiv_id(fields.get("eprint"))
+    if arxiv_id is None:
+        arxiv_id = normalize_arxiv_id(fields.get("arxiv"))
+    if arxiv_id is None:
+        arxiv_id = normalize_arxiv_id(fields.get("note"))
+    if arxiv_id is None:
+        arxiv_id = normalize_arxiv_id(url)
+
+    identities: List[Dict[str, str]] = []
+    if doi:
+        identities.append({"source": "doi", "external_id": doi})
+    if arxiv_id:
+        identities.append({"source": "arxiv", "external_id": arxiv_id})
+
+    paper: Dict[str, Any] = {
+        "title": title,
+        "authors": authors,
+        "year": year,
+        "venue": venue,
+        "abstract": str(fields.get("abstract") or "").strip(),
+        "url": url,
+        "doi": doi,
+        "arxiv_id": arxiv_id,
+        "source": "bibtex",
+        "primary_source": "bibtex",
+        "identities": identities,
+    }
+
+    citation_key = str(entry.get("key") or "").strip()
+    if citation_key:
+        paper["metadata"] = {"citation_key": citation_key}
+    return paper
 
 
 def _make_citation_key(authors: List[str], year: Optional[int]) -> str:
