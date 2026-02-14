@@ -19,7 +19,25 @@ try:
 except ImportError:  # pragma: no cover
     PaperSearchService = None  # type: ignore
 
+# Optional: AnchorService for personalized author boosts
+try:
+    from paperbot.application.services.anchor_service import AnchorService
+except ImportError:  # pragma: no cover
+    AnchorService = None  # type: ignore
+
 _TOKEN_RX = re.compile(r"[a-zA-Z0-9_+.-]+")
+
+
+_anchor_service: Optional["AnchorService"] = None
+
+
+def _get_anchor_service() -> Optional["AnchorService"]:
+    global _anchor_service
+    if AnchorService is None:
+        return None
+    if _anchor_service is None:
+        _anchor_service = AnchorService()
+    return _anchor_service
 
 
 def _tokenize(text: str) -> set[str]:
@@ -248,6 +266,75 @@ class RecommendationPolicy:
     max_per_field: int = 4
 
 
+def _learn_source_weights_from_feedback(
+    *,
+    feedback_rows: List[Dict[str, Any]],
+    selected_sources: List[str],
+    default_weights: Dict[str, float],
+    min_samples: int = 8,
+) -> Optional[Dict[str, float]]:
+    """Estimate per-source RRF weights from recent explicit feedback metadata."""
+    valid_sources = [str(s).strip() for s in (selected_sources or []) if str(s).strip()]
+    if not valid_sources:
+        return None
+
+    stats: Dict[str, Dict[str, float]] = {
+        source: {"pos": 0.0, "neg": 0.0, "n": 0.0} for source in valid_sources
+    }
+
+    action_signal = {
+        "save": 2.0,
+        "like": 1.5,
+        "cite": 1.5,
+        "dislike": -2.0,
+        "not_relevant": -2.0,
+        "not-relevant": -2.0,
+        "skip": -0.5,
+    }
+
+    sample_count = 0
+    for row in feedback_rows or []:
+        action = str(row.get("action") or "").strip().lower()
+        signal = float(action_signal.get(action, 0.0))
+        if signal == 0.0:
+            continue
+
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        retrieval_sources = metadata.get("retrieval_sources")
+        if not isinstance(retrieval_sources, list):
+            retrieval_sources = []
+
+        clean_sources = [
+            str(source).strip() for source in retrieval_sources if str(source).strip() in stats
+        ]
+        if not clean_sources:
+            continue
+
+        sample_count += 1
+        for source in clean_sources:
+            stats[source]["n"] += 1.0
+            if signal > 0:
+                stats[source]["pos"] += signal
+            else:
+                stats[source]["neg"] += abs(signal)
+
+    if sample_count < max(1, int(min_samples)):
+        return None
+
+    learned: Dict[str, float] = {}
+    for source in valid_sources:
+        base = float(default_weights.get(source, 0.5))
+        s = stats[source]
+        # Beta-style smoothing to avoid extreme swings under sparse feedback.
+        pos = float(s["pos"])
+        neg = float(s["neg"])
+        ctr_like = (pos + 1.0) / (pos + neg + 2.0)
+        scale = 0.6 + 0.8 * ctr_like  # [0.6, 1.4]
+        learned[source] = min(1.8, max(0.3, base * scale))
+
+    return learned
+
+
 def _normalize_stage(stage: Optional[str]) -> str:
     s = (stage or "").strip().lower()
     if s in {"survey", "writing", "rebuttal"}:
@@ -402,6 +489,9 @@ class ContextEngineConfig:
     search_sources: Optional[List[str]] = None
     exploration_ratio: Optional[float] = None
     diversity_strength: Optional[float] = None
+    personalized: bool = True
+    year_from: Optional[int] = None
+    year_to: Optional[int] = None
     track_router: TrackRouterConfig = field(default_factory=TrackRouterConfig)
 
 
@@ -568,10 +658,11 @@ class ContextEngine:
             )
 
         boosts: Dict[str, float] = {}
-        for pid in saved_ids:
-            boosts[pid] = boosts.get(pid, 0.0) + 0.25
-        for pid in liked_ids:
-            boosts[pid] = boosts.get(pid, 0.0) + 0.15
+        if self.config.personalized:
+            for pid in saved_ids:
+                boosts[pid] = boosts.get(pid, 0.0) + 0.25
+            for pid in liked_ids:
+                boosts[pid] = boosts.get(pid, 0.0) + 0.15
 
         stage = stage_raw
         if stage_raw == "auto":
@@ -597,6 +688,8 @@ class ContextEngine:
             "rebuttal": (0.50, 0.40, 0.10),
         }.get(stage, (0.55, 0.30, 0.15))
 
+        learned_source_weights: Optional[Dict[str, float]] = None
+
         Logger.info(
             f"Paper search config: offline={self.config.offline}, "
             f"paper_limit={self.config.paper_limit}",
@@ -614,6 +707,29 @@ class ContextEngine:
                     if not selected_sources:
                         selected_sources = ["semantic_scholar"]
 
+                    if self.config.personalized and routed_track:
+                        try:
+                            feedback_rows = self.research_store.list_paper_feedback(
+                                user_id=user_id,
+                                track_id=int(routed_track["id"]),
+                                limit=500,
+                            )
+                            default_rrf_weights = getattr(
+                                self.search_service,
+                                "DEFAULT_SOURCE_WEIGHTS",
+                                {},
+                            )
+                            learned_source_weights = _learn_source_weights_from_feedback(
+                                feedback_rows=feedback_rows,
+                                selected_sources=selected_sources,
+                                default_weights=dict(default_rrf_weights or {}),
+                            )
+                        except Exception as exc:
+                            Logger.warning(
+                                f"Failed to learn source weights: {exc}",
+                                file=LogFiles.HARVEST,
+                            )
+
                     Logger.info(
                         f"Using PaperSearchService for query='{merged_query}'",
                         file=LogFiles.HARVEST,
@@ -622,7 +738,10 @@ class ContextEngine:
                         merged_query,
                         sources=selected_sources,
                         max_results=fetch_limit,
+                        year_from=self.config.year_from,
+                        year_to=self.config.year_to,
                         persist=True,
+                        source_weights=learned_source_weights,
                     )
                     raw = [p.to_dict() for p in search_result.papers]
                     # Inject paper_id from canonical_id or first identity
@@ -659,6 +778,13 @@ class ContextEngine:
                         for p in local_papers:
                             d = paper_to_dict(p)
                             d["paper_id"] = str(d.get("id") or "")
+                            year_val = d.get("year")
+                            if self.config.year_from is not None and isinstance(year_val, int):
+                                if int(year_val) < int(self.config.year_from):
+                                    continue
+                            if self.config.year_to is not None and isinstance(year_val, int):
+                                if int(year_val) > int(self.config.year_to):
+                                    continue
                             raw.append(d)
                         Logger.info(
                             f"Local DB fallback returned {len(raw)} papers",
@@ -670,7 +796,7 @@ class ContextEngine:
                             file=LogFiles.HARVEST,
                         )
 
-                # Feedback filtering + dedup + relevance
+                # Feedback filtering + dedup + relevance + year range
                 seen_titles: set[str] = set()
                 filtered: List[Dict[str, Any]] = []
                 for p in raw:
@@ -679,12 +805,46 @@ class ContextEngine:
                         continue
                     if not _is_academic_paper(p):
                         continue
+                    # Year range filter (post-search safety net)
+                    year_val = p.get("year")
+                    if isinstance(year_val, int):
+                        if self.config.year_from is not None and year_val < self.config.year_from:
+                            continue
+                        if self.config.year_to is not None and year_val > self.config.year_to:
+                            continue
                     tkey = _normalize_title(str(p.get("title") or ""))
                     if tkey and tkey in seen_titles:
                         continue
                     if tkey:
                         seen_titles.add(tkey)
                     filtered.append(p)
+
+                if self.config.personalized and routed_track:
+                    try:
+                        anchor_service = _get_anchor_service()
+                        if anchor_service is not None:
+                            numeric_ids = [
+                                int(str(p.get("paper_id") or 0))
+                                for p in filtered
+                                if str(p.get("paper_id") or "").isdigit()
+                            ]
+                            if numeric_ids:
+                                anchor_boosts = anchor_service.get_followed_paper_anchor_scores(
+                                    user_id=user_id,
+                                    track_id=int(routed_track["id"]),
+                                    paper_ids=numeric_ids,
+                                )
+                                for paper_id, anchor_score in anchor_boosts.items():
+                                    pid = str(paper_id)
+                                    boosts[pid] = boosts.get(pid, 0.0) + min(
+                                        0.35,
+                                        0.20 * max(0.0, float(anchor_score)),
+                                    )
+                    except Exception as exc:
+                        Logger.warning(
+                            f"Failed to apply anchor boost: {exc}",
+                            file=LogFiles.HARVEST,
+                        )
 
                 try:
                     self._attach_latest_judge(filtered)
@@ -745,6 +905,10 @@ class ContextEngine:
             "exploration_ratio": float(exploration_ratio),
             "diversity_strength": float(diversity_strength),
             "suggestion": routing_suggestion,
+            "personalized": bool(self.config.personalized),
+            "learned_source_weights": dict(learned_source_weights or {}),
+            "year_from": self.config.year_from,
+            "year_to": self.config.year_to,
         }
 
         context_run_id: Optional[int] = None

@@ -109,6 +109,7 @@ class PaperStore:
         paper: Dict[str, Any],
         source_hint: Optional[str] = None,
         seen_at: Optional[datetime] = None,
+        sync_authors: bool = True,
     ) -> Dict[str, Any]:
         now = _utcnow()
 
@@ -241,7 +242,7 @@ class PaperStore:
             row.abstract = abstract or row.abstract or ""
             row.url = url or row.url or None
             row.pdf_url = pdf_url or row.pdf_url or None
-            row.venue = venue or row.venue or None
+            row.venue = venue or row.venue or ""
             row.year = year if year is not None else row.year
             row.publication_date = publication_date or row.publication_date
             row.citation_count = max(citation_count, int(row.citation_count or 0))
@@ -272,7 +273,7 @@ class PaperStore:
             self._sync_identifiers(session, row)
 
             # Extract and link authors to authors/paper_authors tables
-            if authors and row.id:
+            if sync_authors and authors and row.id:
                 try:
                     self._author_store.replace_paper_authors(
                         paper_id=int(row.id),
