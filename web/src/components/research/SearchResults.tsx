@@ -3,7 +3,7 @@
 import { Loader2 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 
 import { PaperCard, type Paper } from "./PaperCard"
@@ -13,6 +13,7 @@ interface SearchResultsProps {
   reasons?: Record<string, string[]>
   isSearching?: boolean
   hasSearched: boolean
+  className?: string
   selectedSources?: string[]
   onToggleSource?: (source: string) => void
   onLike?: (paperId: string, rank: number, paper: Paper) => Promise<void> | void
@@ -56,6 +57,7 @@ export function SearchResults({
   reasons,
   isSearching = false,
   hasSearched,
+  className,
   selectedSources = ["semantic_scholar"],
   onToggleSource,
   onLike,
@@ -70,7 +72,7 @@ export function SearchResults({
   // Searching - show loading skeletons
   if (isSearching) {
     return (
-      <div className="w-full max-w-4xl mx-auto">
+      <div className={cn("w-full", className)}>
         <div className="flex items-center gap-3 mb-4">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           <p className="text-sm text-muted-foreground">Searching for papers...</p>
@@ -87,7 +89,7 @@ export function SearchResults({
   // No results
   if (papers.length === 0) {
     return (
-      <div className="w-full max-w-4xl mx-auto py-12 animate-in fade-in duration-300">
+      <div className={cn("w-full py-12 animate-in fade-in duration-300", className)}>
         <div className="text-center text-muted-foreground">
           <p className="text-xl font-medium">No papers found</p>
           <p className="text-base mt-2">
@@ -100,58 +102,63 @@ export function SearchResults({
 
   // Show results with staggered animation
   return (
-    <div className="w-full max-w-4xl mx-auto animate-in fade-in duration-300">
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-muted-foreground">
-          Found <span className="font-medium text-foreground">{papers.length}</span> papers
-        </p>
-        <div className="flex items-center gap-1.5">
-          {SOURCE_OPTIONS.map((source) => {
-            const active = selectedSources.includes(source.value)
-            return (
-              <button
-                key={source.value}
-                type="button"
-                onClick={() => onToggleSource?.(source.value)}
-                className={cn(
-                  "rounded-md border px-2 py-1 text-xs transition-colors",
-                  active
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {source.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
+    <div className={cn("w-full animate-in fade-in duration-300", className)}>
+      <Card>
+        <CardContent className="p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <p className="text-sm text-muted-foreground">Recommendation stream</p>
+              <p className="text-sm text-muted-foreground">
+                Found <span className="font-medium text-foreground">{papers.length}</span> papers
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {SOURCE_OPTIONS.map((source) => {
+                const active = selectedSources.includes(source.value)
+                return (
+                  <button
+                    key={source.value}
+                    type="button"
+                    onClick={() => onToggleSource?.(source.value)}
+                    className={cn(
+                      "rounded-md border px-2 py-1 text-xs transition-colors",
+                      active
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {source.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      <ScrollArea className="h-[calc(100vh-300px)] sm:h-[calc(100vh-280px)]">
-        <div className="space-y-3 pr-4">
-          {papers.map((paper, idx) => (
-            <PaperCard
-              key={paper.paper_id}
-              paper={paper}
-              rank={idx}
-              reasons={reasons?.[paper.paper_id]}
-              onLike={onLike ? () => onLike(paper.paper_id, idx, paper) : undefined}
-              onSave={onSave ? () => onSave(paper.paper_id, idx, paper) : undefined}
-              onDislike={onDislike ? () => onDislike(paper.paper_id, idx, paper) : undefined}
-              className={cn(
-                "animate-in fade-in slide-in-from-bottom-2",
-                // Staggered animation delay
-                idx === 0 && "duration-300",
-                idx === 1 && "duration-300 delay-[50ms]",
-                idx === 2 && "duration-300 delay-[100ms]",
-                idx === 3 && "duration-300 delay-[150ms]",
-                idx === 4 && "duration-300 delay-[200ms]",
-                idx >= 5 && "duration-300 delay-[250ms]"
-              )}
-            />
-          ))}
-        </div>
-      </ScrollArea>
+      <div className="mt-4 space-y-3">
+        {papers.map((paper, idx) => (
+          <PaperCard
+            key={paper.paper_id}
+            paper={paper}
+            rank={idx}
+            reasons={reasons?.[paper.paper_id]}
+            onLike={onLike ? () => onLike(paper.paper_id, idx, paper) : undefined}
+            onSave={onSave ? () => onSave(paper.paper_id, idx, paper) : undefined}
+            onDislike={onDislike ? () => onDislike(paper.paper_id, idx, paper) : undefined}
+            className={cn(
+              "animate-in fade-in slide-in-from-bottom-2",
+              // Staggered animation delay
+              idx === 0 && "duration-300",
+              idx === 1 && "duration-300 delay-[50ms]",
+              idx === 2 && "duration-300 delay-[100ms]",
+              idx === 3 && "duration-300 delay-[150ms]",
+              idx === 4 && "duration-300 delay-[200ms]",
+              idx >= 5 && "duration-300 delay-[250ms]"
+            )}
+          />
+        ))}
+      </div>
     </div>
   )
 }

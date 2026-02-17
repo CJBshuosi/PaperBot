@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 
+import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -94,12 +95,14 @@ interface DiscoveryGraphWorkspaceProps {
   userId: string
   trackId: number | null
   onSavePaper: (paper: SavePaperPayload) => Promise<void>
+  className?: string
 }
 
 export default function DiscoveryGraphWorkspace({
   userId,
   trackId,
   onSavePaper,
+  className,
 }: DiscoveryGraphWorkspaceProps) {
   const [seedType, setSeedType] = useState<"doi" | "arxiv" | "openalex" | "semantic_scholar" | "author">(
     "doi",
@@ -250,7 +253,7 @@ export default function DiscoveryGraphWorkspace({
   }
 
   return (
-    <Card className="mt-6">
+    <Card className={cn("mt-6 border-border/80", className)}>
       <CardHeader>
         <CardTitle>Discovery Graph</CardTitle>
         <CardDescription>
@@ -258,9 +261,9 @@ export default function DiscoveryGraphWorkspace({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-2 md:grid-cols-6">
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
           <select
-            className="h-9 rounded-md border bg-background px-2 text-sm"
+            className="h-9 min-w-0 rounded-md border bg-background px-2 text-sm"
             value={seedType}
             onChange={(event) => setSeedType(event.target.value as typeof seedType)}
             disabled={loading}
@@ -276,31 +279,36 @@ export default function DiscoveryGraphWorkspace({
             onChange={(event) => setSeedId(event.target.value)}
             placeholder="Seed identifier"
             disabled={loading}
-            className="md:col-span-2"
+            className="min-w-0 xl:col-span-2"
           />
           <Input
             value={limit}
             onChange={(event) => setLimit(event.target.value)}
             placeholder="30"
             disabled={loading}
+            className="min-w-0"
           />
           <Input
             value={requestYearFrom}
             onChange={(event) => setRequestYearFrom(event.target.value)}
             placeholder="Year from"
             disabled={loading}
+            className="min-w-0"
           />
-          <div className="flex items-center gap-2">
-            <Input
-              value={requestYearTo}
-              onChange={(event) => setRequestYearTo(event.target.value)}
-              placeholder="Year to"
-              disabled={loading}
-            />
-            <Button onClick={runDiscovery} disabled={loading || !seedId.trim()}>
-              {loading ? "Discovering..." : "Discover"}
-            </Button>
-          </div>
+          <Input
+            value={requestYearTo}
+            onChange={(event) => setRequestYearTo(event.target.value)}
+            placeholder="Year to"
+            disabled={loading}
+            className="min-w-0"
+          />
+          <Button
+            onClick={runDiscovery}
+            disabled={loading || !seedId.trim()}
+            className="w-full xl:w-auto"
+          >
+            {loading ? "Discovering..." : "Discover"}
+          </Button>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">

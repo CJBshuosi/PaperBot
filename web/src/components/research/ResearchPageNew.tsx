@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "next/navigation"
 
 import { cn } from "@/lib/utils"
-import { BookOpen } from "lucide-react"
+import { BookOpen, GitBranch, Search, Sparkles } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -449,9 +450,9 @@ export default function ResearchPageNew() {
   return (
     <div
       className={cn(
-        "min-h-[calc(100vh-4rem)] transition-all duration-500 ease-out",
+        "min-h-[calc(100vh-4rem)] bg-gradient-to-b from-background via-background to-muted/20 transition-all duration-500 ease-out",
         !hasSearched && "flex flex-col items-center justify-center",
-        hasSearched && "pt-6 sm:pt-8"
+        hasSearched && "py-6 sm:py-8"
       )}
     >
       {/* Confirm Clear Memory Dialog */}
@@ -530,7 +531,7 @@ export default function ResearchPageNew() {
       <div
         className={cn(
           "w-full px-4 sm:px-6 lg:px-8 transition-all duration-500 ease-out mx-auto",
-          hasSearched ? "max-w-5xl" : "max-w-4xl"
+          hasSearched ? "max-w-[1400px]" : "max-w-4xl"
         )}
       >
         {/* Greeting - only show before search */}
@@ -587,6 +588,40 @@ export default function ResearchPageNew() {
           </div>
         )}
 
+        {!hasSearched && (
+          <Card className="mx-auto mb-8 max-w-3xl border-border/70 bg-card/80 backdrop-blur-sm">
+            <CardContent className="grid gap-3 p-4 sm:grid-cols-3 sm:p-5">
+              <div className="rounded-md border bg-background/70 p-3">
+                <p className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <Search className="h-4 w-4 text-primary" />
+                  Search
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Start from a query with year window and source filters.
+                </p>
+              </div>
+              <div className="rounded-md border bg-background/70 p-3">
+                <p className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  Rank
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Capture like/save/dislike feedback to steer recommendations.
+                </p>
+              </div>
+              <div className="rounded-md border bg-background/70 p-3">
+                <p className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <GitBranch className="h-4 w-4 text-primary" />
+                  Discover
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Expand with citation graph and timeline slices in one workspace.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Error Display */}
         {error && (
           <Card className="border-destructive/40 mb-6 max-w-3xl mx-auto">
@@ -601,24 +636,41 @@ export default function ResearchPageNew() {
 
         {/* Search Results - only shown after search */}
         {hasSearched && (
-          <>
-            <SearchResults
-              papers={papers}
-              reasons={reasons}
-              isSearching={isSearching}
-              hasSearched={hasSearched}
-              selectedSources={searchSources}
-              onToggleSource={toggleSearchSource}
-              onLike={(paperId, rank, paper) => handleFeedback(paperId, "like", rank, paper)}
-              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
-              onDislike={(paperId, rank, paper) => handleFeedback(paperId, "dislike", rank, paper)}
-            />
-            <DiscoveryGraphWorkspace
-              userId={userId}
-              trackId={activeTrackId}
-              onSavePaper={handleDiscoverySave}
-            />
-          </>
+          <div className="space-y-4">
+            <Card className="border-border/70 bg-card/80 backdrop-blur-sm">
+              <CardContent className="flex flex-wrap items-center gap-2 p-3 sm:p-4">
+                <Badge variant="outline">
+                  Track: {activeTrack?.name || "Global"}
+                </Badge>
+                <Badge variant="outline">
+                  Mode: {anchorPersonalized ? "Personalized" : "Global"}
+                </Badge>
+                <Badge variant="outline">Sources: {searchSources.length}</Badge>
+                <Badge variant="secondary">Results: {papers.length}</Badge>
+              </CardContent>
+            </Card>
+
+            <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.12fr)_minmax(360px,0.88fr)]">
+              <SearchResults
+                className="min-w-0"
+                papers={papers}
+                reasons={reasons}
+                isSearching={isSearching}
+                hasSearched={hasSearched}
+                selectedSources={searchSources}
+                onToggleSource={toggleSearchSource}
+                onLike={(paperId, rank, paper) => handleFeedback(paperId, "like", rank, paper)}
+                onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
+                onDislike={(paperId, rank, paper) => handleFeedback(paperId, "dislike", rank, paper)}
+              />
+              <DiscoveryGraphWorkspace
+                className="mt-0 lg:sticky lg:top-6"
+                userId={userId}
+                trackId={activeTrackId}
+                onSavePaper={handleDiscoverySave}
+              />
+            </div>
+          </div>
         )}
 
         {/* Memory Sheet Drawer */}
