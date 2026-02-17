@@ -53,6 +53,8 @@ type SavePaperPayload = {
   source?: string
 }
 
+type SeedType = "doi" | "arxiv" | "openalex" | "semantic_scholar" | "author"
+
 const EDGE_COLORS: Record<string, string> = {
   related: "#3b82f6",
   cited: "#10b981",
@@ -95,6 +97,8 @@ interface DiscoveryGraphWorkspaceProps {
   userId: string
   trackId: number | null
   onSavePaper: (paper: SavePaperPayload) => Promise<void>
+  initialSeedType?: SeedType
+  initialSeedId?: string
   className?: string
 }
 
@@ -102,12 +106,12 @@ export default function DiscoveryGraphWorkspace({
   userId,
   trackId,
   onSavePaper,
+  initialSeedType = "doi",
+  initialSeedId = "",
   className,
 }: DiscoveryGraphWorkspaceProps) {
-  const [seedType, setSeedType] = useState<"doi" | "arxiv" | "openalex" | "semantic_scholar" | "author">(
-    "doi",
-  )
-  const [seedId, setSeedId] = useState("")
+  const [seedType, setSeedType] = useState<SeedType>(initialSeedType)
+  const [seedId, setSeedId] = useState(initialSeedId)
   const [limit, setLimit] = useState("30")
   const [requestYearFrom, setRequestYearFrom] = useState("")
   const [requestYearTo, setRequestYearTo] = useState("")
@@ -124,6 +128,14 @@ export default function DiscoveryGraphWorkspace({
 
   const [timelineFrom, setTimelineFrom] = useState<number | null>(null)
   const [timelineTo, setTimelineTo] = useState<number | null>(null)
+
+  useEffect(() => {
+    setSeedType(initialSeedType)
+  }, [initialSeedType])
+
+  useEffect(() => {
+    setSeedId(initialSeedId)
+  }, [initialSeedId])
 
   const timelineYearCounts = useMemo(() => {
     const rows = new Map<number, number>()

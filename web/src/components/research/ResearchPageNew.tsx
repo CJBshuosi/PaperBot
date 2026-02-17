@@ -1,10 +1,11 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 
 import { cn } from "@/lib/utils"
-import { BookOpen, GitBranch, Search, Sparkles } from "lucide-react"
+import { ArrowRight, BookOpen, GitBranch, Search, Sparkles } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -27,7 +28,6 @@ import { SearchBox } from "./SearchBox"
 import { TrackPills } from "./TrackPills"
 import { SearchResults } from "./SearchResults"
 import { MemoryTab } from "./MemoryTab"
-import DiscoveryGraphWorkspace from "./DiscoveryGraphWorkspace"
 import { CreateTrackModal } from "./CreateTrackModal"
 import { EditTrackModal } from "./EditTrackModal"
 import { ManageTracksModal } from "./ManageTracksModal"
@@ -409,43 +409,14 @@ export default function ResearchPageNew() {
     })
   }
 
-  async function handleDiscoverySave(paper: {
-    paper_id: string
-    title: string
-    abstract?: string
-    authors?: string[]
-    year?: number
-    venue?: string
-    citation_count?: number
-    url?: string
-    source?: string
-  }) {
-    await fetchJson(`/api/research/papers/feedback`, {
-      method: "POST",
-      body: JSON.stringify({
-        user_id: userId,
-        track_id: activeTrackId,
-        paper_id: paper.paper_id,
-        action: "save",
-        weight: 1.0,
-        metadata: {
-          import_source: "discovery_graph",
-          anchor_mode: anchorPersonalized ? "personalized" : "global",
-        },
-        paper_title: paper.title,
-        paper_abstract: paper.abstract || "",
-        paper_authors: paper.authors || [],
-        paper_year: paper.year,
-        paper_venue: paper.venue,
-        paper_citation_count: paper.citation_count || 0,
-        paper_url: paper.url || "",
-        paper_source: paper.source || "semantic_scholar",
-      }),
-      headers: { "Content-Type": "application/json" },
-    })
-  }
-
   const trackToClearName = tracks.find((t) => t.id === trackToClear)?.name || "this track"
+  const discoveryHref = useMemo(() => {
+    const params = new URLSearchParams()
+    if (query.trim()) params.set("query", query.trim())
+    if (activeTrackId) params.set("track_id", String(activeTrackId))
+    const qs = params.toString()
+    return qs ? `/research/discovery?${qs}` : "/research/discovery"
+  }, [query, activeTrackId])
 
   return (
     <div
@@ -638,38 +609,37 @@ export default function ResearchPageNew() {
         {hasSearched && (
           <div className="space-y-4">
             <Card className="border-border/70 bg-card/80 backdrop-blur-sm">
-              <CardContent className="flex flex-wrap items-center gap-2 p-3 sm:p-4">
-                <Badge variant="outline">
-                  Track: {activeTrack?.name || "Global"}
-                </Badge>
-                <Badge variant="outline">
-                  Mode: {anchorPersonalized ? "Personalized" : "Global"}
-                </Badge>
-                <Badge variant="outline">Sources: {searchSources.length}</Badge>
-                <Badge variant="secondary">Results: {papers.length}</Badge>
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3 sm:p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">
+                    Track: {activeTrack?.name || "Global"}
+                  </Badge>
+                  <Badge variant="outline">
+                    Mode: {anchorPersonalized ? "Personalized" : "Global"}
+                  </Badge>
+                  <Badge variant="outline">Sources: {searchSources.length}</Badge>
+                  <Badge variant="secondary">Results: {papers.length}</Badge>
+                </div>
+                <Button asChild size="sm" className="gap-1.5">
+                  <Link href={discoveryHref}>
+                    Open Discovery Workspace
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </Button>
               </CardContent>
             </Card>
 
-            <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.12fr)_minmax(360px,0.88fr)]">
-              <SearchResults
-                className="min-w-0"
-                papers={papers}
-                reasons={reasons}
-                isSearching={isSearching}
-                hasSearched={hasSearched}
-                selectedSources={searchSources}
-                onToggleSource={toggleSearchSource}
-                onLike={(paperId, rank, paper) => handleFeedback(paperId, "like", rank, paper)}
-                onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
-                onDislike={(paperId, rank, paper) => handleFeedback(paperId, "dislike", rank, paper)}
-              />
-              <DiscoveryGraphWorkspace
-                className="mt-0 lg:sticky lg:top-6"
-                userId={userId}
-                trackId={activeTrackId}
-                onSavePaper={handleDiscoverySave}
-              />
-            </div>
+            <SearchResults
+              papers={papers}
+              reasons={reasons}
+              isSearching={isSearching}
+              hasSearched={hasSearched}
+              selectedSources={searchSources}
+              onToggleSource={toggleSearchSource}
+              onLike={(paperId, rank, paper) => handleFeedback(paperId, "like", rank, paper)}
+              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
+              onDislike={(paperId, rank, paper) => handleFeedback(paperId, "dislike", rank, paper)}
+            />
           </div>
         )}
 
