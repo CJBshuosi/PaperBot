@@ -94,10 +94,19 @@ class E2BExecutor(BaseExecutor):
             return self._sandbox
 
         try:
-            self._sandbox = Sandbox(
-                api_key=self.api_key,
-                timeout=self.timeout_sandbox,
-            )
+            # Set API key in environment (required for newer SDK versions)
+            if self.api_key:
+                os.environ["E2B_API_KEY"] = self.api_key
+
+            # Try new API first (Sandbox.create()), fall back to old API
+            try:
+                self._sandbox = Sandbox.create(timeout=self.timeout_sandbox)
+            except (TypeError, AttributeError):
+                # Old API with api_key parameter
+                self._sandbox = Sandbox(
+                    api_key=self.api_key,
+                    timeout=self.timeout_sandbox,
+                )
             return self._sandbox
         except Exception as e:
             logger.error(f"Failed to create E2B sandbox: {e}")
@@ -112,8 +121,18 @@ class E2BExecutor(BaseExecutor):
         """
         uploaded = {}
 
+        # Get the filesystem API (new API uses 'files', old uses 'filesystem')
+        fs = getattr(sandbox, 'files', None) or getattr(sandbox, 'filesystem', None)
+        if fs is None:
+            logger.warning("No filesystem API available in sandbox")
+            return uploaded
+
         for file_path in workdir.rglob("*"):
             if file_path.is_file():
+                # Skip __pycache__ and other non-essential files
+                if "__pycache__" in str(file_path):
+                    continue
+
                 relative_path = file_path.relative_to(workdir)
                 sandbox_path = f"/home/user/{relative_path}"
 
@@ -121,11 +140,14 @@ class E2BExecutor(BaseExecutor):
                     # Ensure parent directory exists
                     parent_dir = str(relative_path.parent)
                     if parent_dir != ".":
-                        sandbox.filesystem.make_dir(f"/home/user/{parent_dir}")
+                        try:
+                            fs.make_dir(f"/home/user/{parent_dir}")
+                        except Exception:
+                            pass  # Directory might already exist
 
                     # Upload file content
                     content = file_path.read_text(errors="ignore")
-                    sandbox.filesystem.write(sandbox_path, content)
+                    fs.write(sandbox_path, content)
                     uploaded[str(relative_path)] = sandbox_path
 
                 except Exception as e:
@@ -166,34 +188,43 @@ class E2BExecutor(BaseExecutor):
         final_exit_code = 0
 
         try:
-            # Create sandbox context
-            with Sandbox(api_key=self.api_key, timeout=self.timeout_sandbox) as sandbox:
+            # Set API key in environment (required for newer SDK versions)
+            if self.api_key:
+                os.environ["E2B_API_KEY"] = self.api_key
+
+            # Create sandbox using new API (Sandbox.create())
+            try:
+                sandbox = Sandbox.create(timeout=self.timeout_sandbox)
+            except (TypeError, AttributeError):
+                # Fall back to old API
+                sandbox = Sandbox(api_key=self.api_key, timeout=self.timeout_sandbox)
+
+            try:
                 # Upload files
                 logger.info(f"Uploading files from {workdir} to E2B sandbox...")
                 uploaded = self._upload_files(sandbox, workdir)
                 logger.info(f"Uploaded {len(uploaded)} files")
-
-                # Change to work directory
-                sandbox.process.start("cd /home/user")
 
                 # Execute commands
                 for cmd in commands:
                     logger.debug(f"Executing: {cmd}")
 
                     try:
-                        # Use process API for shell commands
-                        result = sandbox.process.start(
-                            cmd,
-                            timeout=timeout_sec,
-                            cwd="/home/user",
-                        )
-
-                        # Wait for completion
-                        output = result.wait()
-
-                        stdout = output.stdout or ""
-                        stderr = output.stderr or ""
-                        exit_code = output.exit_code
+                        # Use commands.run for shell commands (new API)
+                        if hasattr(sandbox, 'commands'):
+                            result = sandbox.commands.run(cmd, timeout=timeout_sec, cwd="/home/user")
+                            stdout = result.stdout or ""
+                            stderr = result.stderr or ""
+                            exit_code = result.exit_code
+                        elif hasattr(sandbox, 'process'):
+                            # Old API fallback
+                            proc = sandbox.process.start(cmd, timeout=timeout_sec, cwd="/home/user")
+                            output = proc.wait()
+                            stdout = output.stdout or ""
+                            stderr = output.stderr or ""
+                            exit_code = output.exit_code
+                        else:
+                            raise RuntimeError("Unknown E2B API version")
 
                         all_logs.append(f"$ {cmd}")
                         if stdout:
@@ -204,7 +235,6 @@ class E2BExecutor(BaseExecutor):
 
                         if exit_code != 0:
                             final_exit_code = exit_code
-                            # Continue execution for remaining commands
 
                     except Exception as cmd_error:
                         all_logs.append(f"$ {cmd}")
@@ -231,6 +261,15 @@ class E2BExecutor(BaseExecutor):
                     }
 
                 return result
+            finally:
+                # Clean up sandbox
+                try:
+                    if hasattr(sandbox, 'kill'):
+                        sandbox.kill()
+                    elif hasattr(sandbox, 'close'):
+                        sandbox.close()
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.error(f"E2B execution error: {e}")
@@ -270,7 +309,17 @@ class E2BExecutor(BaseExecutor):
         start_time = time.time()
 
         try:
-            with Sandbox(api_key=self.api_key, timeout=self.timeout_sandbox) as sandbox:
+            # Set API key in environment (required for newer SDK versions)
+            if self.api_key:
+                os.environ["E2B_API_KEY"] = self.api_key
+
+            # Create sandbox using new API
+            try:
+                sandbox = Sandbox.create(timeout=self.timeout_sandbox)
+            except (TypeError, AttributeError):
+                sandbox = Sandbox(api_key=self.api_key, timeout=self.timeout_sandbox)
+
+            try:
                 # Use run_code for direct code execution
                 execution = sandbox.run_code(code)
 
@@ -305,6 +354,15 @@ class E2BExecutor(BaseExecutor):
                         "mode": "direct_code",
                     },
                 )
+            finally:
+                # Clean up sandbox
+                try:
+                    if hasattr(sandbox, 'kill'):
+                        sandbox.kill()
+                    elif hasattr(sandbox, 'close'):
+                        sandbox.close()
+                except Exception:
+                    pass
 
         except Exception as e:
             return ExecutionResult(
