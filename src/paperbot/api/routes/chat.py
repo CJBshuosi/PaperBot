@@ -2,10 +2,11 @@
 Chat API Route - Interactive conversation with AI about papers
 """
 
+from typing import List, Optional
+
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional
 
 from ..streaming import StreamEvent, wrap_generator
 
@@ -40,7 +41,9 @@ async def chat_stream(request: ChatRequest):
 
         # Build conversation
         messages = [
-            {"role": "system", "content": """You are PaperBot, an AI assistant specialized in academic research.
+            {
+                "role": "system",
+                "content": """You are PaperBot, an AI assistant specialized in academic research.
 You help users:
 - Find and analyze research papers
 - Track scholars and their publications
@@ -48,19 +51,24 @@ You help users:
 - Generate code implementations from papers
 - Review papers for quality and novelty
 
-Be concise and helpful. When discussing papers, cite specific details when available."""},
+Be concise and helpful. When discussing papers, cite specific details when available.""",
+            },
         ]
 
         # Optional long-term memory augmentation (cross-platform).
         if request.use_memory and request.user_id:
             try:
                 from paperbot.infrastructure.stores.memory_store import SqlAlchemyMemoryStore
-                from paperbot.memory.schema import MemoryCandidate
                 from paperbot.memory.extractor import build_memory_context
+                from paperbot.memory.schema import MemoryCandidate
 
                 store = SqlAlchemyMemoryStore()
-                items = store.search_memories(user_id=request.user_id, query=request.message, limit=8)
-                store.touch_usage(item_ids=[int(i["id"]) for i in items if i.get("id")], actor_id=request.user_id)
+                items = store.search_memories(
+                    user_id=request.user_id, query=request.message, limit=8
+                )
+                store.touch_usage(
+                    item_ids=[int(i["id"]) for i in items if i.get("id")], actor_id=request.user_id
+                )
                 cands = [
                     MemoryCandidate(
                         kind=i.get("kind") or "fact",  # type: ignore[arg-type]
@@ -117,7 +125,7 @@ async def chat(request: ChatRequest):
     Returns Server-Sent Events with streaming text.
     """
     return StreamingResponse(
-        wrap_generator(chat_stream(request)),
+        wrap_generator(chat_stream(request), workflow="chat"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

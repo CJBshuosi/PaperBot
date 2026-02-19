@@ -2,9 +2,10 @@
 Scholar Tracking API Route
 """
 
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
-from typing import Optional, Dict, Any, List
 
 from ..streaming import StreamEvent, wrap_generator
 
@@ -23,9 +24,9 @@ async def track_scholar_stream(
 ):
     """Stream scholar tracking progress"""
     # Imports here to avoid circular imports and reduce cold-start cost.
+    from paperbot.agents.scholar_tracking.paper_tracker_agent import PaperTrackerAgent
     from paperbot.application.collaboration.message_schema import new_run_id, new_trace_id
     from paperbot.application.workflows.scholar_pipeline import ScholarPipeline
-    from paperbot.agents.scholar_tracking.paper_tracker_agent import PaperTrackerAgent
     from paperbot.domain.paper import PaperMeta
 
     run_id = new_run_id()
@@ -218,7 +219,8 @@ async def track_scholar(
                 max_new_papers=max_new_papers,
                 persist_report=persist_report,
                 offline=offline,
-            )
+            ),
+            workflow="track",
         ),
         media_type="text/event-stream",
         headers={

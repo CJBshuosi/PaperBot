@@ -20,9 +20,43 @@ const iconMap: Record<string, LucideIcon> = {
     "image": ImageIcon,
 }
 
-export default async function WikiPage() {
+type WikiSearchParams = Promise<{ q?: string | string[] }>
+
+function conceptMatchesKeyword(
+    keyword: string,
+    concept: {
+        name: string
+        description: string
+        definition: string
+        category: string
+        related_papers: string[]
+        related_concepts: string[]
+        examples: string[]
+    },
+) {
+    if (!keyword) return true
+    const haystack = [
+        concept.name,
+        concept.description,
+        concept.definition,
+        concept.category,
+        concept.related_papers.join(" "),
+        concept.related_concepts.join(" "),
+        concept.examples.join(" "),
+    ]
+        .join(" ")
+        .toLowerCase()
+    return haystack.includes(keyword)
+}
+
+export default async function WikiPage({ searchParams }: { searchParams: WikiSearchParams }) {
     const concepts = await fetchWikiConcepts()
     const categories = ["All", "Method", "Architecture", "Metric", "Dataset", "Task"]
+    const rawKeyword = await searchParams
+    const keywordValue = rawKeyword?.q
+    const keyword = (Array.isArray(keywordValue) ? keywordValue[0] : keywordValue || "")
+        .trim()
+        .toLowerCase()
 
     return (
         <div className="flex-1 p-8 pt-6 min-h-screen">
@@ -37,33 +71,53 @@ export default async function WikiPage() {
                         Explore {concepts.length} core concepts in AI/ML research.
                     </p>
                 </div>
-                <div className="flex w-full md:max-w-md items-center gap-2 bg-background p-1.5 rounded-lg border shadow-sm">
+                <form method="get" className="flex w-full md:max-w-md items-center gap-2 bg-background p-1.5 rounded-lg border shadow-sm">
                     <Search className="ml-2 h-4 w-4 text-muted-foreground" />
                     <Input
+                        name="q"
                         type="text"
                         placeholder="Search concepts, methods, metrics..."
+                        defaultValue={keyword}
                         className="border-none shadow-none focus-visible:ring-0"
                     />
-                    <Button size="sm">Search</Button>
-                </div>
+                    <Button size="sm" type="submit">Search</Button>
+                </form>
             </div>
 
             {/* Category Tabs */}
             <Tabs defaultValue="All" className="w-full">
                 <TabsList className="mb-6 bg-muted/50">
                     {categories.map(cat => (
-                        <TabsTrigger key={cat} value={cat} className="data-[state=active]:bg-background">
+                        <TabsTrigger
+                            key={cat}
+                            value={cat}
+                            id={`wiki-tab-${cat.toLowerCase()}`}
+                            aria-controls={`wiki-panel-${cat.toLowerCase()}`}
+                            className="data-[state=active]:bg-background"
+                        >
                             {cat}
                         </TabsTrigger>
                     ))}
                 </TabsList>
 
-                {categories.map(cat => (
-                    <TabsContent key={cat} value={cat}>
+                {categories.map(cat => {
+                    const filteredConcepts = concepts.filter(
+                        (c) => (cat === "All" || c.category === cat) && conceptMatchesKeyword(keyword, c),
+                    )
+                    return (
+                    <TabsContent
+                        key={cat}
+                        value={cat}
+                        id={`wiki-panel-${cat.toLowerCase()}`}
+                        aria-labelledby={`wiki-tab-${cat.toLowerCase()}`}
+                    >
+                        {filteredConcepts.length === 0 ? (
+                            <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                                No concepts matched this filter.
+                            </div>
+                        ) : (
                         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                            {concepts
-                                .filter(c => cat === "All" || c.category === cat)
-                                .map((concept) => {
+                            {filteredConcepts.map((concept) => {
                                     const IconComponent = iconMap[concept.icon] || Layers
                                     return (
                                         <Card key={concept.id} className="group hover:shadow-md transition-all duration-200 hover:border-primary/30">
@@ -138,8 +192,10 @@ export default async function WikiPage() {
                                     )
                                 })}
                         </div>
+                        )}
                     </TabsContent>
-                ))}
+                    )
+                })}
             </Tabs>
         </div>
     )

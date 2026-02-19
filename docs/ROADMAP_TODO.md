@@ -63,19 +63,19 @@
 - [x] API：`GET /api/research/papers/saved`（用户收藏列表，支持排序：judge_score / saved_at / published_at）
 - [x] API：`POST /api/research/papers/{paper_id}/status`（更新阅读状态）
 - [x] API：`GET /api/research/papers/{paper_id}`（论文详情，聚合 judge + feedback + summary）
-- [ ] 前端：收藏列表页面组件
+- [x] 前端：收藏列表页面组件
   - 文件：`web/src/components/research/SavedPapersList.tsx`
 
 ### 1.3 GitHub Repo 关联（Repo Enrichment）
 
-- [ ] 新增 `PaperRepoModel` 表
+- [x] 新增 `PaperRepoModel` 表
   - 字段：`paper_id`、`repo_url`、`owner`、`name`、`stars`、`forks`、`last_commit_at`、`language`、`description`、`fetched_at`
 - [x] Enrichment 服务：从论文 abstract/url/external_url 中提取 GitHub 链接并补元数据
   - 当前实现：`src/paperbot/api/routes/paperscool.py`（后续可下沉到 service）
   - 提取来源：`github_url/external_url/url/pdf_url/alternative_urls + snippet/abstract`
   - 调用 GitHub API 补元数据（stars/forks/language/updated_at）
-- [ ] DailyPaper 生成后异步调用 repo enrichment
-- [ ] API：`GET /api/research/papers/{paper_id}/repos`
+- [x] DailyPaper 生成后异步调用 repo enrichment
+- [x] API：`GET /api/research/papers/{paper_id}/repos`
 - [x] API：`POST /api/research/paperscool/repos`（批量，含 stars/活跃度）
 
 ---
@@ -207,6 +207,101 @@
 - [ ] 有新匹配论文时触发推送（增量检测：对比上次推送的论文 ID 列表）
 
 ---
+
+
+## Phase 3.7 — Agent Browser 自动化能力（基于 vercel-labs/agent-browser）
+
+> 参考仓库：<https://github.com/vercel-labs/agent-browser>
+> 目标：把"网页交互型"任务从静态 API 拉取升级为可观测、可回放的浏览器 Agent 流程。
+> 定位：**仅用于复杂/高交互采集与回归验证场景**，默认流程保持现有 API connector，不强制改造。
+
+### 4.1 Source Capture Agent（网页采集增强）
+
+- [ ] 新增 Browser Source Runner：支持登录后抓取（HF Papers、arXiv、OpenReview）
+  - 输入：source 配置、cookies/session、抓取策略
+  - 输出：结构化 paper candidates + 抓取轨迹（screenshots + step logs）
+- [ ] 新增反爬/失败回退链路
+  - 失败后自动 fallback 到现有 API connector（papers.cool / arXiv API）
+  - 记录 fallback 原因到 run metadata
+- [ ] 新增 DOM 语义抽取模板
+  - 把标题/作者/摘要/链接抽取规则模板化，支持 source 版本升级时快速修复
+
+### 4.2 Workflow UX Agent（前端交互与 E2E 验证）
+
+- [ ] 为 Search → DailyPaper → Analyze 流程增加 browser-driven E2E 回归
+  - 覆盖 SSE 增量渲染（Judge/Trend/Insight）和 DAG 状态恢复
+- [ ] 自动录制关键节点截图与性能指标
+  - 首屏可见时间、分析阶段空白时长、首条增量结果时间（TTFR）
+- [ ] 将 E2E 结果接入 CI artifacts
+  - 每次 PR 自动上传步骤日志和失败页面快照
+
+### 4.3 Community/Platform Agent（平台对标能力）
+
+- [ ] 新增 HF/AlphaXiv 对标监测 Agent
+  - 周期性抓取公开页面能力矩阵（发现/排序/交互/推送）
+  - 生成差距报告写入 `docs/benchmark/`（markdown）
+- [ ] 新增 Daily push 预览 Agent
+  - 自动打开邮件/Slack/钉钉渲染预览页面并截图
+  - 验证 BestBlogs 风格模板在多端一致性
+- [ ] 新增 Browser Extension smoke test
+  - 校验 arXiv 页面注入按钮、详情弹层、跳转链路
+
+### 4.4 运维与安全
+
+- [ ] 新增 Browser session 密钥管理
+  - cookies/token 通过环境变量或密钥服务注入，禁止明文入库
+- [ ] 新增 Agent 审计日志
+  - 记录访问域名、操作步骤、耗时、失败原因（可用于问题追踪）
+- [ ] 新增速率限制与并发隔离策略
+  - 避免批量采集触发封禁，支持 source 级并发控制
+
+
+
+## Phase 3.8 — Agent Runtime 统一（接口契约）
+
+> 目标：把现有多套 Agent 调用方式收敛到统一契约，避免 API/Workflow 各写一套生命周期。
+
+### 3.8.1 Agent 模块盘点（当前）
+
+- [x] 盘点现有 Agent 入口与责任边界（形成清单）
+  - API 直接调用：`analyze/review/track/research/gen_code`（5 个入口）
+  - Agent 类：`src/paperbot/agents` 13 个业务 Agent（不含 Base），`src/paperbot/repro/agents` 4 个业务 Agent（不含 Base）
+  - 输出文档：`docs/agent_inventory.md`
+- [x] 标记哪些场景必须 Agent、哪些保持普通 service
+  - 必须 Agent：复杂推理、长链路、多步工具调用
+  - 非必须：纯 CRUD、低延迟同步 API、简单规则处理
+
+### 3.8.2 契约抽象（必须先做）
+
+- [x] 定义统一 `AgentRuntime` 接口
+  - 生命周期：`input -> plan -> execute -> emit events -> finalize`
+  - 文件：`src/paperbot/core/abstractions/agent_runtime.py`
+- [x] 定义统一 `AgentMessage` / `AgentResult` / `AgentError` schema
+  - 兼容当前 runbook/event_log 字段：`run_id`、`trace_id`、`stage`、`agent_name`
+- [x] 定义 `SourceCollector` 接口（API Source / Browser Source 同契约）
+  - 文件：`src/paperbot/application/ports/source_collector.py`
+
+### 3.8.3 观测统一（SSE + 日志 + 事件）
+
+- [x] 把 workflow SSE 事件映射到统一事件总线
+  - Search/DailyPaper/Analyze/Judge/Trend 都输出同一 event envelope
+- [x] 打通 `trace_id` 贯穿：API -> workflow -> agent -> store/event_log
+- [x] 前端统一消费事件协议（避免每个页面写一套 event parser）
+
+### 3.8.4 迁移顺序（按风险从低到高）
+
+- [x] Step 1：`analyze` + `review` 接入 `AgentRuntime`（低耦合）
+- [ ] Step 2：`track` + `research` 接入 `AgentRuntime`（中耦合）
+- [ ] Step 3：`gen_code`（Paper2Code）迁移到统一 Runtime 适配层（高耦合）
+- [ ] Step 4：为每步补回归测试 + runbook 对账测试
+
+### 3.8.5 工程规则
+
+- [ ] 执行策略：**每个 issue 对应 1 个 commit**（禁止跨 issue 混提）
+- [ ] commit message 必须包含 issue 编号（如 `feat: xxx (#41)`）
+
+---
+
 
 ## 多智能体系统现状与 OpenClaw 评估
 
@@ -526,3 +621,11 @@ OpenClaw Skill ── 独立，仅依赖 PaperBot REST API（已有）
 
 - 2025-02-10: 创建 ROADMAP_TODO.md，完成对标分析与功能规划
 - 2025-02-10: 新增多智能体系统现状盘点（5 套管线 + 15 个 Agent）与 OpenClaw 迁移评估
+- 2026-02-11: 对齐远端 `origin/master` 的 Harvest 基线，保留旧实现到 `backup/feat-dailypaper-sse-stream-pre-harvest-20260211`
+- 2026-02-11: 新增 Phase 4（Agent Browser 自动化）任务清单，覆盖采集、E2E、对标监测、安全与限流
+- 2026-02-11: 完成 Phase 1 收尾（PaperRepoModel + /papers/{paper_id}/repos + DailyPaper 异步 repo enrichment），并修复 harvest 基线下 paper store 兼容性
+- 2026-02-11: 新增 Phase 3.8 Agent Runtime 统一 TODO（契约/事件总线/迁移顺序），并明确 1 issue = 1 commit 规则
+- 2026-02-11: 完成 Issue #44（Agent inventory + 边界决策文档），新增 `docs/agent_inventory.md`
+- 2026-02-11: 完成 Issue #45（AgentRuntime/SourceCollector 契约 + 兼容适配器 + contract tests）
+- 2026-02-11: 完成 Issue #46（SSE envelope 统一 + trace_id 贯穿 + 前端 normalize parser）
+- 2026-02-11: 完成 Issue #47（analyze/review 路由迁移到 AgentRuntime，保持 SSE 兼容）

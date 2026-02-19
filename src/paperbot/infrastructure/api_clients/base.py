@@ -63,38 +63,67 @@ class APIClient:
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
+        *,
+        max_retries: int = 3,
     ) -> Dict[str, Any]:
-        """发送 GET 请求"""
-        await self._wait_for_rate_limit()
-        
+        """发送 GET 请求，带指数退避重试（429/5xx）"""
+        import random
+
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        session = await self._get_session()
-        
-        try:
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    return await response.json()
-                elif response.status == 404:
-                    logger.warning(f"Resource not found: {url}")
-                    return {}
-                elif response.status == 429:
-                    logger.warning(f"Rate limit exceeded for {url}")
-                    # 等待更长时间后重试一次
-                    await asyncio.sleep(5)
-                    async with session.get(url, params=params) as retry_response:
-                        if retry_response.status == 200:
-                            return await retry_response.json()
-                        raise Exception(f"Rate limit still exceeded: {retry_response.status}")
-                else:
-                    text = await response.text()
-                    logger.error(f"API error {response.status}: {text[:200]}")
-                    raise Exception(f"API error: {response.status}")
-        except asyncio.TimeoutError:
-            logger.error(f"Request timeout: {url}")
-            raise
-        except Exception as e:
-            logger.error(f"Request failed: {url} - {e}")
-            raise
+        last_status = 0
+
+        for attempt in range(max_retries + 1):
+            await self._wait_for_rate_limit()
+            session = await self._get_session()
+
+            try:
+                async with session.get(url, params=params) as response:
+                    last_status = response.status
+                    if response.status == 200:
+                        return await response.json()
+                    elif response.status == 404:
+                        logger.warning(f"Resource not found: {url}")
+                        return {}
+                    elif response.status == 429 or response.status >= 500:
+                        # Consume response body to release connection
+                        retry_after = response.headers.get("Retry-After")
+                        await response.read()
+                        # On final attempt, break out to raise below
+                        if attempt >= max_retries:
+                            break
+                        # Exponential backoff with Retry-After support
+                        if retry_after:
+                            try:
+                                delay = min(float(retry_after), 30.0)
+                            except (TypeError, ValueError):
+                                delay = 2.0 * (2 ** attempt)
+                        else:
+                            delay = 2.0 * (2 ** attempt)
+                        # Add jitter (±25%)
+                        jitter = delay * 0.25 * (2 * random.random() - 1)
+                        delay = max(1.0, delay + jitter)
+                        logger.warning(
+                            f"HTTP {response.status} for {url}, "
+                            f"retry {attempt + 1}/{max_retries} in {delay:.1f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        text = await response.text()
+                        logger.error(f"API error {response.status}: {text[:200]}")
+                        raise Exception(f"API error: {response.status}")
+            except asyncio.TimeoutError:
+                if attempt >= max_retries:
+                    logger.error(f"Request timeout after {max_retries + 1} attempts: {url}")
+                    raise
+                delay = 2.0 * (2 ** attempt)
+                logger.warning(
+                    f"Timeout for {url}, retry {attempt + 1}/{max_retries} in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+                continue
+
+        raise Exception(f"HTTP {last_status} after {max_retries + 1} attempts: {url}")
     
     async def post(
         self,

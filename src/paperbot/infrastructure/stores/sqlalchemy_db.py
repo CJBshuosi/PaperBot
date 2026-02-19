@@ -38,6 +38,9 @@ def create_db_engine(db_url: Optional[str] = None) -> Engine:
     connect_args = {}
     if url.startswith("sqlite:"):
         connect_args = {"check_same_thread": False}
+    elif "psycopg" in url or url.startswith("postgresql"):
+        # Disable prepared statements for PgBouncer / Supabase Transaction Pooler
+        connect_args = {"prepare_threshold": 0}
     return create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
 
 

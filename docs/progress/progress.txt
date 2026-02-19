@@ -1,0 +1,210 @@
+# PaperBot Progress Log
+
+Format:
+- Date:
+- Owner:
+- Branch:
+- Done:
+- Validation:
+- Risks/Notes:
+- Next:
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Added long-running harness baseline files:
+    - docs/HARNESS.md
+    - scripts/session_bootstrap.sh
+    - docs/issue_contract.json
+    - docs/progress/progress.txt
+  - Initialized issue contract entries for Scholar intelligence refactor and harness baseline.
+- Validation:
+  - chmod +x scripts/session_bootstrap.sh
+  - scripts/session_bootstrap.sh runs and prints repository/session context
+- Risks/Notes:
+  - issue_contract.json is intentionally minimal and should be updated incrementally, not rewritten.
+- Next:
+  - Complete SCHOLAR-P0 and SCHOLAR-P1 implementation and mark status updates.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Refactored Scholars list into a watchlist console focused on decisions and actions.
+  - Added decision metrics per scholar card: Momentum, Track Match, New Since Last Seen, Risk/Noise.
+  - Added action controls: Add to Watchlist, Mute (selected), Create Track from Scholar.
+  - Added local mute/last-seen persistence for operator workflow continuity.
+  - Upgraded Scholar detail page to an evidence-driven cockpit with decision cards and evidence links in Signals/Network sections.
+  - Strengthened cross-module action links to Research, Workflows, Dashboard, Papers.
+- Validation:
+  - ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/app/scholars/[id]/page.tsx
+  - ./node_modules/.bin/tsc --noEmit
+  - python -m py_compile src/paperbot/api/routes/research.py
+  - ./scripts/session_bootstrap.sh
+- Risks/Notes:
+  - "Mute" and "Last Seen" are currently local user-browser state (localStorage), not server-synced preferences.
+  - "Create Track from Scholar" currently creates a track and routes into Research; no duplicate-name reconciliation beyond backend response.
+- Next:
+  - If needed, move mute/seen state to backend user preferences and add team-shared watchlist controls.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Started the session via `scripts/session_bootstrap.sh` and followed harness workflow.
+  - Upgraded Scholar state handling from localStorage to backend persistence via scholar subscription PATCH.
+  - Added backend support for scholar metadata fields: `muted`, `last_seen_at`, `last_seen_cached_papers`.
+  - Updated scholars list API aggregation to return persisted state metadata.
+  - Updated Scholars watchlist UI to read/write muted and last-seen state through backend APIs.
+  - Expanded unit tests for subscription service and scholar routes to cover metadata persistence and response fields.
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py
+  - pytest tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py -q (environment exits -1 without output)
+  - (cd web && ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/lib/api.ts src/lib/types.ts)
+  - (cd web && ./node_modules/.bin/tsc --noEmit)
+  - ./scripts/session_bootstrap.sh
+- Risks/Notes:
+  - Scholar state is now persisted in subscription config; this is user-global and not multi-user isolated yet.
+- Next:
+  - If needed, add per-user scholar preference storage and team-shared controls.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Ran `scripts/session_bootstrap.sh` at session start to restore context and pending work.
+  - Added scholar automation metadata support (`digest_enabled`, `digest_frequency`, `alert_enabled`, `alert_keywords`) in subscription storage service.
+  - Extended scholar PATCH/list backend APIs to persist and return automation preferences.
+  - Upgraded Scholars watchlist cards with digest/alert status badges and quick toggle actions.
+  - Added track-name de-duplication when creating track from scholar (`Name Watch`, `Name Watch (2)`, ...).
+  - Expanded unit tests for subscription service and scholar routes to cover automation metadata fields.
+- Validation:
+  - ./scripts/session_bootstrap.sh
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_research_scholar_routes.py tests/unit/test_subscription_service.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/services/subscription_service.py tests/unit/test_research_scholar_routes.py tests/unit/test_subscription_service.py
+  - pytest tests/unit/test_subscription_service.py tests/unit/test_research_scholar_routes.py -q (environment still exits -1 without stdout)
+  - (cd web && ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/lib/api.ts src/lib/types.ts)
+  - (cd web && ./node_modules/.bin/tsc --noEmit)
+- Risks/Notes:
+  - Automation preferences are still stored in shared subscription config, not per-user account rows.
+- Next:
+  - Add per-user/team scoping for scholar automation preferences when user identity model is finalized.
+
+---
+
+- Date: 2026-02-13
+- Owner: codex
+- Branch: master
+- Done:
+  - Added Vercel + Supabase deployment guide at `docs/DEPLOY_VERCEL_SUPABASE.md`.
+  - Updated `README.md` with cloud deployment section and demo-link configuration notes.
+  - Added `PAPERBOT_DB_URL`, `PAPERBOT_API_BASE_URL`, and `NEXT_PUBLIC_DEMO_URL` examples to `env.example`.
+  - Added `psycopg[binary]` to requirements for Supabase/Postgres SQLAlchemy connectivity.
+  - Added sidebar `Live Demo` button driven by `NEXT_PUBLIC_DEMO_URL` for public体验入口。
+- Validation:
+  - (cd web && ./node_modules/.bin/eslint src/components/layout/Sidebar.tsx)
+  - (cd web && ./node_modules/.bin/eslint src/components/scholars/ScholarsWatchlist.tsx src/lib/api.ts src/lib/types.ts)
+  - (cd web && ./node_modules/.bin/tsc --noEmit)
+  - ./scripts/session_bootstrap.sh
+- Risks/Notes:
+  - FastAPI backend is still expected to run on long-lived compute (Render/Railway/Fly) for SSE/worker reliability.
+- Next:
+  - After first production deploy, fill `NEXT_PUBLIC_DEMO_URL` with the real Vercel URL and verify sidebar CTA in prod.
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Created ResearchRabbit-style bridge implementation foundation on a dedicated branch.
+  - Added BibTeX import API (`POST /api/research/papers/import/bibtex`) with track resolution + save feedback wiring.
+  - Added Zotero connector and integration APIs:
+    - `POST /api/research/integrations/zotero/pull`
+    - `POST /api/research/integrations/zotero/push`
+  - Added Next.js proxy routes for BibTeX import and Zotero pull/push.
+  - Added Saved Papers UI entrypoints: `Import BibTeX` and `Zotero Sync` dialogs.
+  - Added unit tests for BibTeX parser mapping, Zotero connector mapping/dedupe, and integration routes.
+  - Added integration notes in `docs/RESEARCHRABBIT_INTEGRATION.md` with issue mapping (#124-#130).
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - python -m isort src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/zotero_connector.py tests/unit/test_export.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - (cd web && npx eslint src/components/research/SavedPapersList.tsx src/app/api/research/papers/import/bibtex/route.ts src/app/api/research/integrations/zotero/pull/route.ts src/app/api/research/integrations/zotero/push/route.ts)
+  - (cd web && npx tsc --noEmit)
+  - pytest -q tests/unit/test_export.py tests/unit/test_zotero_connector.py tests/unit/test_research_import_integrations_routes.py (environment returns exit -1 with no stdout in current harness)
+- Risks/Notes:
+  - BibTeX parsing intentionally focuses on common entry shapes; extremely custom BibTeX macros may need follow-up normalization.
+  - Zotero API key remains request-scoped and is not persisted yet.
+- Next:
+  - Add secure per-user integration settings for Zotero credentials and sync presets.
+  - Start issue #125/#126 implementation (seed expansion + graph timeline UX).
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Implemented issue #125 seed-based discovery backend: `POST /api/research/discovery/seed` with S2/OpenAlex expansion (related/cited/citing/coauthor), graph payload, and optional personalization rerank.
+  - Added OpenAlex connector (`openalex_connector.py`) for work resolving and related/referenced/citing expansion.
+  - Implemented issue #126 UI: new `DiscoveryGraphWorkspace` in Research page with seed input, edge filters, graph rendering, ranked explanations, and one-click save to library.
+  - Implemented issue #127 collections backend + UI:
+    - APIs for create/list/update collections and collection items CRUD.
+    - Store/model support for collection and collection-item persistence.
+    - Saved Papers Collections workspace with create/add/edit/remove flows.
+  - Added Next.js proxy routes for discovery seed and collections endpoints.
+  - Added unit tests for OpenAlex connector and discovery/collections routes.
+  - Fixed collections dialog state issue found during Playwright E2E: reopening dialog now auto-loads selected collection items.
+- Validation:
+  - python -m black src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py
+  - python -m isort src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py
+  - python -m py_compile src/paperbot/api/routes/research.py src/paperbot/infrastructure/connectors/openalex_connector.py src/paperbot/infrastructure/stores/models.py src/paperbot/infrastructure/stores/research_store.py
+  - pytest -q -p no:capture tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - (cd web && npx eslint src/components/research/ResearchPageNew.tsx src/components/research/DiscoveryGraphWorkspace.tsx src/components/research/SavedPapersList.tsx src/components/research/TopicWorkflowDashboard.tsx src/app/api/research/discovery/seed/route.ts src/app/api/research/collections/route.ts src/app/api/research/collections/[collectionId]/route.ts src/app/api/research/collections/[collectionId]/items/route.ts src/app/api/research/collections/[collectionId]/items/[paperId]/route.ts)
+  - (cd web && npx tsc --noEmit)
+  - Playwright MCP smoke:
+    - `/research`: search -> discovery run -> discovery save (`POST /api/research/papers/feedback` 200)
+    - `/papers`: collections create -> add selected -> edit note/tags -> remove item (all related API calls 200)
+- Risks/Notes:
+  - Discovery quality depends on external source coverage and can return off-topic related papers for broad DOI seeds.
+  - Collection note/tag editing currently uses browser prompts; can be upgraded to inline form UX later.
+- Next:
+  - Implement #128 timeline/temporal controls and graph interactions (zoom/layout/time slicing).
+
+---
+
+- Date: 2026-02-14
+- Owner: codex
+- Branch: feat/researchrabbit-core-bridge
+- Done:
+  - Polished Collections Workspace UI (`SavedPapersList`) with clearer two-panel layout and collection metadata cards.
+  - Replaced `window.prompt` editing flow with inline note/tags editor (edit/save/cancel) for collection items.
+  - Added timeline/time-slice interactions to Discovery Graph (`DiscoveryGraphWorkspace`):
+    - year range request inputs (`year_from`/`year_to`) when calling discovery API
+    - timeline window controls (from/to sliders)
+    - yearly histogram chips for quick single-year slicing
+    - visible item count badge to reflect active slice
+  - Kept existing collection reopen-state fix and verified together with the new UI.
+- Validation:
+  - (cd web && npx eslint src/components/research/DiscoveryGraphWorkspace.tsx src/components/research/SavedPapersList.tsx src/components/research/TopicWorkflowDashboard.tsx)
+  - (cd web && npx tsc --noEmit)
+  - pytest -q -p no:capture tests/unit/test_openalex_connector.py tests/unit/test_research_discovery_collections_routes.py tests/unit/test_research_import_integrations_routes.py tests/unit/test_zotero_connector.py
+  - Playwright MCP smoke:
+    - `/research`: discovery timeline appears, year bucket slicing + reset works
+    - `/papers`: collections inline edit (note/tags) + remove item works, APIs return 200
+- Risks/Notes:
+  - Timeline currently uses static radial layout; no pan/zoom yet.
+  - Collection editor currently supports one-row-at-a-time editing to keep UX simple.
+- Next:
+  - If needed, add graph pan/zoom/layout modes and timeline playback animation as follow-up polish.

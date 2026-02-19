@@ -1,34 +1,42 @@
 "use client"
 
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { RefreshCw, Download, FileText, Sparkles } from "lucide-react"
+import { Search, FlaskConical, Library, Settings } from "lucide-react"
 
 export function QuickActions() {
     return (
         <Card>
             <CardHeader className="p-3 pb-2">
-                <CardTitle className="text-xs font-medium">Actions</CardTitle>
+                <CardTitle className="text-xs font-medium">Quick Actions</CardTitle>
             </CardHeader>
             <CardContent className="p-3 pt-0 grid grid-cols-2 gap-1.5">
-                <Button variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    <span className="text-[10px]">Update</span>
+                <Button asChild variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
+                    <Link href="/research">
+                        <Search className="h-3.5 w-3.5" />
+                        <span className="text-[10px]">Research</span>
+                    </Link>
                 </Button>
-                <Button variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
-                    <Download className="h-3.5 w-3.5" />
-                    <span className="text-[10px]">Import</span>
+                <Button asChild variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
+                    <Link href="/workflows">
+                        <FlaskConical className="h-3.5 w-3.5" />
+                        <span className="text-[10px]">Workflows</span>
+                    </Link>
                 </Button>
-                <Button variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
-                    <FileText className="h-3.5 w-3.5" />
-                    <span className="text-[10px]">Report</span>
+                <Button asChild variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
+                    <Link href="/papers">
+                        <Library className="h-3.5 w-3.5" />
+                        <span className="text-[10px]">Papers</span>
+                    </Link>
                 </Button>
-                <Button variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
-                    <Sparkles className="h-3.5 w-3.5" />
-                    <span className="text-[10px]">AI</span>
+                <Button asChild variant="outline" size="sm" className="h-auto py-2 flex-col gap-0.5 text-xs">
+                    <Link href="/settings">
+                        <Settings className="h-3.5 w-3.5" />
+                        <span className="text-[10px]">Settings</span>
+                    </Link>
                 </Button>
             </CardContent>
         </Card>
     )
 }
-

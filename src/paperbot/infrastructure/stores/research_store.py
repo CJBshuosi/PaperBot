@@ -8,19 +8,18 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from paperbot.application.services.identity_resolver import IdentityResolver
 from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
-
-from paperbot.domain.paper_identity import normalize_arxiv_id, normalize_doi
-
-from paperbot.utils.logging_config import Logger, LogFiles
-
 from paperbot.infrastructure.stores.models import (
     Base,
+    PaperCollectionItemModel,
+    PaperCollectionModel,
     PaperFeedbackModel,
+    PaperImpressionModel,
     PaperJudgeScoreModel,
     PaperModel,
-    PaperImpressionModel,
     PaperReadingStatusModel,
+    PaperRepoModel,
     ResearchContextRunModel,
     ResearchMilestoneModel,
     ResearchTaskModel,
@@ -28,6 +27,7 @@ from paperbot.infrastructure.stores.models import (
     ResearchTrackModel,
 )
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider, get_db_url
+from paperbot.utils.logging_config import LogFiles, Logger
 
 
 def _utcnow() -> datetime:
@@ -54,6 +54,32 @@ def _load_list(raw: str) -> List[str]:
     return []
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not value:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 class SqlAlchemyResearchStore:
     """
     Track/progress store for personalized paper recommendation.
@@ -68,6 +94,7 @@ class SqlAlchemyResearchStore:
     def __init__(self, db_url: Optional[str] = None, *, auto_create_schema: bool = True):
         self.db_url = db_url or get_db_url()
         self._provider = SessionProvider(self.db_url)
+        self._identity_resolver = IdentityResolver(db_url=self.db_url)
         if auto_create_schema:
             Base.metadata.create_all(self._provider.engine)
 
@@ -389,7 +416,6 @@ class SqlAlchemyResearchStore:
                 Logger.error("Track not found", file=LogFiles.HARVEST)
                 return None
 
-
             resolved_paper_ref_id = self._resolve_paper_ref_id(
                 session=session,
                 paper_id=(paper_id or "").strip(),
@@ -401,6 +427,7 @@ class SqlAlchemyResearchStore:
                 track_id=track_id,
                 paper_id=(paper_id or "").strip(),
                 paper_ref_id=resolved_paper_ref_id,
+                canonical_paper_id=resolved_paper_ref_id,  # dual-write
                 action=(action or "").strip(),
                 weight=float(weight or 0.0),
                 ts=now,
@@ -506,6 +533,8 @@ class SqlAlchemyResearchStore:
         self,
         *,
         user_id: str,
+        track_id: Optional[int] = None,
+        collection_id: Optional[int] = None,
         limit: int = 200,
         sort_by: str = "saved_at",
     ) -> List[Dict[str, Any]]:
@@ -532,6 +561,11 @@ class SqlAlchemyResearchStore:
                         PaperFeedbackModel.user_id == user_id,
                         PaperFeedbackModel.action == "save",
                         PaperFeedbackModel.paper_ref_id.is_not(None),
+                        (
+                            PaperFeedbackModel.track_id == int(track_id)
+                            if track_id is not None
+                            else True
+                        ),
                     )
                 )
                 .scalars()
@@ -548,6 +582,30 @@ class SqlAlchemyResearchStore:
             paper_ids = list(saved_at_by_paper.keys())
             if not paper_ids:
                 return []
+
+            if collection_id is not None:
+                collection = session.execute(
+                    select(PaperCollectionModel).where(
+                        PaperCollectionModel.id == int(collection_id),
+                        PaperCollectionModel.user_id == user_id,
+                        PaperCollectionModel.archived_at.is_(None),
+                    )
+                ).scalar_one_or_none()
+                if collection is None:
+                    return []
+                collection_paper_ids = {
+                    int(row.paper_id)
+                    for row in session.execute(
+                        select(PaperCollectionItemModel).where(
+                            PaperCollectionItemModel.collection_id == int(collection_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                }
+                paper_ids = [pid for pid in paper_ids if pid in collection_paper_ids]
+                if not paper_ids:
+                    return []
 
             papers = (
                 session.execute(select(PaperModel).where(PaperModel.id.in_(paper_ids)))
@@ -612,6 +670,591 @@ class SqlAlchemyResearchStore:
 
             return rows[: max(1, int(limit))]
 
+    def list_track_feed(
+        self,
+        *,
+        user_id: str,
+        track_id: int,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        with self._provider.session() as session:
+            track = session.execute(
+                select(ResearchTrackModel).where(
+                    ResearchTrackModel.user_id == user_id,
+                    ResearchTrackModel.id == int(track_id),
+                    ResearchTrackModel.archived_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if track is None:
+                return {"items": [], "total": 0}
+
+            track_dict = self._track_to_dict(track)
+            raw_terms = [
+                *track_dict.get("keywords", []),
+                *track_dict.get("methods", []),
+                *track_dict.get("venues", []),
+            ]
+            terms = sorted({str(term).strip().lower() for term in raw_terms if str(term).strip()})
+
+            stmt = select(PaperModel).where(PaperModel.deleted_at.is_(None))
+            if terms:
+                term_filters = []
+                for term in terms:
+                    like = f"%{term}%"
+                    term_filters.extend(
+                        [
+                            func.lower(func.coalesce(PaperModel.title, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.abstract, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.venue, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.keywords_json, "")).like(like),
+                            func.lower(func.coalesce(PaperModel.fields_of_study_json, "")).like(
+                                like
+                            ),
+                        ]
+                    )
+                stmt = stmt.where(or_(*term_filters))
+
+            feedback_rows = (
+                session.execute(
+                    select(PaperFeedbackModel)
+                    .where(
+                        PaperFeedbackModel.user_id == user_id,
+                        PaperFeedbackModel.track_id == int(track_id),
+                        PaperFeedbackModel.action.in_(["save", "like", "dislike", "skip"]),
+                    )
+                    .order_by(desc(PaperFeedbackModel.ts), desc(PaperFeedbackModel.id))
+                )
+                .scalars()
+                .all()
+            )
+
+            feedback_candidate_ids = {
+                int(row.canonical_paper_id or row.paper_ref_id or 0)
+                for row in feedback_rows
+                if int(row.canonical_paper_id or row.paper_ref_id or 0) > 0
+            }
+
+            fetch_cap = max(200, (int(offset) + int(limit)) * 8)
+            candidates = (
+                session.execute(
+                    stmt.order_by(desc(PaperModel.created_at), desc(PaperModel.id)).limit(fetch_cap)
+                )
+                .scalars()
+                .all()
+            )
+
+            if feedback_candidate_ids:
+                existing_ids = {int(p.id) for p in candidates}
+                missing_ids = sorted(feedback_candidate_ids - existing_ids)
+                if missing_ids:
+                    extra = (
+                        session.execute(
+                            select(PaperModel)
+                            .where(PaperModel.id.in_(missing_ids), PaperModel.deleted_at.is_(None))
+                            .order_by(desc(PaperModel.created_at), desc(PaperModel.id))
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    candidates.extend(extra)
+
+            if not candidates:
+                return {"items": [], "total": 0}
+
+            candidate_ids = [int(p.id) for p in candidates]
+
+            feedback_by_paper: Dict[int, PaperFeedbackModel] = {}
+            feedback_summary_by_paper: Dict[int, Dict[str, int]] = {}
+            for row in feedback_rows:
+                pid = int(row.canonical_paper_id or row.paper_ref_id or 0)
+                if pid <= 0:
+                    continue
+                action = str(row.action or "").strip().lower()
+                if action:
+                    action_counter = feedback_summary_by_paper.setdefault(pid, {})
+                    action_counter[action] = action_counter.get(action, 0) + 1
+                if pid not in feedback_by_paper:
+                    feedback_by_paper[pid] = row
+
+            status_by_paper = {
+                int(row.paper_id): row
+                for row in session.execute(
+                    select(PaperReadingStatusModel).where(
+                        PaperReadingStatusModel.user_id == user_id,
+                        PaperReadingStatusModel.paper_id.in_(candidate_ids),
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+            latest_judge_by_paper: Dict[int, PaperJudgeScoreModel] = {}
+            judge_rows = (
+                session.execute(
+                    select(PaperJudgeScoreModel)
+                    .where(PaperJudgeScoreModel.paper_id.in_(candidate_ids))
+                    .order_by(desc(PaperJudgeScoreModel.scored_at), desc(PaperJudgeScoreModel.id))
+                )
+                .scalars()
+                .all()
+            )
+            for judge in judge_rows:
+                pid = int(judge.paper_id or 0)
+                if pid > 0 and pid not in latest_judge_by_paper:
+                    latest_judge_by_paper[pid] = judge
+
+            scored_rows: List[Dict[str, Any]] = []
+            for paper in candidates:
+                pid = int(paper.id)
+                text_blob = " ".join(
+                    [
+                        str(paper.title or ""),
+                        str(paper.abstract or ""),
+                        str(paper.venue or ""),
+                        " ".join(str(x) for x in (paper.get_keywords() or [])),
+                        " ".join(str(x) for x in (paper.get_fields_of_study() or [])),
+                    ]
+                ).lower()
+
+                matched_terms = [term for term in terms if term and term in text_blob]
+                keyword_score = float(len(matched_terms))
+
+                latest_feedback = feedback_by_paper.get(pid)
+                latest_feedback_action = (
+                    str(latest_feedback.action or "").strip().lower() if latest_feedback else ""
+                )
+                feedback_boost = {
+                    "save": 3.0,
+                    "like": 2.0,
+                    "skip": -1.0,
+                    "dislike": -4.0,
+                }.get(latest_feedback_action, 0.0)
+
+                citation_score = min(float(paper.citation_count or 0) / 200.0, 2.0)
+                judge_row = latest_judge_by_paper.get(pid)
+                judge_score = float(judge_row.overall or 0.0) if judge_row else 0.0
+
+                if terms and keyword_score <= 0 and abs(feedback_boost) < 1e-6:
+                    continue
+
+                feed_score = (
+                    keyword_score * 2.5 + feedback_boost + citation_score + judge_score * 0.3
+                )
+                scored_rows.append(
+                    {
+                        "paper": self._paper_to_dict(paper),
+                        "latest_judge": (
+                            self._judge_score_to_dict(latest_judge_by_paper[pid])
+                            if pid in latest_judge_by_paper
+                            else None
+                        ),
+                        "reading_status": (
+                            self._reading_status_to_dict(status_by_paper[pid])
+                            if pid in status_by_paper
+                            else None
+                        ),
+                        "latest_feedback_action": latest_feedback_action or None,
+                        "feedback_summary": feedback_summary_by_paper.get(pid, {}),
+                        "matched_terms": matched_terms,
+                        "keyword_score": keyword_score,
+                        "feed_score": round(feed_score, 4),
+                    }
+                )
+
+            scored_rows.sort(
+                key=lambda row: (
+                    float(row.get("feed_score") or 0.0),
+                    float(((row.get("latest_judge") or {}).get("overall") or 0.0)),
+                    str(((row.get("paper") or {}).get("created_at") or "")),
+                ),
+                reverse=True,
+            )
+
+            total = len(scored_rows)
+            start = max(0, int(offset))
+            end = start + max(1, int(limit))
+            return {"items": scored_rows[start:end], "total": total}
+
+    def create_collection(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        description: str = "",
+        track_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        now = _utcnow()
+        with self._provider.session() as session:
+            if track_id is not None:
+                track = session.execute(
+                    select(ResearchTrackModel).where(
+                        ResearchTrackModel.user_id == user_id,
+                        ResearchTrackModel.id == int(track_id),
+                    )
+                ).scalar_one_or_none()
+                if track is None:
+                    raise ValueError("Track not found")
+
+            row = PaperCollectionModel(
+                user_id=user_id,
+                track_id=int(track_id) if track_id is not None else None,
+                name=str(name or "").strip(),
+                description=str(description or "").strip(),
+                created_at=now,
+                updated_at=now,
+                metadata_json="{}",
+            )
+            session.add(row)
+            try:
+                session.commit()
+                session.refresh(row)
+            except IntegrityError:
+                session.rollback()
+                existing = session.execute(
+                    select(PaperCollectionModel).where(
+                        PaperCollectionModel.user_id == user_id,
+                        PaperCollectionModel.name == row.name,
+                    )
+                ).scalar_one()
+                return self._collection_to_dict(existing, item_count=0)
+            return self._collection_to_dict(row, item_count=0)
+
+    def list_collections(
+        self,
+        *,
+        user_id: str,
+        include_archived: bool = False,
+        track_id: Optional[int] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        with self._provider.session() as session:
+            stmt = select(PaperCollectionModel).where(PaperCollectionModel.user_id == user_id)
+            if not include_archived:
+                stmt = stmt.where(PaperCollectionModel.archived_at.is_(None))
+            if track_id is not None:
+                stmt = stmt.where(PaperCollectionModel.track_id == int(track_id))
+            rows = (
+                session.execute(
+                    stmt.order_by(desc(PaperCollectionModel.updated_at)).limit(max(1, int(limit)))
+                )
+                .scalars()
+                .all()
+            )
+            counts: Dict[int, int] = {
+                int(collection_id): int(item_count)
+                for collection_id, item_count in session.execute(
+                    select(
+                        PaperCollectionItemModel.collection_id,
+                        func.count(PaperCollectionItemModel.id),
+                    )
+                    .where(
+                        PaperCollectionItemModel.collection_id.in_(
+                            [int(row.id) for row in rows] or [-1]
+                        )
+                    )
+                    .group_by(PaperCollectionItemModel.collection_id)
+                ).all()
+            }
+            return [
+                self._collection_to_dict(row, item_count=counts.get(int(row.id), 0)) for row in rows
+            ]
+
+    def update_collection(
+        self,
+        *,
+        user_id: str,
+        collection_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        archived: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now = _utcnow()
+        with self._provider.session() as session:
+            row = session.execute(
+                select(PaperCollectionModel).where(
+                    PaperCollectionModel.user_id == user_id,
+                    PaperCollectionModel.id == int(collection_id),
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+
+            if name is not None:
+                row.name = str(name).strip()
+            if description is not None:
+                row.description = str(description).strip()
+            if archived is not None:
+                row.archived_at = now if bool(archived) else None
+            row.updated_at = now
+            session.add(row)
+            try:
+                session.commit()
+                session.refresh(row)
+            except IntegrityError:
+                session.rollback()
+                raise
+
+            item_count = session.execute(
+                select(func.count(PaperCollectionItemModel.id)).where(
+                    PaperCollectionItemModel.collection_id == int(collection_id)
+                )
+            ).scalar_one()
+            return self._collection_to_dict(row, item_count=int(item_count or 0))
+
+    def list_collection_items(
+        self,
+        *,
+        user_id: str,
+        collection_id: int,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        with self._provider.session() as session:
+            collection = session.execute(
+                select(PaperCollectionModel).where(
+                    PaperCollectionModel.id == int(collection_id),
+                    PaperCollectionModel.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            if collection is None:
+                return []
+
+            rows = (
+                session.execute(
+                    select(PaperCollectionItemModel)
+                    .where(PaperCollectionItemModel.collection_id == int(collection_id))
+                    .order_by(desc(PaperCollectionItemModel.updated_at))
+                    .limit(max(1, int(limit)))
+                )
+                .scalars()
+                .all()
+            )
+            if not rows:
+                return []
+            paper_ids = [int(row.paper_id) for row in rows]
+            paper_by_id = {
+                int(p.id): p
+                for p in session.execute(select(PaperModel).where(PaperModel.id.in_(paper_ids)))
+                .scalars()
+                .all()
+            }
+            result: List[Dict[str, Any]] = []
+            for row in rows:
+                paper = paper_by_id.get(int(row.paper_id))
+                if paper is None:
+                    continue
+                result.append(
+                    {
+                        "id": int(row.id),
+                        "collection_id": int(row.collection_id),
+                        "paper_id": int(row.paper_id),
+                        "paper": self._paper_to_dict(paper),
+                        "note": row.note,
+                        "tags": _load_list(row.tags_json),
+                        "created_at": row.created_at.isoformat() if row.created_at else None,
+                        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                    }
+                )
+            return result
+
+    def upsert_collection_item(
+        self,
+        *,
+        user_id: str,
+        collection_id: int,
+        paper_id: str,
+        note: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now = _utcnow()
+        with self._provider.session() as session:
+            collection = session.execute(
+                select(PaperCollectionModel).where(
+                    PaperCollectionModel.id == int(collection_id),
+                    PaperCollectionModel.user_id == user_id,
+                    PaperCollectionModel.archived_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if collection is None:
+                return None
+
+            resolved_paper_id = self._resolve_paper_ref_id(
+                session=session,
+                paper_id=str(paper_id or "").strip(),
+                metadata={},
+            )
+            if resolved_paper_id is None:
+                return None
+
+            row = session.execute(
+                select(PaperCollectionItemModel).where(
+                    PaperCollectionItemModel.collection_id == int(collection_id),
+                    PaperCollectionItemModel.paper_id == int(resolved_paper_id),
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = PaperCollectionItemModel(
+                    collection_id=int(collection_id),
+                    paper_id=int(resolved_paper_id),
+                    created_at=now,
+                    updated_at=now,
+                    note=str(note or "").strip(),
+                    tags_json=_dump_list(tags),
+                    metadata_json="{}",
+                )
+                session.add(row)
+            else:
+                if note is not None:
+                    row.note = str(note).strip()
+                if tags is not None:
+                    row.tags_json = _dump_list(tags)
+                row.updated_at = now
+                session.add(row)
+
+            collection.updated_at = now
+            session.add(collection)
+            session.commit()
+            session.refresh(row)
+
+            paper = session.execute(
+                select(PaperModel).where(PaperModel.id == int(row.paper_id))
+            ).scalar_one()
+            return {
+                "id": int(row.id),
+                "collection_id": int(row.collection_id),
+                "paper_id": int(row.paper_id),
+                "paper": self._paper_to_dict(paper),
+                "note": row.note,
+                "tags": _load_list(row.tags_json),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+
+    def remove_collection_item(
+        self,
+        *,
+        user_id: str,
+        collection_id: int,
+        paper_id: str,
+    ) -> bool:
+        now = _utcnow()
+        with self._provider.session() as session:
+            collection = session.execute(
+                select(PaperCollectionModel).where(
+                    PaperCollectionModel.id == int(collection_id),
+                    PaperCollectionModel.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            if collection is None:
+                return False
+
+            resolved_paper_id = self._resolve_paper_ref_id(
+                session=session,
+                paper_id=str(paper_id or "").strip(),
+                metadata={},
+            )
+            if resolved_paper_id is None:
+                return False
+
+            row = session.execute(
+                select(PaperCollectionItemModel).where(
+                    PaperCollectionItemModel.collection_id == int(collection_id),
+                    PaperCollectionItemModel.paper_id == int(resolved_paper_id),
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+
+            session.delete(row)
+            collection.updated_at = now
+            session.add(collection)
+            session.commit()
+            return True
+
+    def ingest_repo_enrichment_rows(
+        self,
+        *,
+        rows: List[Dict[str, Any]],
+        source: str = "paperscool_repo_enrich",
+    ) -> Dict[str, int]:
+        now = _utcnow()
+        created = 0
+        updated = 0
+        skipped = 0
+        unresolved = 0
+
+        with self._provider.session() as session:
+            for raw in rows or []:
+                if not isinstance(raw, dict):
+                    skipped += 1
+                    continue
+
+                github = raw.get("github") if isinstance(raw.get("github"), dict) else {}
+                repo_url = str(raw.get("repo_url") or github.get("repo_url") or "").strip()
+                if not repo_url:
+                    skipped += 1
+                    continue
+
+                paper_meta = {
+                    "title": raw.get("title"),
+                    "paper_url": raw.get("paper_url"),
+                    "url": raw.get("paper_url"),
+                }
+                paper_hint = str(raw.get("paper_id") or raw.get("paper_ref_id") or "").strip()
+                paper_ref_id = self._resolve_paper_ref_id(
+                    session=session,
+                    paper_id=paper_hint,
+                    metadata=paper_meta,
+                )
+                if not paper_ref_id:
+                    unresolved += 1
+                    continue
+
+                was_created = self._upsert_paper_repo_row(
+                    session=session,
+                    paper_ref_id=int(paper_ref_id),
+                    repo_row=raw,
+                    source=source,
+                    now=now,
+                )
+                if was_created is None:
+                    skipped += 1
+                elif was_created:
+                    created += 1
+                else:
+                    updated += 1
+
+            session.commit()
+
+        return {
+            "total": created + updated,
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "unresolved_paper": unresolved,
+        }
+
+    def list_paper_repos(self, *, paper_id: str) -> Optional[List[Dict[str, Any]]]:
+        with self._provider.session() as session:
+            paper_ref_id = self._resolve_paper_ref_id(
+                session=session,
+                paper_id=(paper_id or "").strip(),
+                metadata={},
+            )
+            if not paper_ref_id:
+                return None
+
+            rows = (
+                session.execute(
+                    select(PaperRepoModel)
+                    .where(PaperRepoModel.paper_id == int(paper_ref_id))
+                    .order_by(desc(PaperRepoModel.stars), desc(PaperRepoModel.synced_at))
+                )
+                .scalars()
+                .all()
+            )
+            return [self._repo_to_dict(row) for row in rows]
+
     def get_paper_detail(
         self, *, paper_id: str, user_id: str = "default"
     ) -> Optional[Dict[str, Any]]:
@@ -661,6 +1304,16 @@ class SqlAlchemyResearchStore:
                 .all()
             )
 
+            repo_rows = (
+                session.execute(
+                    select(PaperRepoModel)
+                    .where(PaperRepoModel.paper_id == int(paper_ref_id))
+                    .order_by(desc(PaperRepoModel.stars), desc(PaperRepoModel.synced_at))
+                )
+                .scalars()
+                .all()
+            )
+
             feedback_summary: Dict[str, int] = {}
             for row in feedback_rows:
                 action = str(row.action or "")
@@ -677,6 +1330,7 @@ class SqlAlchemyResearchStore:
                     self._judge_score_to_dict(judge_scores[0]) if judge_scores else None
                 ),
                 "judge_scores": [self._judge_score_to_dict(row) for row in judge_scores],
+                "repos": [self._repo_to_dict(row) for row in repo_rows],
                 "feedback_summary": feedback_summary,
                 "feedback_rows": [self._feedback_to_dict(row) for row in feedback_rows],
             }
@@ -966,6 +1620,27 @@ class SqlAlchemyResearchStore:
         }
 
     @staticmethod
+    def _collection_to_dict(c: PaperCollectionModel, *, item_count: int = 0) -> Dict[str, Any]:
+        try:
+            metadata = json.loads(c.metadata_json or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+        return {
+            "id": int(c.id),
+            "user_id": c.user_id,
+            "track_id": int(c.track_id) if c.track_id is not None else None,
+            "name": c.name,
+            "description": c.description,
+            "archived_at": c.archived_at.isoformat() if c.archived_at else None,
+            "item_count": int(item_count),
+            "metadata": metadata,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        }
+
+    @staticmethod
     def _normalize_reading_status(value: str) -> str:
         normalized = (value or "").strip().lower()
         if normalized in {"unread", "reading", "read", "archived"}:
@@ -1017,28 +1692,47 @@ class SqlAlchemyResearchStore:
 
     @staticmethod
     def _paper_to_dict(p: PaperModel) -> Dict[str, Any]:
+        metadata_raw = getattr(p, "metadata_json", "{}") or "{}"
         try:
-            metadata = json.loads(p.metadata_json or "{}")
+            metadata = json.loads(metadata_raw)
             if not isinstance(metadata, dict):
                 metadata = {}
         except Exception:
             metadata = {}
 
+        published_at = None
+        if getattr(p, "publication_date", None):
+            published_at = str(getattr(p, "publication_date"))
+
+        source = getattr(p, "primary_source", None) or getattr(p, "source", "")
+
         return {
             "id": int(p.id),
             "arxiv_id": p.arxiv_id,
             "doi": p.doi,
+            "semantic_scholar_id": getattr(p, "semantic_scholar_id", None),
+            "openalex_id": getattr(p, "openalex_id", None),
             "title": p.title,
             "authors": p.get_authors(),
             "abstract": p.abstract,
             "url": p.url,
-            "external_url": p.external_url,
+            "external_url": p.url,
             "pdf_url": p.pdf_url,
-            "source": p.source,
+            "source": source,
+            "primary_source": source,
             "venue": p.venue,
-            "published_at": p.published_at.isoformat() if p.published_at else None,
-            "first_seen_at": p.first_seen_at.isoformat() if p.first_seen_at else None,
+            "year": getattr(p, "year", None),
+            "publication_date": getattr(p, "publication_date", None),
+            "published_at": published_at,
+            "first_seen_at": (
+                (getattr(p, "first_seen_at", None) or p.created_at).isoformat()
+                if (getattr(p, "first_seen_at", None) or p.created_at)
+                else None
+            ),
             "keywords": p.get_keywords(),
+            "fields_of_study": p.get_fields_of_study(),
+            "sources": p.get_sources(),
+            "citation_count": int(getattr(p, "citation_count", 0) or 0),
             "metadata": metadata,
         }
 
@@ -1090,15 +1784,133 @@ class SqlAlchemyResearchStore:
         }
 
     @staticmethod
+    def _repo_to_dict(row: PaperRepoModel) -> Dict[str, Any]:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+
+        return {
+            "id": int(row.id),
+            "paper_id": int(row.paper_id),
+            "repo_url": row.repo_url,
+            "full_name": row.full_name,
+            "description": row.description,
+            "stars": int(row.stars or 0),
+            "forks": int(row.forks or 0),
+            "open_issues": int(row.open_issues or 0),
+            "watchers": int(row.watchers or 0),
+            "language": row.language,
+            "license": row.license,
+            "archived": bool(row.archived),
+            "html_url": row.html_url,
+            "topics": row.get_topics(),
+            "updated_at_remote": (
+                row.updated_at_remote.isoformat() if row.updated_at_remote else None
+            ),
+            "pushed_at_remote": row.pushed_at_remote.isoformat() if row.pushed_at_remote else None,
+            "query": row.query,
+            "source": row.source,
+            "synced_at": row.synced_at.isoformat() if row.synced_at else None,
+            "metadata": metadata,
+        }
+
+    def _upsert_paper_repo_row(
+        self,
+        *,
+        session,
+        paper_ref_id: int,
+        repo_row: Dict[str, Any],
+        source: str,
+        now: datetime,
+    ) -> Optional[bool]:
+        github = repo_row.get("github") if isinstance(repo_row.get("github"), dict) else {}
+        repo_url = str(repo_row.get("repo_url") or github.get("repo_url") or "").strip()
+        if not repo_url:
+            return None
+
+        row = session.execute(
+            select(PaperRepoModel).where(
+                PaperRepoModel.paper_id == int(paper_ref_id),
+                PaperRepoModel.repo_url == repo_url,
+            )
+        ).scalar_one_or_none()
+        created = row is None
+        if row is None:
+            row = PaperRepoModel(
+                paper_id=int(paper_ref_id),
+                repo_url=repo_url,
+                created_at=now,
+                updated_at=now,
+                synced_at=now,
+            )
+            session.add(row)
+
+        row.full_name = str(github.get("full_name") or repo_row.get("full_name") or "").strip()
+        row.description = str(github.get("description") or repo_row.get("description") or "")
+        row.stars = _safe_int(github.get("stars") or repo_row.get("stars"), 0)
+        row.forks = _safe_int(github.get("forks") or repo_row.get("forks"), 0)
+        row.open_issues = _safe_int(github.get("open_issues") or repo_row.get("open_issues"), 0)
+        row.watchers = _safe_int(github.get("watchers") or repo_row.get("watchers"), 0)
+        row.language = str(github.get("language") or repo_row.get("language") or "").strip()
+        row.license = str(github.get("license") or repo_row.get("license") or "").strip()
+        row.archived = bool(github.get("archived") or repo_row.get("archived"))
+        row.html_url = str(github.get("html_url") or repo_row.get("html_url") or repo_url).strip()
+        row.updated_at_remote = _parse_datetime(
+            github.get("updated_at") or repo_row.get("updated_at")
+        )
+        row.pushed_at_remote = _parse_datetime(github.get("pushed_at") or repo_row.get("pushed_at"))
+        row.query = str(repo_row.get("query") or "").strip()
+        row.source = (str(source or "").strip() or "paperscool_repo_enrich")[:32]
+
+        topics = github.get("topics") or repo_row.get("topics") or []
+        if not isinstance(topics, list):
+            topics = []
+        row.set_topics([str(v) for v in topics if str(v).strip()])
+
+        metadata = {
+            "title": repo_row.get("title"),
+            "paper_url": repo_row.get("paper_url"),
+            "github": github,
+        }
+        row.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        row.synced_at = now
+        row.updated_at = now
+
+        session.add(row)
+        return created
+
     def _resolve_paper_ref_id(
+        self,
         *,
         session,
         paper_id: str,
         metadata: Dict[str, Any],
     ) -> Optional[int]:
         pid = (paper_id or "").strip()
-        if not pid:
-            return None
+        hints = dict(metadata or {})
+
+        # Main path: centralized identity resolver (paper_identifiers + normalized fallbacks).
+        resolved = self._identity_resolver.resolve(pid, hints=hints)
+        if resolved is not None:
+            return int(resolved)
+
+        Logger.info(
+            "IdentityResolver miss; falling back to legacy paper_id resolution",
+            file=LogFiles.HARVEST,
+        )
+        return self._resolve_paper_ref_id_legacy(session=session, paper_id=pid, metadata=hints)
+
+    @staticmethod
+    def _resolve_paper_ref_id_legacy(
+        *,
+        session,
+        paper_id: str,
+        metadata: Dict[str, Any],
+    ) -> Optional[int]:
+        pid = (paper_id or "").strip()
 
         if pid.isdigit():
             row = session.execute(
@@ -1107,8 +1919,8 @@ class SqlAlchemyResearchStore:
             if row is not None:
                 return int(row.id)
 
-        arxiv_id = normalize_arxiv_id(pid)
-        doi = normalize_doi(pid)
+        arxiv_id = normalize_arxiv_id(pid) if pid else None
+        doi = normalize_doi(pid) if pid else None
 
         url_candidates = []
         for key in ("paper_url", "url", "external_url", "pdf_url"):
@@ -1150,7 +1962,6 @@ class SqlAlchemyResearchStore:
                 select(PaperModel).where(
                     or_(
                         PaperModel.url.in_(url_candidates),
-                        PaperModel.external_url.in_(url_candidates),
                         PaperModel.pdf_url.in_(url_candidates),
                     )
                 )

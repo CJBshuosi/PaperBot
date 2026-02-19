@@ -7,6 +7,7 @@ import {
   BookOpenIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  DownloadIcon,
   FilterIcon,
   Loader2Icon,
   MailIcon,
@@ -30,6 +31,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -47,7 +49,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { readSSE } from "@/lib/sse"
+import { normalizeSSEMessage, readSSE } from "@/lib/sse"
 import { useWorkflowStore } from "@/lib/stores/workflow-store"
 import type { DailyResult, WorkflowPhase } from "@/lib/stores/workflow-store"
 
@@ -99,6 +101,7 @@ type StepStatus = "pending" | "running" | "done" | "error" | "skipped"
 /* ── Helpers ──────────────────────────────────────────── */
 
 const DEFAULT_QUERIES = ["ICL压缩", "ICL隐式偏置", "KV Cache加速"]
+const DAILY_STREAM_IDLE_TIMEOUT_MS = 90_000
 
 const REC_COLORS: Record<string, string> = {
   must_read: "bg-green-100 text-green-800 border-green-300",
@@ -241,14 +244,14 @@ const PHASE_LABELS: Record<StreamPhase, string> = {
 const PHASE_ORDER: StreamPhase[] = ["search", "build", "llm", "insight", "judge", "filter", "save", "notify", "done"]
 
 function useElapsed(startTime: number | null) {
-  const [elapsed, setElapsed] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    if (!startTime) { setElapsed(0); return }
-    setElapsed(Math.round((Date.now() - startTime) / 1000))
-    const id = setInterval(() => setElapsed(Math.round((Date.now() - startTime) / 1000)), 1000)
+    if (!startTime) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [startTime])
-  return elapsed
+  if (!startTime) return 0
+  return Math.max(0, Math.round((now - startTime) / 1000))
 }
 
 function StreamProgressCard({
@@ -390,6 +393,9 @@ function PaperDetailDialog({ item, open, onClose }: { item: SearchItem | null; o
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-base leading-snug pr-8">{item.title}</DialogTitle>
+          <DialogDescription className="sr-only">
+            Paper metadata, matched queries, and judge scoring details.
+          </DialogDescription>
         </DialogHeader>
         {item.url && <a href={item.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">{item.url}</a>}
         <div className="flex flex-wrap gap-1.5 mt-1">
@@ -632,14 +638,24 @@ function NewsletterSubscribeWidget() {
   const [message, setMessage] = useState("")
   const [subCount, setSubCount] = useState<{ active: number; total: number } | null>(null)
 
-  const fetchCount = useCallback(async () => {
+  const fetchCount = useCallback(async (): Promise<{ active: number; total: number } | null> => {
     try {
       const res = await fetch("/api/newsletter/subscribers")
-      if (res.ok) setSubCount(await res.json())
+      if (!res.ok) return null
+      return await res.json()
     } catch { /* ignore */ }
+    return null
   }, [])
 
-  useEffect(() => { fetchCount() }, [fetchCount])
+  useEffect(() => {
+    let cancelled = false
+    void fetchCount().then((data) => {
+      if (!cancelled && data) setSubCount(data)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [fetchCount])
 
   async function handleSubscribe() {
     if (!email.trim()) return
@@ -653,7 +669,8 @@ function NewsletterSubscribeWidget() {
       const data = await res.json()
       if (res.ok) {
         setStatus("ok"); setMessage(data.message || "Subscribed!"); setEmail("")
-        fetchCount()
+        const latest = await fetchCount()
+        if (latest) setSubCount(latest)
       } else {
         setStatus("error"); setMessage(data.detail || "Failed to subscribe")
       }
@@ -689,9 +706,15 @@ function NewsletterSubscribeWidget() {
 
 /* ── Main Dashboard ───────────────────────────────────── */
 
-export default function TopicWorkflowDashboard() {
+type TopicWorkflowDashboardProps = {
+  initialQueries?: string[]
+}
+
+export default function TopicWorkflowDashboard({ initialQueries }: TopicWorkflowDashboardProps = {}) {
   /* Config state (local — queries only) */
-  const [queryItems, setQueryItems] = useState<string[]>([...DEFAULT_QUERIES])
+  const [queryItems, setQueryItems] = useState<string[]>([
+    ...((initialQueries && initialQueries.length ? initialQueries : DEFAULT_QUERIES) || DEFAULT_QUERIES),
+  ])
 
   /* Persisted state (zustand) */
   const store = useWorkflowStore()
@@ -907,6 +930,21 @@ export default function TopicWorkflowDashboard() {
     }
 
     let streamFailed = false
+    let streamIdleTimedOut = false
+    let streamIdleTimer: ReturnType<typeof setTimeout> | null = null
+    const clearStreamIdleTimer = () => {
+      if (streamIdleTimer) {
+        clearTimeout(streamIdleTimer)
+        streamIdleTimer = null
+      }
+    }
+    const armStreamIdleTimer = () => {
+      clearStreamIdleTimer()
+      streamIdleTimer = setTimeout(() => {
+        streamIdleTimedOut = true
+        controller.abort()
+      }, DAILY_STREAM_IDLE_TIMEOUT_MS)
+    }
     try {
       const res = await fetch("/api/research/paperscool/daily", {
         method: "POST",
@@ -930,7 +968,10 @@ export default function TopicWorkflowDashboard() {
       // SSE streaming path
       if (!res.body) throw new Error("No response body for SSE stream")
 
-      for await (const event of readSSE(res.body)) {
+      armStreamIdleTimer()
+      for await (const rawEvent of readSSE(res.body)) {
+        armStreamIdleTimer()
+        const event = normalizeSSEMessage(rawEvent, "paperscool_daily")
         if (event.type === "progress") {
           const d = (event.data || {}) as { phase?: string; message?: string; total?: number }
           const p = (d.phase || "search") as StreamPhase
@@ -1134,15 +1175,24 @@ export default function TopicWorkflowDashboard() {
           break
         }
       }
+      clearStreamIdleTimer()
       if (!streamFailed) {
         store.setPhase("reported")
       }
     } catch (err) {
       streamFailed = true
-      setError(String(err))
+      if (streamIdleTimedOut) {
+        const timeoutSec = Math.round(DAILY_STREAM_IDLE_TIMEOUT_MS / 1000)
+        const message = `DailyPaper stream stalled for ${timeoutSec}s and was aborted.`
+        addStreamLog(`[error] ${message}`)
+        setError(message)
+      } else {
+        setError(String(err))
+      }
       setStreamPhase("error")
       store.setPhase("error")
     } finally {
+      clearStreamIdleTimer()
       setLoadingDaily(false)
       streamStartRef.current = null
       streamAbortRef.current = null
@@ -1182,10 +1232,12 @@ export default function TopicWorkflowDashboard() {
       })
       if (!res.ok || !res.body) throw new Error(await res.text())
 
-      for await (const event of readSSE(res.body)) {
+      for await (const rawEvent of readSSE(res.body)) {
+        const event = normalizeSSEMessage(rawEvent, "paperscool_analyze")
         if (event.type === "progress") {
           const d = (event.data || {}) as { phase?: string; message?: string; total?: number }
-          store.addAnalyzeLog(`[${d.phase || "step"}] ${d.message || "running"}`)
+          const trace = event.envelope.trace_id ? ` trace=${event.envelope.trace_id}` : ""
+          store.addAnalyzeLog(`[${d.phase || "step"}] ${d.message || "running"}${trace}`)
           if (d.phase === "judge" && (d.total || 0) > 0) {
             setAnalyzeProgress({ done: 0, total: d.total || 0 })
           }
@@ -1728,9 +1780,29 @@ export default function TopicWorkflowDashboard() {
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm">DailyPaper Report</CardTitle>
-                    <div className="flex gap-2 text-xs text-muted-foreground">
-                      {dailyResult.markdown_path && <span>MD: {dailyResult.markdown_path}</span>}
-                      {dailyResult.json_path && <span>JSON: {dailyResult.json_path}</span>}
+                    <div className="flex items-center gap-2">
+                      {dailyResult.markdown && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 gap-1 text-xs"
+                          onClick={() => {
+                            const blob = new Blob([dailyResult.markdown || ""], { type: "text/markdown" })
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement("a")
+                            a.href = url
+                            a.download = `dailypaper-${dailyResult.report.date || "report"}.md`
+                            a.click()
+                            URL.revokeObjectURL(url)
+                          }}
+                        >
+                          <DownloadIcon className="size-3.5" /> Download .md
+                        </Button>
+                      )}
+                      <div className="flex gap-2 text-xs text-muted-foreground">
+                        {dailyResult.markdown_path && <span>MD: {dailyResult.markdown_path}</span>}
+                        {dailyResult.json_path && <span>JSON: {dailyResult.json_path}</span>}
+                      </div>
                     </div>
                   </div>
                 </CardHeader>
@@ -1854,7 +1926,7 @@ export default function TopicWorkflowDashboard() {
                       </table>
                     </ScrollArea>
                   ) : (
-                    <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">Click "Find Repos" to enrich papers with code repositories.</div>
+                    <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">Click &quot;Find Repos&quot; to enrich papers with code repositories.</div>
                   )}
                 </CardContent>
               </Card>

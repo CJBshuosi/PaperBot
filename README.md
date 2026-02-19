@@ -16,7 +16,12 @@
 | **深度评审** | 模拟同行评审（初筛→深度批评→决策），输出 Summary/Strengths/Weaknesses/Novelty Score |
 | **Paper2Code** | 论文到代码骨架（Planning→Analysis→Generation→Verification），自愈调试，Docker/E2B 沙箱执行 |
 | **个性化研究** | Research Track 管理、记忆 Inbox（LLM/规则抽取）、Context Engine 路由与推荐 |
+| **文献卡片** | Structured Card（LLM 提取 method/dataset/conclusion/limitations），懒加载 + DB 缓存 |
+| **导出增强** | BibTeX/RIS/Markdown/CSL-JSON（Zotero 原生导入），Next.js proxy route 修复 |
+| **写作辅助** | Related Work 草稿生成（基于 saved papers + topic），[AuthorYear] 引用格式，一键复制 |
 | **每日推送** | DailyPaper 生成后自动推送摘要到 Email/Slack/钉钉，支持 API 手动触发和 ARQ Cron 定时推送 |
+| **Model Provider** | 多 LLM 提供商管理（OpenAI/Anthropic/OpenRouter/Ollama），API Key Keychain 安全存储，任务级路由，连接测试 |
+| **Deadline Radar** | 会议截止日期追踪，CCF 分级过滤，Research Track 关键词匹配 |
 
 ## 模块成熟度
 
@@ -31,7 +36,10 @@
 | 深度评审 | 🟡 基本可用 | `/review` | `review` | 模拟同行评审流程完整；输出质量取决于 LLM 后端配置 |
 | Paper2Code | 🟡 基本可用 | `/gen-code` | `gen-code` | 编排 + RAG + CodeMemory 完整；需配置 Docker 或 E2B 沙箱运行验证 |
 | 记忆系统 | 🔴 早期 | `/research/memory/*` | — | Schema + Extractor + Parsers 骨架已搭建；LLM 抽取与检索回路待完善 |
-| Context Engine | 🔴 早期 | `/research/context` | — | Track Router + Engine 框架已有；推荐策略与 Embedding 集成待落地 |
+| Context Engine | 🟡 基本可用 | `/research/context` | — | Track Router + Engine 框架 + 本地 DB 搜索回退（外部 API 限流时自动降级） |
+| Model Provider | ✅ 可用 | `/api/model-endpoints/*` | — | 多提供商 CRUD + 连接测试 + 任务路由 + Keychain 安全存储 |
+| Deadline Radar | ✅ 可用 | `/research/deadlines/radar` | — | CCF 会议截止日期追踪，Track 关键词匹配 |
+| Paper Library | ✅ 可用 | `/api/papers/library` | — | 论文收藏/保存/反馈，Enrichment Pipeline 自动补全元数据 |
 
 > ✅ 可用 = 核心功能完整、API/CLI 已接通、可直接使用
 > 🟡 基本可用 = 实现完整但有外部依赖或配置要求
@@ -48,21 +56,31 @@
                              ▼
 ┌─────────────────── FastAPI Gateway (SSE) ───────────────────────┐
 │  /search  /daily  /analyze  /track  /review  /gen-code  /chat  │
+│  /model-endpoints  /deadlines  /papers  /research              │
 └────────────────────────────┬────────────────────────────────────┘
                              ▼
-┌─ Application ──────────────────────────────────────────────────┐
+┌─ Application (Ports & Services) ──────────────────────────────┐
+│  PaperSearchService · EnrichmentPipeline · IdentityResolver    │
+│  LLMService · ProviderResolver · PushService                   │
 │  TopicSearch · DailyPaper · ScholarPipeline · Paper2Code       │
 │  LLM-as-Judge · TrendAnalyzer · Summarizer · ReviewerAgent     │
-│  ContextEngine · PushService · VerificationAgent               │
+│  ContextEngine · VerificationAgent                             │
 └────────────────────────────┬───────────────────────────────────┘
                              ▼
-┌─ Infrastructure ───────────────────────────────────────────────┐
-│  ModelRouter (OpenAI/NIM/OR)  ·  SQLite  ·  ARQ  ·  Docker/E2B│
+┌─ Domain ──────────────────────────────────────────────────────┐
+│  Paper · Scholar · Track · Feedback · Enrichment · Identity    │
+└────────────────────────────┬───────────────────────────────────┘
+                             ▼
+┌─ Infrastructure (Adapters & Stores) ──────────────────────────┐
+│  ModelRouter · KeychainStore · SQLite · Alembic · ARQ          │
+│  Adapters: arXiv / S2 / OpenAlex / papers.cool / HF Daily     │
+│  Stores: Paper / Research / ModelEndpoint / LLMUsage / Session │
+│  Docker / E2B Sandbox                                          │
 └────────────────────────────┬───────────────────────────────────┘
                              ▼
 ┌─ External Sources ─────────────────────────────────────────────┐
 │  papers.cool  ·  arXiv API  ·  HF Daily Papers · Semantic Scholar│
-│  GitHub      ·  HuggingFace Hub · OpenReview                   │
+│  OpenAlex  ·  GitHub  ·  HuggingFace Hub · OpenReview          │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,8 +88,10 @@
 
 ```
                    ┌─── papers.cool (arxiv/venue branch)
-Input Queries ──→  ├─── arXiv API (relevance sort)
-                   └─── (extensible: TopicSearchSource protocol)
+                   ├─── arXiv API (relevance sort)
+Input Queries ──→  ├─── HF Daily Papers
+                   ├─── OpenAlex / Semantic Scholar
+                   └─── (extensible: PaperSearchPort protocol)
                               │
                     Normalize → Dedup → Score → min_score Filter
                               │
@@ -108,7 +128,11 @@ Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save
 
 ### Web Dashboard（Next.js）
 
-![Dashboard](asset/ui/dashboard.jpg)
+![Dashboard](asset/ui/dashboard.png)
+
+| Research Workspace | Model Provider Settings |
+|--------------------|------------------------|
+| ![Research](asset/ui/research.png) | ![Settings](asset/ui/setting.png) |
 
 | 论文分析 | 学者画像 |
 |----------|----------|
@@ -128,9 +152,9 @@ Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save
 |---------|-------------------|
 | ![Cards](asset/ui/9-2.png) | ![Insights](asset/ui/9-4.png) |
 
-| Judge 评分卡片 | Judge 雷达图详情 |
-|---------------|-----------------|
-| ![Judge Cards](asset/ui/9-4.png) | ![Judge Radar](asset/ui/9-5.png) |
+| Judge 雷达图详情 |
+|-----------------|
+| ![Judge Radar](asset/ui/9-5.png) |
 
 ### Email 推送
 
@@ -142,7 +166,7 @@ Search → Build Report → LLM Enrichment → Judge Scoring → Filter → Save
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 # 可选
 pip install jinja2 openreview-py huggingface_hub
 ```
@@ -153,7 +177,7 @@ pip install jinja2 openreview-py huggingface_hub
 cp env.example .env
 ```
 
-至少配置一个 LLM Key（如 `OPENAI_API_KEY`），否则 LLM 相关功能不可用。
+至少配置一个 LLM Key（如 `OPENAI_API_KEY`），否则 LLM 相关功能不可用。也可以在 Web UI `/settings` 页面直接管理 LLM 提供商（API Key 安全存储在 macOS Keychain）。
 
 <details>
 <summary>LLM 后端配置（点击展开）</summary>
@@ -266,6 +290,18 @@ arq paperbot.infrastructure.queue.arq_worker.WorkerSettings
 - CLI：`PAPERBOT_API_URL=http://<host>:8000`
 - Web：`PAPERBOT_API_BASE_URL=http://<host>:8000`
 
+### 云部署（Vercel + Supabase）
+
+推荐架构：
+- 前端：Vercel（`web/`）
+- 数据库：Supabase Postgres（`PAPERBOT_DB_URL`）
+- API：FastAPI（Render / Railway / Fly.io）
+
+快速入口：`docs/DEPLOY_VERCEL_SUPABASE.md`
+
+体验链接按钮（侧边栏）：
+- `NEXT_PUBLIC_DEMO_URL=https://<your-web>.vercel.app`
+
 ## API 端点
 
 | 端点 | 方法 | 描述 |
@@ -279,10 +315,23 @@ arq paperbot.infrastructure.queue.arq_worker.WorkerSettings
 | `/api/research/paperscool/search` | POST | 主题检索（多源聚合，支持 `min_score` 过滤） |
 | `/api/research/paperscool/daily` | POST | DailyPaper 日报（LLM/Judge 启用时返回 SSE 流式，否则 JSON；支持 `notify` 推送） |
 | `/api/research/paperscool/analyze` | POST | Judge + Trend 流式分析（SSE） |
+| `/api/research/paperscool/approvals` | GET | Pipeline 审批队列 |
 | `/api/research/tracks` | GET/POST | 研究方向管理 |
+| `/api/research/tracks/:id/feed` | GET | Track 论文 Feed |
 | `/api/research/memory/*` | GET/POST | 记忆系统（Inbox/审核/检索） |
 | `/api/research/papers/feedback` | POST | 论文反馈（like/dislike/save） |
+| `/api/research/papers/saved` | GET | 已保存论文列表 |
+| `/api/research/papers/export` | GET | 导出论文（bibtex/ris/markdown/csl_json） |
+| `/api/research/papers/{id}/card` | GET | Structured Card（LLM 提取，DB 缓存） |
+| `/api/research/papers/related-work` | POST | Related Work 草稿生成 |
+| `/api/research/deadlines/radar` | GET | 会议截止日期雷达（CCF 分级 + Track 匹配） |
 | `/api/research/context` | POST | ContextPack 构建（含 Track Router） |
+| `/api/model-endpoints` | GET/POST | LLM 提供商列表/创建 |
+| `/api/model-endpoints/:id` | PATCH/DELETE | 提供商更新/删除 |
+| `/api/model-endpoints/:id/activate` | POST | 设为默认提供商 |
+| `/api/model-endpoints/:id/test` | POST | 连接测试 |
+| `/api/model-endpoints/usage` | GET | LLM 用量统计（按天/按模型） |
+| `/api/papers/library` | GET | 论文库（收藏 + 收割） |
 | `/api/sandbox/*` | GET/POST | 沙箱执行与日志 |
 | `/api/runbook/*` | GET/POST | Workspace 文件操作与 Diff |
 
@@ -325,31 +374,35 @@ PaperBot/
 ├── src/paperbot/
 │   ├── agents/                        # Agents（研究/代码/评审/验证/追踪）
 │   ├── api/                           # FastAPI 后端（SSE 流式）
-│   │   └── routes/                    # 业务路由（track/analyze/paperscool/sandbox/...）
+│   │   ├── routes/                    # 业务路由（track/analyze/paperscool/model_endpoints/...）
+│   │   └── streaming.py               # SSE 流式 envelope
 │   ├── application/
-│   │   ├── services/                  # 统一服务（LLM/Push/...）
+│   │   ├── ports/                     # 端口接口（PaperSearchPort/EnrichmentPort/FeedbackPort/...）
+│   │   ├── services/                  # 应用服务（LLM/PaperSearch/Enrichment/Identity/Provider）
 │   │   └── workflows/
-│   │       ├── paperscool_topic_search.py  # 主题检索（多源聚合 + min_score）
-│   │       ├── topic_search_sources.py     # 数据源注册（papers_cool / arxiv_api / hf_daily）
-│   │       ├── dailypaper.py               # 日报生成、LLM 增强、Judge 评分
-│   │       └── analysis/                   # Judge / Trend / Summarizer / Relevance
+│   │       ├── unified_topic_search.py    # 统一主题检索（多源聚合 + min_score）
+│   │       ├── dailypaper.py              # 日报生成、LLM 增强、Judge 评分
+│   │       └── analysis/                  # Judge / Trend / Summarizer / Relevance
 │   ├── core/                          # 核心抽象（pipeline/errors/DI）
-│   ├── domain/                        # 领域模型（paper/scholar/influence/PIS）
+│   ├── domain/                        # 领域模型（Paper/Scholar/Track/Feedback/Enrichment/Identity）
 │   ├── infrastructure/
-│   │   ├── connectors/                # 外部数据源连接器（papers.cool / arXiv / S2）
-│   │   ├── stores/                    # SQLAlchemy 模型 + Alembic 迁移
+│   │   ├── adapters/                  # 搜索适配器（arXiv/S2/OpenAlex/papers.cool/HF Daily）
+│   │   ├── llm/                       # ModelRouter（多提供商路由）
+│   │   ├── stores/                    # SQLAlchemy 存储（Paper/Research/ModelEndpoint/LLMUsage/Keychain/...）
 │   │   └── queue/                     # ARQ Worker（定时任务 + DailyPaper Cron）
 │   ├── memory/                        # 记忆中间件（导入/抽取/检索）
 │   ├── context_engine/                # Context Engine（Track Router / 推荐）
 │   ├── presentation/                  # CLI 入口与 Markdown 报告渲染
+│   ├── utils/                         # 工具（secret 加密、文本处理）
 │   └── repro/                         # Paper2Code（Blueprint/CodeMemory/RAG/Debugger）
 ├── web/                               # Next.js Web Dashboard
 ├── cli/                               # Ink/React Terminal UI
+├── alembic/                           # DB 迁移脚本
 ├── docs/                              # 项目文档
 ├── config/                            # 配置（models/venues/subscriptions）
 ├── tests/                             # 测试
 ├── asset/                             # 截图 + 架构图（drawio / excalidraw）
-├── main.py                            # Python CLI 入口
+├── pyproject.toml                     # Python 项目配置
 └── env.example                        # 环境变量模板
 ```
 

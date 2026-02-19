@@ -2,7 +2,6 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,6 +15,7 @@ import {
   Workflow,
   PanelLeftClose,
   PanelLeft,
+  Rocket,
 } from "lucide-react"
 
 type SidebarProps = React.HTMLAttributes<HTMLDivElement> & {
@@ -24,8 +24,8 @@ type SidebarProps = React.HTMLAttributes<HTMLDivElement> & {
 }
 
 const routes = [
-  { label: "Research", icon: FlaskConical, href: "/" },
   { label: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
+  { label: "Research", icon: FlaskConical, href: "/research" },
   { label: "Scholars", icon: Users, href: "/scholars" },
   { label: "Papers", icon: FileText, href: "/papers" },
   { label: "Workflows", icon: Workflow, href: "/workflows" },
@@ -36,6 +36,7 @@ const routes = [
 
 export function Sidebar({ className, collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname()
+  const demoUrl = process.env.NEXT_PUBLIC_DEMO_URL
 
   return (
     <div className={cn("flex min-h-screen flex-col border-r bg-background pb-12", className)}>
@@ -61,8 +62,7 @@ export function Sidebar({ className, collapsed, onToggle }: SidebarProps) {
           {/* Nav items */}
           <div className="space-y-1">
             {routes.map((route) => {
-              const isActive =
-                route.href === "/" ? pathname === "/" : pathname.startsWith(route.href)
+              const isActive = pathname === route.href || pathname.startsWith(`${route.href}/`)
               return (
                 <Button
                   key={route.href}
@@ -81,6 +81,22 @@ export function Sidebar({ className, collapsed, onToggle }: SidebarProps) {
           </div>
         </div>
       </div>
+
+      {demoUrl ? (
+        <div className={cn("mt-auto px-3 pb-4", collapsed && "px-2")}>
+          <Button
+            asChild
+            variant="outline"
+            className={cn("w-full", collapsed ? "justify-center px-0" : "justify-start")}
+            title={collapsed ? "Live Demo" : undefined}
+          >
+            <a href={demoUrl} target="_blank" rel="noreferrer">
+              <Rocket className={cn("h-4 w-4", !collapsed && "mr-2")} />
+              {!collapsed && "Live Demo"}
+            </a>
+          </Button>
+        </div>
+      ) : null}
     </div>
   )
 }

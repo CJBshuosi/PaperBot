@@ -24,8 +24,8 @@ from paperbot.application.workflows.harvest_pipeline import (
     HarvestPipeline,
     HarvestProgress,
 )
-from paperbot.utils.logging_config import Logger, LogFiles, set_trace_id, clear_trace_id
 from paperbot.infrastructure.stores.paper_store import PaperStore, paper_to_dict
+from paperbot.utils.logging_config import LogFiles, Logger, clear_trace_id, set_trace_id
 
 router = APIRouter()
 
@@ -64,9 +64,7 @@ class HarvestRequest(BaseModel):
     venues: Optional[List[str]] = Field(None, description="Filter to specific venues")
     year_from: Optional[int] = Field(None, ge=1900, le=2100, description="Start year")
     year_to: Optional[int] = Field(None, ge=1900, le=2100, description="End year")
-    max_results_per_source: int = Field(
-        50, ge=1, le=200, description="Max papers per source"
-    )
+    max_results_per_source: int = Field(50, ge=1, le=200, description="Max papers per source")
     sources: Optional[List[str]] = Field(
         None, description="Sources to harvest (arxiv, semantic_scholar, openalex)"
     )
@@ -129,7 +127,7 @@ async def harvest_papers(request: HarvestRequest):
     trace_id = set_trace_id()
     Logger.info(f"Starting harvest request: keywords={request.keywords}", file=LogFiles.HARVEST)
     return StreamingResponse(
-        wrap_generator(harvest_stream(request)),
+        wrap_generator(harvest_stream(request), workflow="harvest"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -367,7 +365,9 @@ def get_user_library(
         offset=offset,
     )
 
-    Logger.info(f"Retrieved {len(library_papers)} papers from library, total={total}", file=LogFiles.HARVEST)
+    Logger.info(
+        f"Retrieved {len(library_papers)} papers from library, total={total}", file=LogFiles.HARVEST
+    )
     return LibraryResponse(
         papers=[
             LibraryPaperResponse(

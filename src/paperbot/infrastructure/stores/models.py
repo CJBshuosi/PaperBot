@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -347,6 +347,27 @@ class MemoryEvalMetricModel(Base):
     detail_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class WorkflowEvalMetricModel(Base):
+    """Evaluation metrics for research workflow observability and evidence coverage."""
+
+    __tablename__ = "workflow_eval_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    workflow: Mapped[str] = mapped_column(String(64), index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="completed", index=True)
+    track_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+
+    claim_count: Mapped[int] = mapped_column(Integer, default=0)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    coverage_rate: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    elapsed_ms: Mapped[float] = mapped_column(Float, default=0.0)
+
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class ResearchTrackModel(Base):
     """
     User research direction / track.
@@ -385,6 +406,9 @@ class ResearchTrackModel(Base):
     )
     paper_feedback = relationship(
         "PaperFeedbackModel", back_populates="track", cascade="all, delete-orphan"
+    )
+    collections = relationship(
+        "PaperCollectionModel", back_populates="track", cascade="all, delete-orphan"
     )
     embeddings = relationship(
         "ResearchTrackEmbeddingModel", back_populates="track", cascade="all, delete-orphan"
@@ -449,6 +473,7 @@ class ResearchMilestoneModel(Base):
 
     track = relationship("ResearchTrackModel", back_populates="milestones")
 
+
 class PaperFeedbackModel(Base):
     """User feedback on recommended/seen papers (track-scoped)."""
 
@@ -464,6 +489,9 @@ class PaperFeedbackModel(Base):
         Integer, ForeignKey("papers.id"), nullable=True, index=True
     )
     action: Mapped[str] = mapped_column(String(16), index=True)  # like/dislike/skip/save/cite
+
+    # Canonical FK (dual-write migration — will replace paper_id + paper_ref_id)
+    canonical_paper_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
 
     weight: Mapped[float] = mapped_column(Float, default=0.0)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
@@ -503,6 +531,64 @@ class PaperJudgeScoreModel(Base):
     paper = relationship("PaperModel", back_populates="judge_scores")
 
 
+class PaperRepoModel(Base):
+    """Repository enrichment metadata linked to canonical papers."""
+
+    __tablename__ = "paper_repos"
+    __table_args__ = (UniqueConstraint("paper_id", "repo_url", name="uq_paper_repos_paper_repo"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(Integer, ForeignKey("papers.id"), index=True)
+
+    repo_url: Mapped[str] = mapped_column(String(512), default="", index=True)
+    full_name: Mapped[str] = mapped_column(String(256), default="", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+
+    stars: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    forks: Mapped[int] = mapped_column(Integer, default=0)
+    open_issues: Mapped[int] = mapped_column(Integer, default=0)
+    watchers: Mapped[int] = mapped_column(Integer, default=0)
+
+    language: Mapped[str] = mapped_column(String(64), default="")
+    license: Mapped[str] = mapped_column(String(64), default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    html_url: Mapped[str] = mapped_column(String(512), default="")
+    topics_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    updated_at_remote: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    pushed_at_remote: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    query: Mapped[str] = mapped_column(String(256), default="", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="paperscool_repo_enrich", index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    paper = relationship("PaperModel", back_populates="repo_rows")
+
+    def set_topics(self, values: Optional[list[str]]) -> None:
+        self.topics_json = json.dumps(
+            [str(v) for v in (values or []) if str(v).strip()],
+            ensure_ascii=False,
+        )
+
+    def get_topics(self) -> list[str]:
+        try:
+            data = json.loads(self.topics_json or "[]")
+            if isinstance(data, list):
+                return [str(v) for v in data if str(v).strip()]
+        except Exception:
+            pass
+        return []
+
+
 class PaperReadingStatusModel(Base):
     """Per-user reading lifecycle state for a paper."""
 
@@ -528,6 +614,60 @@ class PaperReadingStatusModel(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
     paper = relationship("PaperModel", back_populates="reading_status_rows")
+
+
+class PaperCollectionModel(Base):
+    """User-defined collection for grouping saved papers and notes."""
+
+    __tablename__ = "paper_collections"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_paper_collections_user_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    track_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("research_tracks.id"), nullable=True, index=True
+    )
+
+    name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    track = relationship("ResearchTrackModel", back_populates="collections")
+    items = relationship(
+        "PaperCollectionItemModel", back_populates="collection", cascade="all, delete-orphan"
+    )
+
+
+class PaperCollectionItemModel(Base):
+    """Collection membership row with optional per-paper note/tags."""
+
+    __tablename__ = "paper_collection_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "collection_id", "paper_id", name="uq_paper_collection_items_collection_paper"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("paper_collections.id", ondelete="CASCADE"), index=True
+    )
+    paper_id: Mapped[int] = mapped_column(Integer, ForeignKey("papers.id"), index=True)
+
+    note: Mapped[str] = mapped_column(Text, default="")
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    collection = relationship("PaperCollectionModel", back_populates="items")
+    paper = relationship("PaperModel", back_populates="collection_items")
 
 
 class ResearchTrackEmbeddingModel(Base):
@@ -626,6 +766,108 @@ class PaperImpressionModel(Base):
     track = relationship("ResearchTrackModel")
 
 
+class AuthorModel(Base):
+    """Canonical author entity used by anchor-author workflows."""
+
+    __tablename__ = "authors"
+    __table_args__ = (
+        UniqueConstraint("author_id", name="uq_authors_author_id"),
+        UniqueConstraint("slug", name="uq_authors_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    author_id: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    slug: Mapped[str] = mapped_column(String(256), index=True)
+
+    h_index: Mapped[int] = mapped_column(Integer, default=0)
+    citation_count: Mapped[int] = mapped_column(Integer, default=0)
+    paper_count: Mapped[int] = mapped_column(Integer, default=0)
+    anchor_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    anchor_level: Mapped[str] = mapped_column(String(32), default="background", index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    paper_links = relationship("PaperAuthorModel", back_populates="author")
+    user_scores = relationship("UserAnchorScoreModel", back_populates="author")
+    user_actions = relationship("UserAnchorActionModel", back_populates="author")
+
+
+class UserAnchorScoreModel(Base):
+    """Per-user, per-track personalized anchor scores."""
+
+    __tablename__ = "user_anchor_scores"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "track_id", "author_id", name="uq_user_anchor_scores_user_track_author"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    track_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_tracks.id"), index=True)
+    author_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+
+    personalized_anchor_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    breakdown_json: Mapped[str] = mapped_column(Text, default="{}")
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    author = relationship("AuthorModel", back_populates="user_scores")
+    track = relationship("ResearchTrackModel")
+
+
+class UserAnchorActionModel(Base):
+    """Per-user action on anchor author (follow / ignore)."""
+
+    __tablename__ = "user_anchor_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "track_id", "author_id", name="uq_user_anchor_actions_user_track_author"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    track_id: Mapped[int] = mapped_column(Integer, ForeignKey("research_tracks.id"), index=True)
+    author_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+
+    action: Mapped[str] = mapped_column(String(16), default="follow", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    author = relationship("AuthorModel", back_populates="user_actions")
+    track = relationship("ResearchTrackModel")
+
+
+class PaperAuthorModel(Base):
+    """Paper-author mapping with author order metadata."""
+
+    __tablename__ = "paper_authors"
+    __table_args__ = (
+        UniqueConstraint("paper_id", "author_id", name="uq_paper_authors_paper_author"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), index=True
+    )
+    author_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    author_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    is_corresponding: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    paper = relationship("PaperModel", back_populates="author_links")
+    author = relationship("AuthorModel", back_populates="paper_links")
+
+
 class PaperModel(Base):
     """Harvested paper metadata from multiple sources."""
 
@@ -635,9 +877,15 @@ class PaperModel(Base):
 
     # Canonical identifiers (for deduplication)
     doi: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True, index=True)
-    arxiv_id: Mapped[Optional[str]] = mapped_column(String(32), unique=True, nullable=True, index=True)
-    semantic_scholar_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
-    openalex_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    arxiv_id: Mapped[Optional[str]] = mapped_column(
+        String(32), unique=True, nullable=True, index=True
+    )
+    semantic_scholar_id: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
+    openalex_id: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
     title_hash: Mapped[str] = mapped_column(String(64), index=True)  # SHA256 of normalized title
 
     # Core metadata
@@ -658,18 +906,40 @@ class PaperModel(Base):
     fields_of_study_json: Mapped[str] = mapped_column(Text, default="[]")
 
     # Source tracking
-    primary_source: Mapped[str] = mapped_column(String(32), default="")  # First source that found this paper
-    sources_json: Mapped[str] = mapped_column(Text, default="[]")  # All sources that returned this paper
+    primary_source: Mapped[str] = mapped_column(
+        String(32), default=""
+    )  # First source that found this paper
+    sources_json: Mapped[str] = mapped_column(
+        Text, default="[]"
+    )  # All sources that returned this paper
+
+    # Structured card (LLM-extracted method/dataset/conclusion/limitations)
+    structured_card_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Timestamps
-    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    first_seen_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # Soft delete
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # Soft delete
 
     # Relationships
     feedback_rows = relationship("PaperFeedbackModel", back_populates="paper")
     judge_scores = relationship("PaperJudgeScoreModel", back_populates="paper")
     reading_status_rows = relationship("PaperReadingStatusModel", back_populates="paper")
+    collection_items = relationship("PaperCollectionItemModel", back_populates="paper")
+    repo_rows = relationship("PaperRepoModel", back_populates="paper")
+    identifiers = relationship(
+        "PaperIdentifierModel", back_populates="paper", cascade="all, delete-orphan"
+    )
+    author_links = relationship(
+        "PaperAuthorModel", back_populates="paper", cascade="all, delete-orphan"
+    )
 
     def get_authors(self) -> list:
         try:
@@ -704,6 +974,119 @@ class PaperModel(Base):
     def set_sources(self, sources: list) -> None:
         self.sources_json = json.dumps(sources or [], ensure_ascii=False)
 
+    def get_structured_card(self) -> Optional[Dict[str, Any]]:
+        try:
+            if self.structured_card_json:
+                return json.loads(self.structured_card_json)
+        except Exception:
+            pass
+        return None
+
+    def set_structured_card(self, card: Dict[str, Any]) -> None:
+        self.structured_card_json = json.dumps(card or {}, ensure_ascii=False)
+
+
+class PaperIdentifierModel(Base):
+    """Maps (source, external_id) → papers.id for unified identity resolution."""
+
+    __tablename__ = "paper_identifiers"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_paper_identifiers_source_eid"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    paper_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("papers.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    external_id: Mapped[str] = mapped_column(String(256), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    paper = relationship("PaperModel", back_populates="identifiers")
+
+
+class ModelEndpointModel(Base):
+    """User-managed LLM provider endpoints for gateway routing."""
+
+    __tablename__ = "model_endpoints"
+    __table_args__ = (UniqueConstraint("name", name="uq_model_endpoints_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
+    vendor: Mapped[str] = mapped_column(String(32), default="openai_compatible", index=True)
+    base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    api_key_env: Mapped[str] = mapped_column(String(64), default="OPENAI_API_KEY")
+    api_key_value: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    models_json: Mapped[str] = mapped_column(Text, default="[]")
+    task_types_json: Mapped[str] = mapped_column(Text, default="[]")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    def get_models(self) -> list[str]:
+        try:
+            rows = json.loads(self.models_json or "[]")
+            if isinstance(rows, list):
+                return [str(x).strip() for x in rows if str(x).strip()]
+        except Exception:
+            pass
+        return []
+
+    def set_models(self, rows: Optional[list[str]]) -> None:
+        self.models_json = json.dumps(
+            [str(x).strip() for x in (rows or []) if str(x).strip()],
+            ensure_ascii=False,
+        )
+
+    def get_task_types(self) -> list[str]:
+        try:
+            rows = json.loads(self.task_types_json or "[]")
+            if isinstance(rows, list):
+                return [str(x).strip() for x in rows if str(x).strip()]
+        except Exception:
+            pass
+        return []
+
+    def set_task_types(self, rows: Optional[list[str]]) -> None:
+        self.task_types_json = json.dumps(
+            [str(x).strip() for x in (rows or []) if str(x).strip()],
+            ensure_ascii=False,
+        )
+
+
+class LLMUsageModel(Base):
+    """LLM token/cost usage records for dashboard and alerting."""
+
+    __tablename__ = "llm_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    task_type: Mapped[str] = mapped_column(String(32), default="default", index=True)
+    provider_name: Mapped[str] = mapped_column(String(64), default="unknown", index=True)
+    model_name: Mapped[str] = mapped_column(String(128), default="", index=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class PipelineSessionModel(Base):
+    """Long-running pipeline session checkpoints for resume/recovery."""
+
+    __tablename__ = "pipeline_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    checkpoint: Mapped[str] = mapped_column(String(64), default="init", index=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    state_json: Mapped[str] = mapped_column(Text, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
 
 class HarvestRunModel(Base):
     """Harvest execution tracking."""
@@ -720,14 +1103,18 @@ class HarvestRunModel(Base):
     max_results_per_source: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Results
-    status: Mapped[Optional[str]] = mapped_column(String(32), default="running", index=True)  # running/success/partial/failed
+    status: Mapped[Optional[str]] = mapped_column(
+        String(32), default="running", index=True
+    )  # running/success/partial/failed
     papers_found: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     papers_new: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     papers_deduplicated: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     error_json: Mapped[str] = mapped_column(Text, default="{}")
 
     # Timestamps
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def get_keywords(self) -> list:

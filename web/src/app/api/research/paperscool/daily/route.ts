@@ -1,6 +1,14 @@
 export const runtime = "nodejs"
 
+import { Agent } from "undici"
+
 import { apiBaseUrl } from "../../_base"
+
+// Keep SSE proxy streams alive during long backend phases (LLM/Judge).
+const sseDispatcher = new Agent({
+  bodyTimeout: 0,
+  headersTimeout: 0,
+})
 
 export async function POST(req: Request) {
   const body = await req.text()
@@ -15,7 +23,8 @@ export async function POST(req: Request) {
         Accept: "text/event-stream, application/json",
       },
       body,
-    })
+      dispatcher: sseDispatcher,
+    } as RequestInit & { dispatcher: Agent })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     return Response.json(

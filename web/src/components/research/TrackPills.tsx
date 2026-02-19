@@ -1,6 +1,16 @@
 "use client"
 
-import { Plus } from "lucide-react"
+import {
+  BarChart3,
+  BookOpen,
+  Bot,
+  FlaskConical,
+  MessageSquare,
+  Plus,
+  ScanEye,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -16,19 +26,19 @@ interface TrackPillsProps {
   maxVisible?: number
 }
 
-// Map track names to emoji icons (can be customized per track later)
-const trackIcons: Record<string, string> = {
-  RAG: "📊",
-  LLM: "🤖",
-  "ML Security": "🔬",
-  Security: "🔐",
-  CV: "📝",
-  NLP: "💬",
-  default: "📚",
+const trackIcons: Record<string, LucideIcon> = {
+  RAG: BarChart3,
+  LLM: Bot,
+  "ML Security": FlaskConical,
+  Security: ShieldCheck,
+  CV: ScanEye,
+  NLP: MessageSquare,
 }
 
-function getTrackIcon(name: string): string {
-  return trackIcons[name] || trackIcons.default
+const defaultIcon = BookOpen
+
+function getTrackIcon(name: string): LucideIcon {
+  return trackIcons[name] || defaultIcon
 }
 
 export function TrackPills({
@@ -57,7 +67,10 @@ export function TrackPills({
           onClick={() => onSelectTrack(track.id)}
           disabled={disabled}
         >
-          <span>{getTrackIcon(track.name)}</span>
+          {(() => {
+            const Icon = getTrackIcon(track.name)
+            return <Icon className="h-4 w-4" />
+          })()}
           <span className="truncate max-w-[100px] sm:max-w-none">{track.name}</span>
         </Button>
       ))}

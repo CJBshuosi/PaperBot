@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Download, Play, MessageSquare, FileCode } from "lucide-react"
+import { Download, Play, MessageSquare, FileCode, Bot } from "lucide-react"
 
 import { ImpactRadar } from "@/components/paper/ImpactRadar"
 import { SentimentChart } from "@/components/paper/SentimentChart"
@@ -63,7 +63,7 @@ export default async function PaperPage({ params }: { params: Promise<{ id: stri
                                 </p>
                                 <div className="mt-6 p-4 bg-muted/50 rounded-lg border">
                                     <h4 className="font-semibold mb-2 flex items-center gap-2">
-                                        <span className="text-xl">🤖</span> AI TL;DR
+                                        <Bot className="h-5 w-5" /> AI TL;DR
                                     </h4>
                                     <p className="text-sm italic">{paper.tldr}</p>
                                 </div>

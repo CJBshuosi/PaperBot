@@ -1,11 +1,22 @@
 export interface Scholar {
     id: string
+    semantic_scholar_id?: string
     name: string
     affiliation: string
     h_index: number
     papers_tracked: number
     recent_activity: string
     status: "active" | "idle"
+    keywords?: string[]
+    cached_papers?: number
+    last_updated?: string | null
+    muted?: boolean
+    last_seen_at?: string | null
+    last_seen_cached_papers?: number
+    digest_enabled?: boolean
+    digest_frequency?: "daily" | "weekly" | "monthly"
+    alert_enabled?: boolean
+    alert_keywords?: string[]
 }
 
 export interface Paper {
@@ -14,8 +25,9 @@ export interface Paper {
     venue: string
     authors: string
     citations: string | number
-    status: "pending" | "analyzing" | "Reproduced"
+    status: "pending" | "analyzing" | "Reproduced" | "Saved"
     tags: string[]
+    url?: string
 }
 
 export interface PaperDetails extends Paper {
@@ -38,40 +50,22 @@ export interface TrendingTopic {
 }
 
 
-export type ActivityType = "published" | "alert" | "repro" | "milestone" | "conference"
+export type TimelineItemKind = "harvest" | "save" | "note"
 
-export interface Activity {
+export interface TimelineItem {
     id: string
-    type: ActivityType
+    kind: TimelineItemKind
+    title: string
+    subtitle?: string
     timestamp: string
-    // Type-specific fields
-    paper?: {
-        title: string
-        venue: string
-        year: string
-        citations: number
-        tags: string[]
-        abstract_snippet: string
-        is_influential?: boolean
-    }
-    scholar?: {
-        name: string
-        avatar: string
-        affiliation: string
-    }
-    milestone?: {
-        title: string
-        description: string
-        current_value: number
-        target_value?: number
-        trend: "up" | "down" | "flat"
-    }
-    conference?: {
-        name: string
-        location: string
-        date: string
-        deadline_countdown: string
-    }
+}
+
+export interface SavedPaper {
+    id: string
+    paper_id: string
+    title: string
+    authors: string
+    saved_at: string
 }
 
 export interface Stats {
@@ -93,6 +87,14 @@ export interface ScholarDetails extends Scholar {
         papers_count: number
         h_index: number
     }
+    trend_summary?: {
+        publication_trend: "up" | "down" | "flat" | string
+        citation_trend: "up" | "down" | "flat" | string
+        window?: number
+    }
+    publication_velocity?: Array<{ year: number; papers: number; citations: number }>
+    top_topics?: Array<{ topic: string; count: number }>
+    top_venues?: Array<{ venue: string; count: number }>
 }
 
 export interface WikiConcept {
@@ -107,6 +109,64 @@ export interface WikiConcept {
     icon: string // Lucide icon name or identifier
 }
 
+export interface LLMUsageDailyRecord {
+    date: string
+    total_tokens: number
+    total_cost_usd: number
+    providers: Record<string, number>
+}
+
+export interface LLMUsageProviderModelRecord {
+    provider_name: string
+    model_name: string
+    calls: number
+    total_tokens: number
+    total_cost_usd: number
+}
+
+export interface LLMUsageSummary {
+    window_days: number
+    daily: LLMUsageDailyRecord[]
+    provider_models: LLMUsageProviderModelRecord[]
+    totals: {
+        calls: number
+        total_tokens: number
+        total_cost_usd: number
+    }
+}
+
+export interface Activity {
+    id: string
+    type: "published" | "milestone" | "conference"
+    timestamp: string
+    scholar?: {
+        name: string
+        avatar: string
+        affiliation: string
+    }
+    paper?: {
+        title: string
+        venue: string
+        year: string
+        citations: number
+        tags: string[]
+        abstract_snippet?: string
+        is_influential?: boolean
+    }
+    milestone?: {
+        title: string
+        description: string
+        current_value?: number
+        trend?: "up" | "down" | "flat"
+    }
+    conference?: {
+        name: string
+        location: string
+        date: string
+        deadline_countdown?: string
+    }
+}
+
 export interface PipelineTask {
     id: string
     paper_title: string
@@ -119,13 +179,62 @@ export interface ReadingQueueItem {
     id: string
     paper_id: string
     title: string
-    estimated_time: string
-    priority: number
+    authors?: string
+    saved_at?: string
+    estimated_time?: string
+    priority?: number
+    status?: "unread" | "reading" | "done"
 }
 
-export interface LLMUsageRecord {
-    date: string
-    gpt4: number
-    claude: number
-    ollama: number
+export interface DeadlineRadarItem {
+    name: string
+    ccf_level: string
+    field: string
+    deadline: string
+    days_left: number
+    url: string
+    keywords: string[]
+    workflow_query: string
+    matched_tracks: Array<{
+        track_id: number
+        track_name: string
+        matched_keywords: string[]
+    }>
+}
+
+export interface ResearchTrackSummary {
+    id: number
+    name: string
+    description?: string
+    keywords?: string[]
+    methods?: string[]
+    venues?: string[]
+    is_active?: boolean
+}
+
+export interface TrackFeedPaper {
+    id: number | string
+    title: string
+    year?: number | null
+    venue?: string | null
+    citation_count?: number
+}
+
+export interface TrackFeedItem {
+    paper: TrackFeedPaper
+    feed_score: number
+    matched_terms: string[]
+    latest_feedback_action?: string | null
+    latest_judge?: {
+        overall?: number | null
+        recommendation?: string | null
+    } | null
+}
+
+export interface AnchorPreviewItem {
+    author_id: number
+    name: string
+    anchor_score: number
+    anchor_level?: string
+    user_action?: "follow" | "ignore" | null
 }

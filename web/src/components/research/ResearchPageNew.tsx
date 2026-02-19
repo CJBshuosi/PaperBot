@@ -1,8 +1,12 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
+import { useSearchParams } from "next/navigation"
 
 import { cn } from "@/lib/utils"
+import { ArrowRight, BookOpen, GitBranch, Search, Sparkles } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -12,11 +16,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 
 import { SearchBox } from "./SearchBox"
 import { TrackPills } from "./TrackPills"
 import { SearchResults } from "./SearchResults"
+import { MemoryTab } from "./MemoryTab"
 import { CreateTrackModal } from "./CreateTrackModal"
 import { EditTrackModal } from "./EditTrackModal"
 import { ManageTracksModal } from "./ManageTracksModal"
@@ -52,6 +63,8 @@ function getGreeting(): string {
 }
 
 export default function ResearchPageNew() {
+  const searchParams = useSearchParams()
+
   // User state
   const [userId] = useState("default")
 
@@ -59,11 +72,23 @@ export default function ResearchPageNew() {
   const [tracks, setTracks] = useState<Track[]>([])
   const [activeTrackId, setActiveTrackId] = useState<number | null>(null)
 
+  // All available sources
+  const ALL_SOURCES = ["semantic_scholar", "arxiv", "openalex", "papers_cool", "hf_daily"]
+
   // Search state
   const [query, setQuery] = useState("")
   const [hasSearched, setHasSearched] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const [contextPack, setContextPack] = useState<ContextPack | null>(null)
+  const [searchSources, setSearchSources] = useState<string[]>(ALL_SOURCES)
+  const [yearFrom, setYearFrom] = useState("")
+  const [yearTo, setYearTo] = useState("")
+
+  // Memory drawer state
+  const [memoryOpen, setMemoryOpen] = useState(false)
+
+  // Anchor mode state (used for search filtering)
+  const [anchorPersonalized, setAnchorPersonalized] = useState(true)
 
   // UI state
   const [loading, setLoading] = useState(false)
@@ -85,12 +110,28 @@ export default function ResearchPageNew() {
 
   const papers = contextPack?.paper_recommendations || []
   const reasons = contextPack?.paper_recommendation_reasons || {}
+  const routeTrackId = Number(searchParams.get("track_id") || 0)
+  const routeQuery = searchParams.get("query")?.trim() || ""
 
   // Load tracks on mount
   useEffect(() => {
     refreshTracks().catch((e) => setError(String(e)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!routeTrackId || !Number.isFinite(routeTrackId)) return
+    if (!tracks.some((track) => track.id === routeTrackId)) return
+    if (activeTrackId === routeTrackId) return
+    activateTrack(routeTrackId).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeTrackId, tracks, activeTrackId])
+
+  useEffect(() => {
+    if (!routeQuery || hasSearched) return
+    if (query === routeQuery) return
+    setQuery(routeQuery)
+  }, [routeQuery, query, hasSearched])
 
   async function refreshTracks(): Promise<number | null> {
     const data = await fetchJson<{ tracks: Track[] }>(
@@ -130,14 +171,29 @@ export default function ResearchPageNew() {
     setError(null)
 
     try {
+      const parseYear = (value: string): number | undefined => {
+        const trimmed = value.trim()
+        if (!trimmed) return undefined
+        const n = Number(trimmed)
+        if (!Number.isInteger(n)) return undefined
+        if (n < 1900 || n > 2100) return undefined
+        return n
+      }
+      const parsedYearFrom = parseYear(yearFrom)
+      const parsedYearTo = parseYear(yearTo)
+
       const body = {
         user_id: userId,
         query,
         paper_limit: 10,
         memory_limit: 8,
+        sources: searchSources,
         offline: false,
         include_cross_track: false,
         stage: "auto",
+        personalized: anchorPersonalized,
+        year_from: parsedYearFrom,
+        year_to: parsedYearTo,
       }
 
       const data = await fetchJson<{ context_pack: ContextPack }>(
@@ -156,6 +212,40 @@ export default function ResearchPageNew() {
       setIsSearching(false)
     }
   }
+
+  function toggleSearchSource(source: string) {
+    setSearchSources((prev) => {
+      const exists = prev.includes(source)
+      if (exists) {
+        const next = prev.filter((x) => x !== source)
+        // Keep at least one source selected
+        return next.length ? next : prev
+      }
+      return [...prev, source]
+    })
+  }
+
+  // Auto-refresh search when sources or personalization mode change (after initial search)
+  useEffect(() => {
+    if (!hasSearched || !query.trim() || isSearching) return
+
+    // Debounce to avoid rapid re-fetching
+    const timer = setTimeout(() => {
+      handleSearch()
+    }, 300)
+
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchSources, anchorPersonalized, yearFrom, yearTo])
+
+  // If the page is opened with a query parameter, run it once automatically.
+  useEffect(() => {
+    if (!routeQuery || hasSearched || isSearching || loading) return
+    if (query.trim() !== routeQuery) return
+    if (routeTrackId && Number.isFinite(routeTrackId) && activeTrackId !== routeTrackId) return
+    handleSearch().catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeQuery, query, hasSearched, isSearching, loading, routeTrackId, activeTrackId])
 
   async function handleCreateTrack(data: {
     name: string
@@ -290,7 +380,14 @@ export default function ResearchPageNew() {
       weight: 0.0,
       context_run_id: contextPack?.context_run_id ?? null,
       context_rank: typeof rank === "number" ? rank : undefined,
-      metadata: {},
+      metadata: {
+        retrieval_sources: Array.isArray(paper?.retrieval_sources)
+          ? paper?.retrieval_sources
+          : [],
+        retrieval_score:
+          typeof paper?.retrieval_score === "number" ? paper.retrieval_score : undefined,
+        anchor_mode: anchorPersonalized ? "personalized" : "global",
+      },
     }
 
     // Include paper metadata for save action
@@ -302,6 +399,7 @@ export default function ResearchPageNew() {
       body.paper_venue = paper.venue
       body.paper_citation_count = paper.citation_count
       body.paper_url = paper.url
+      body.paper_source = paper.source || "semantic_scholar"
     }
 
     await fetchJson(`/api/research/papers/feedback`, {
@@ -312,14 +410,20 @@ export default function ResearchPageNew() {
   }
 
   const trackToClearName = tracks.find((t) => t.id === trackToClear)?.name || "this track"
+  const discoveryHref = useMemo(() => {
+    const params = new URLSearchParams()
+    if (query.trim()) params.set("query", query.trim())
+    if (activeTrackId) params.set("track_id", String(activeTrackId))
+    const qs = params.toString()
+    return qs ? `/research/discovery?${qs}` : "/research/discovery"
+  }, [query, activeTrackId])
 
   return (
     <div
       className={cn(
-        "min-h-[calc(100vh-4rem)] transition-all duration-500 ease-out",
-        hasSearched
-          ? "pt-8"
-          : "flex flex-col items-center justify-center"
+        "min-h-[calc(100vh-4rem)] bg-gradient-to-b from-background via-background to-muted/20 transition-all duration-500 ease-out",
+        !hasSearched && "flex flex-col items-center justify-center",
+        hasSearched && "py-6 sm:py-8"
       )}
     >
       {/* Confirm Clear Memory Dialog */}
@@ -397,15 +501,15 @@ export default function ResearchPageNew() {
       {/* Main Content */}
       <div
         className={cn(
-          "w-full px-4 sm:px-6 transition-all duration-500 ease-out",
-          hasSearched ? "max-w-5xl mx-auto" : "max-w-3xl"
+          "w-full px-4 sm:px-6 lg:px-8 transition-all duration-500 ease-out mx-auto",
+          hasSearched ? "max-w-[1400px]" : "max-w-4xl"
         )}
       >
         {/* Greeting - only show before search */}
         {!hasSearched && (
           <div className="text-center mb-8 sm:mb-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <h1 className="text-3xl sm:text-4xl md:text-5xl font-semibold tracking-tight mb-2 sm:mb-3">
-              <span className="mr-2 sm:mr-3">📚</span>
+              <BookOpen className="inline-block mr-2 sm:mr-3 h-8 w-8 sm:h-10 sm:w-10 align-middle" />
               {getGreeting()}
             </h1>
             <p className="text-lg sm:text-xl text-muted-foreground">
@@ -432,12 +536,19 @@ export default function ResearchPageNew() {
             onManageTracks={() => setManageModalOpen(true)}
             isSearching={isSearching}
             disabled={loading}
+            anchorMode={anchorPersonalized ? "personalized" : "global"}
+            onAnchorModeChange={(mode) => setAnchorPersonalized(mode === "personalized")}
+            onOpenMemory={() => setMemoryOpen(true)}
+            yearFrom={yearFrom}
+            yearTo={yearTo}
+            onYearFromChange={setYearFrom}
+            onYearToChange={setYearTo}
           />
         </div>
 
         {/* Track Pills - only show before search */}
         {!hasSearched && tracks.length > 0 && (
-          <div className="animate-in fade-in slide-in-from-bottom-2 duration-500 delay-150">
+          <div className="mb-8 flex justify-center animate-in fade-in slide-in-from-bottom-2 duration-500 delay-150">
             <TrackPills
               tracks={tracks}
               activeTrackId={activeTrackId}
@@ -446,6 +557,40 @@ export default function ResearchPageNew() {
               disabled={loading}
             />
           </div>
+        )}
+
+        {!hasSearched && (
+          <Card className="mx-auto mb-8 max-w-3xl border-border/70 bg-card/80 backdrop-blur-sm">
+            <CardContent className="grid gap-3 p-4 sm:grid-cols-3 sm:p-5">
+              <div className="rounded-md border bg-background/70 p-3">
+                <p className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <Search className="h-4 w-4 text-primary" />
+                  Search
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Start from a query with year window and source filters.
+                </p>
+              </div>
+              <div className="rounded-md border bg-background/70 p-3">
+                <p className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  Rank
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Capture like/save/dislike feedback to steer recommendations.
+                </p>
+              </div>
+              <div className="rounded-md border bg-background/70 p-3">
+                <p className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <GitBranch className="h-4 w-4 text-primary" />
+                  Discover
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Expand with citation graph and timeline slices in one workspace.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* Error Display */}
@@ -460,16 +605,55 @@ export default function ResearchPageNew() {
           </Card>
         )}
 
-        {/* Search Results */}
-        <SearchResults
-          papers={papers}
-          reasons={reasons}
-          isSearching={isSearching}
-          hasSearched={hasSearched}
-          onLike={(paperId, rank) => handleFeedback(paperId, "like", rank)}
-          onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
-          onDislike={(paperId, rank) => handleFeedback(paperId, "dislike", rank)}
-        />
+        {/* Search Results - only shown after search */}
+        {hasSearched && (
+          <div className="space-y-4">
+            <Card className="border-border/70 bg-card/80 backdrop-blur-sm">
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3 sm:p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">
+                    Track: {activeTrack?.name || "Global"}
+                  </Badge>
+                  <Badge variant="outline">
+                    Mode: {anchorPersonalized ? "Personalized" : "Global"}
+                  </Badge>
+                  <Badge variant="outline">Sources: {searchSources.length}</Badge>
+                  <Badge variant="secondary">Results: {papers.length}</Badge>
+                </div>
+                <Button asChild size="sm" className="gap-1.5">
+                  <Link href={discoveryHref}>
+                    Open Discovery Workspace
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+
+            <SearchResults
+              papers={papers}
+              reasons={reasons}
+              isSearching={isSearching}
+              hasSearched={hasSearched}
+              selectedSources={searchSources}
+              onToggleSource={toggleSearchSource}
+              onLike={(paperId, rank, paper) => handleFeedback(paperId, "like", rank, paper)}
+              onSave={(paperId, rank, paper) => handleFeedback(paperId, "save", rank, paper)}
+              onDislike={(paperId, rank, paper) => handleFeedback(paperId, "dislike", rank, paper)}
+            />
+          </div>
+        )}
+
+        {/* Memory Sheet Drawer */}
+        <Sheet open={memoryOpen} onOpenChange={setMemoryOpen}>
+          <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+            <SheetHeader>
+              <SheetTitle>Track Memory</SheetTitle>
+            </SheetHeader>
+            <div className="mt-4">
+              <MemoryTab userId={userId} trackId={activeTrackId} />
+            </div>
+          </SheetContent>
+        </Sheet>
       </div>
     </div>
   )

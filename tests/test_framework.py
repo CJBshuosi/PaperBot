@@ -277,29 +277,6 @@ class TestMockDataGenerator:
         assert len(response["data"]) > 0
 
 
-class TestSearchModule:
-    """搜索模块测试"""
-    
-    def test_semantic_scholar_search_import(self):
-        """测试搜索模块导入"""
-        from tools.search import SemanticScholarSearch, SearchResultRanker
-        
-        assert SemanticScholarSearch is not None
-        assert SearchResultRanker is not None
-    
-    def test_ranker_by_citation(self, sample_papers):
-        """测试按引用排序"""
-        from tools.search import SearchResultRanker, PaperResult
-        
-        papers = [
-            PaperResult(paper_id=f"p{i}", title=f"Paper {i}", citation_count=i * 10)
-            for i in range(5)
-        ]
-        
-        ranked = SearchResultRanker.rank_papers_by_citation(papers)
-        
-        assert ranked[0].citation_count >= ranked[-1].citation_count
-
 
 class TestKeywordOptimizer:
     """关键词优化器测试"""

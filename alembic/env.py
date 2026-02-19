@@ -68,13 +68,19 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section) or {}
-    configuration["sqlalchemy.url"] = _get_db_url()
-    _ensure_sqlite_parent_dir(configuration["sqlalchemy.url"])
+    db_url = _get_db_url()
+    configuration["sqlalchemy.url"] = db_url
+    _ensure_sqlite_parent_dir(db_url)
+
+    connect_args: dict = {}
+    if "psycopg" in db_url or db_url.startswith("postgresql"):
+        connect_args = {"prepare_threshold": 0}
 
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     with connectable.connect() as connection:

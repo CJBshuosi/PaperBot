@@ -3,11 +3,12 @@ from __future__ import annotations
 import copy
 import os
 import re
+import time
+from threading import Thread
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -15,12 +16,18 @@ from pydantic import BaseModel, Field
 from paperbot.api.streaming import StreamEvent, wrap_generator
 from paperbot.application.services.daily_push_service import DailyPushService
 from paperbot.application.services.llm_service import get_llm_service
+from paperbot.application.services.enrichment_pipeline import (
+    EnrichmentContext,
+    EnrichmentPipeline,
+    FilterStep,
+    JudgeStep,
+    LLMEnrichmentStep,
+)
+from paperbot.application.services.paper_search_service import PaperSearchService
 from paperbot.application.workflows.analysis.paper_judge import PaperJudge
 from paperbot.application.workflows.dailypaper import (
     DailyPaperReporter,
-    apply_judge_scores_to_report,
     build_daily_paper_report,
-    enrich_daily_paper_report,
     ingest_daily_report_to_registry,
     normalize_llm_features,
     normalize_output_formats,
@@ -28,10 +35,22 @@ from paperbot.application.workflows.dailypaper import (
     render_daily_paper_markdown,
     select_judge_candidates,
 )
-from paperbot.application.workflows.paperscool_topic_search import PapersCoolTopicSearchWorkflow
+from paperbot.application.workflows.unified_topic_search import (
+    make_default_search_service,
+    run_unified_topic_search,
+)
+from paperbot.infrastructure.stores.paper_store import PaperStore
+from paperbot.infrastructure.stores.pipeline_session_store import PipelineSessionStore
+from paperbot.infrastructure.stores.research_store import SqlAlchemyResearchStore
+from paperbot.infrastructure.stores.workflow_metric_store import WorkflowMetricStore
 from paperbot.utils.text_processing import extract_github_url
 
 router = APIRouter()
+_paper_search_service: Optional[PaperSearchService] = None
+_pipeline_session_store = PipelineSessionStore()
+_workflow_metric_store: Optional[WorkflowMetricStore] = None
+# Test compatibility hook: unit tests can monkeypatch this to inject a fake workflow.
+PapersCoolTopicSearchWorkflow = None
 
 _ALLOWED_REPORT_BASE = os.path.abspath("./reports")
 
@@ -59,6 +78,57 @@ def _validate_email_list(emails: List[str]) -> List[str]:
         if _EMAIL_RE.match(addr):
             cleaned.append(addr)
     return cleaned
+
+
+def _get_paper_search_service() -> PaperSearchService:
+    global _paper_search_service
+    if _paper_search_service is None:
+        _paper_search_service = make_default_search_service(registry=PaperStore())
+    return _paper_search_service
+
+
+def _get_workflow_metric_store() -> WorkflowMetricStore:
+    global _workflow_metric_store
+    if _workflow_metric_store is None:
+        _workflow_metric_store = WorkflowMetricStore()
+    return _workflow_metric_store
+
+
+def _count_report_claims_and_evidence(report: Dict[str, Any]) -> tuple[int, int]:
+    claims = 0
+    evidences = 0
+    for query in report.get("queries") or []:
+        for item in query.get("top_items") or []:
+            claims += 1
+            if item.get("url") or item.get("pdf_url") or item.get("external_url"):
+                evidences += 1
+            judge = item.get("judge")
+            if isinstance(judge, dict):
+                eq = judge.get("evidence_quotes")
+                if isinstance(eq, list) and eq:
+                    evidences += len(eq)
+    return claims, evidences
+
+
+async def _run_topic_search(
+    *,
+    queries: List[str],
+    sources: List[str],
+    branches: List[str],
+    top_k_per_query: int,
+    show_per_branch: int,
+    min_score: float,
+) -> Dict[str, Any]:
+    return await run_unified_topic_search(
+        queries=queries,
+        sources=sources,
+        branches=branches,
+        top_k_per_query=top_k_per_query,
+        show_per_branch=show_per_branch,
+        min_score=min_score,
+        search_service=_get_paper_search_service(),
+        persist=False,
+    )
 
 
 class PapersCoolSearchRequest(BaseModel):
@@ -90,7 +160,9 @@ class DailyPaperRequest(BaseModel):
     top_n: int = Field(10, ge=1, le=200)
     formats: List[str] = Field(default_factory=lambda: ["both"])
     save: bool = False
-    output_dir: str = Field("./reports/dailypaper", description="Relative path under project root for saving reports")
+    output_dir: str = Field(
+        "./reports/dailypaper", description="Relative path under project root for saving reports"
+    )
     enable_llm_analysis: bool = False
     llm_features: List[str] = Field(default_factory=lambda: ["summary"])
     enable_judge: bool = False
@@ -100,6 +172,14 @@ class DailyPaperRequest(BaseModel):
     notify: bool = False
     notify_channels: List[str] = Field(default_factory=list)
     notify_email_to: List[str] = Field(default_factory=list)
+    session_id: Optional[str] = Field(
+        default=None, description="Resume token for long-running pipeline"
+    )
+    resume: bool = Field(False, description="Resume from latest persisted checkpoint")
+    require_approval: bool = Field(
+        False,
+        description="Pause before registry ingest and require manual approve/reject",
+    )
 
 
 class DailyPaperResponse(BaseModel):
@@ -108,6 +188,18 @@ class DailyPaperResponse(BaseModel):
     markdown_path: Optional[str] = None
     json_path: Optional[str] = None
     notify_result: Optional[Dict[str, Any]] = None
+
+
+class PipelineSessionResponse(BaseModel):
+    session: Dict[str, Any]
+
+
+class ApprovalQueueResponse(BaseModel):
+    items: List[Dict[str, Any]]
+
+
+class ApprovalDecisionRequest(BaseModel):
+    reason: str = ""
 
 
 class PapersCoolAnalyzeRequest(BaseModel):
@@ -126,6 +218,7 @@ class PapersCoolReposRequest(BaseModel):
     papers: List[Dict[str, Any]] = Field(default_factory=list)
     max_items: int = Field(100, ge=1, le=1000)
     include_github_api: bool = True
+    persist: bool = False
 
 
 class PapersCoolReposResponse(BaseModel):
@@ -133,17 +226,17 @@ class PapersCoolReposResponse(BaseModel):
     matched_repos: int
     github_api_used: bool
     repos: List[Dict[str, Any]]
+    persist_summary: Optional[Dict[str, int]] = None
 
 
 @router.post("/research/paperscool/search", response_model=PapersCoolSearchResponse)
-def topic_search(req: PapersCoolSearchRequest):
+async def topic_search(req: PapersCoolSearchRequest):
     cleaned_queries = [q.strip() for q in req.queries if (q or "").strip()]
     if not cleaned_queries:
         raise HTTPException(status_code=400, detail="queries is required")
 
-    workflow = PapersCoolTopicSearchWorkflow()
     try:
-        result = workflow.run(
+        result = await _run_topic_search(
             queries=cleaned_queries,
             sources=req.sources,
             branches=req.branches,
@@ -159,19 +252,97 @@ def topic_search(req: PapersCoolSearchRequest):
 async def _dailypaper_stream(req: DailyPaperRequest):
     """SSE generator for the full DailyPaper pipeline."""
     cleaned_queries = [q.strip() for q in req.queries if (q or "").strip()]
+    started = time.perf_counter()
+    phase_ms: Dict[str, float] = {}
+    phase_start = started
+    metric_store = _get_workflow_metric_store()
+
+    session = _pipeline_session_store.start_session(
+        workflow="paperscool_daily",
+        payload=req.model_dump(),
+        session_id=req.session_id,
+        resume=req.resume,
+    )
+    session_id = str(session.get("session_id") or "")
+    session_state: Dict[str, Any] = session.get("state") if req.resume else {}
+
+    yield StreamEvent(
+        type="status",
+        data={
+            "phase": "session",
+            "session_id": session_id,
+            "resume": bool(req.resume),
+            "checkpoint": session.get("checkpoint") or "init",
+        },
+    )
+
+    if (
+        req.resume
+        and session.get("status") == "completed"
+        and isinstance(session.get("result"), dict)
+    ):
+        cached_result = dict(session.get("result") or {})
+        payload = {
+            "report": cached_result.get("report") or {},
+            "markdown": cached_result.get("markdown") or "",
+            "markdown_path": cached_result.get("markdown_path"),
+            "json_path": cached_result.get("json_path"),
+            "notify_result": cached_result.get("notify_result"),
+            "session_id": session_id,
+            "resumed": True,
+        }
+        yield StreamEvent(type="result", data=payload)
+        return
+
+    if (
+        req.resume
+        and session.get("status") == "pending_approval"
+        and isinstance(session.get("result"), dict)
+    ):
+        cached_result = dict(session.get("result") or {})
+        payload = {
+            "report": cached_result.get("report") or {},
+            "markdown": cached_result.get("markdown") or "",
+            "markdown_path": cached_result.get("markdown_path"),
+            "json_path": cached_result.get("json_path"),
+            "notify_result": cached_result.get("notify_result"),
+            "session_id": session_id,
+            "resumed": True,
+            "approval_status": "pending_approval",
+        }
+        yield StreamEvent(
+            type="approval_required",
+            data={"phase": "approval", "session_id": session_id, "status": "pending_approval"},
+        )
+        yield StreamEvent(type="result", data=payload)
+        return
 
     # Phase 1 — Search
-    yield StreamEvent(type="progress", data={"phase": "search", "message": "Searching papers..."})
-    workflow = PapersCoolTopicSearchWorkflow()
     effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
-    search_result = workflow.run(
-        queries=cleaned_queries,
-        sources=req.sources,
-        branches=req.branches,
-        top_k_per_query=effective_top_k,
-        show_per_branch=req.show_per_branch,
-        min_score=req.min_score,
-    )
+    if req.resume and isinstance(session_state.get("search_result"), dict):
+        search_result = dict(session_state.get("search_result") or {})
+        yield StreamEvent(
+            type="progress",
+            data={"phase": "search", "message": "Resumed search result from checkpoint"},
+        )
+    else:
+        yield StreamEvent(
+            type="progress", data={"phase": "search", "message": "Searching papers..."}
+        )
+        search_result = await _run_topic_search(
+            queries=cleaned_queries,
+            sources=req.sources,
+            branches=req.branches,
+            top_k_per_query=effective_top_k,
+            show_per_branch=req.show_per_branch,
+            min_score=req.min_score,
+        )
+        _pipeline_session_store.save_checkpoint(
+            session_id=session_id,
+            checkpoint="search_done",
+            state={"search_result": search_result},
+        )
+
     summary = search_result.get("summary") or {}
     yield StreamEvent(
         type="search_done",
@@ -179,22 +350,51 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             "items_count": len(search_result.get("items") or []),
             "queries_count": len(search_result.get("queries") or []),
             "unique_items": int(summary.get("unique_items") or 0),
+            "session_id": session_id,
         },
     )
+    phase_ms["search"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+    phase_start = time.perf_counter()
 
     # Phase 2 — Build Report
-    yield StreamEvent(type="progress", data={"phase": "build", "message": "Building report..."})
-    report = build_daily_paper_report(search_result=search_result, title=req.title, top_n=req.top_n)
+    if req.resume and isinstance(session_state.get("report"), dict):
+        report = dict(session_state.get("report") or {})
+        yield StreamEvent(
+            type="progress",
+            data={"phase": "build", "message": "Resumed report from checkpoint"},
+        )
+    else:
+        yield StreamEvent(type="progress", data={"phase": "build", "message": "Building report..."})
+        report = build_daily_paper_report(
+            search_result=search_result, title=req.title, top_n=req.top_n
+        )
+        _pipeline_session_store.save_checkpoint(
+            session_id=session_id,
+            checkpoint="report_built",
+            state={"search_result": search_result, "report": report},
+        )
+
     yield StreamEvent(
         type="report_built",
         data={
             "queries_count": len(report.get("queries") or []),
             "global_top_count": len(report.get("global_top") or []),
             "report": report,
+            "session_id": session_id,
         },
     )
+    phase_ms["build"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+    phase_start = time.perf_counter()
 
-    # Phase 3 — LLM Enrichment
+    query_items: List[Dict[str, Any]] = []
+    paper_query_map: Dict[int, str] = {}
+    for query in report.get("queries") or []:
+        query_name = query.get("normalized_query") or query.get("raw_query") or ""
+        for item in query.get("top_items") or []:
+            query_items.append(item)
+            paper_query_map[id(item)] = query_name
+
+    # Phase 3 — LLM Enrichment (pipeline)
     if req.enable_llm_analysis:
         features = normalize_llm_features(req.llm_features)
         if features:
@@ -206,46 +406,42 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                 "daily_insight": "",
             }
 
-            summary_done = 0
-            summary_total = 0
+            llm_targets: set[int] = set()
             if "summary" in features or "relevance" in features:
                 for query in report.get("queries") or []:
-                    summary_total += len((query.get("top_items") or [])[:3])
+                    for item in (query.get("top_items") or [])[:3]:
+                        llm_targets.add(id(item))
 
             yield StreamEvent(
                 type="progress",
-                data={"phase": "llm", "message": "Starting LLM enrichment...", "total": summary_total},
+                data={
+                    "phase": "llm",
+                    "message": "Starting LLM enrichment...",
+                    "total": len(llm_targets),
+                },
             )
 
-            for query in report.get("queries") or []:
-                query_name = query.get("normalized_query") or query.get("raw_query") or ""
-                top_items = (query.get("top_items") or [])[:3]
+            if llm_targets:
+                pipeline = EnrichmentPipeline(
+                    steps=[LLMEnrichmentStep(llm_service=llm_service, features=features)]
+                )
+                await pipeline.run(
+                    query_items,
+                    context=EnrichmentContext(
+                        query="; ".join(cleaned_queries),
+                        extra={
+                            "llm_target_ids": llm_targets,
+                            "query_for_relevance": "; ".join(cleaned_queries),
+                        },
+                    ),
+                )
 
-                if "summary" in features:
-                    for item in top_items:
-                        item["ai_summary"] = llm_service.summarize_paper(
-                            title=item.get("title") or "",
-                            abstract=item.get("snippet") or item.get("abstract") or "",
-                        )
-                        summary_done += 1
-                        yield StreamEvent(
-                            type="llm_summary",
-                            data={
-                                "title": item.get("title") or "Untitled",
-                                "query": query_name,
-                                "ai_summary": item["ai_summary"],
-                                "done": summary_done,
-                                "total": summary_total,
-                            },
-                        )
-
-                if "relevance" in features:
-                    for item in top_items:
-                        item["relevance"] = llm_service.assess_relevance(paper=item, query=query_name)
-                        if "summary" not in features:
-                            summary_done += 1
-
-                if "trends" in features and top_items:
+            if "trends" in features:
+                for query in report.get("queries") or []:
+                    query_name = query.get("normalized_query") or query.get("raw_query") or ""
+                    top_items = (query.get("top_items") or [])[:3]
+                    if not top_items:
+                        continue
                     trend_text = llm_service.analyze_trends(topic=query_name, papers=top_items)
                     llm_block["query_trends"].append({"query": query_name, "analysis": trend_text})
                     yield StreamEvent(
@@ -259,11 +455,19 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                     )
 
             if "insight" in features:
-                yield StreamEvent(type="progress", data={"phase": "insight", "message": "Generating daily insight..."})
+                yield StreamEvent(
+                    type="progress",
+                    data={"phase": "insight", "message": "Generating daily insight..."},
+                )
                 llm_block["daily_insight"] = llm_service.generate_daily_insight(report)
                 yield StreamEvent(type="insight", data={"analysis": llm_block["daily_insight"]})
 
             report["llm_analysis"] = llm_block
+            summary_done = sum(
+                1
+                for item in query_items
+                if id(item) in llm_targets and (item.get("ai_summary") or item.get("relevance"))
+            )
             yield StreamEvent(
                 type="llm_done",
                 data={
@@ -272,7 +476,7 @@ async def _dailypaper_stream(req: DailyPaperRequest):
                 },
             )
 
-    # Phase 4 — Judge
+    # Phase 4 — Judge + Filter (pipeline)
     if req.enable_judge:
         llm_service_j = get_llm_service()
         judge = PaperJudge(llm_service=llm_service_j)
@@ -283,12 +487,17 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             token_budget=req.judge_token_budget,
         )
         selected = list(selection.get("selected") or [])
-        recommendation_count: Dict[str, int] = {
-            "must_read": 0,
-            "worth_reading": 0,
-            "skim": 0,
-            "skip": 0,
-        }
+        judge_targets: set[int] = set()
+        queries = list(report.get("queries") or [])
+        for row in selected:
+            query_index = int(row.get("query_index") or 0)
+            item_index = int(row.get("item_index") or 0)
+            if query_index >= len(queries):
+                continue
+            top_items = list(queries[query_index].get("top_items") or [])
+            if item_index >= len(top_items):
+                continue
+            judge_targets.add(id(top_items[item_index]))
 
         yield StreamEvent(
             type="progress",
@@ -300,46 +509,31 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             },
         )
 
-        queries = list(report.get("queries") or [])
-        for idx, row in enumerate(selected, start=1):
-            query_index = int(row.get("query_index") or 0)
-            item_index = int(row.get("item_index") or 0)
+        if judge_targets:
+            judge_pipeline = EnrichmentPipeline(
+                steps=[JudgeStep(judge=judge, n_runs=max(1, int(req.judge_runs)))]
+            )
+            await judge_pipeline.run(
+                query_items,
+                context=EnrichmentContext(
+                    query="; ".join(cleaned_queries),
+                    extra={"judge_target_ids": judge_targets, "paper_query_map": paper_query_map},
+                ),
+            )
 
-            if query_index >= len(queries):
+        recommendation_count: Dict[str, int] = {
+            "must_read": 0,
+            "worth_reading": 0,
+            "skim": 0,
+            "skip": 0,
+        }
+        for item in query_items:
+            if id(item) not in judge_targets:
                 continue
-
-            query = queries[query_index]
-            query_name = query.get("normalized_query") or query.get("raw_query") or ""
-            top_items = list(query.get("top_items") or [])
-            if item_index >= len(top_items):
-                continue
-
-            item = top_items[item_index]
-            if req.judge_runs > 1:
-                judgment = judge.judge_with_calibration(
-                    paper=item,
-                    query=query_name,
-                    n_runs=max(1, int(req.judge_runs)),
-                )
-            else:
-                judgment = judge.judge_single(paper=item, query=query_name)
-
-            j_payload = judgment.to_dict()
-            item["judge"] = j_payload
-            rec = j_payload.get("recommendation")
+            j_payload = item.get("judge") if isinstance(item.get("judge"), dict) else {}
+            rec = str(j_payload.get("recommendation") or "")
             if rec in recommendation_count:
                 recommendation_count[rec] += 1
-
-            yield StreamEvent(
-                type="judge",
-                data={
-                    "query": query_name,
-                    "title": item.get("title") or "Untitled",
-                    "judge": j_payload,
-                    "done": idx,
-                    "total": len(selected),
-                },
-            )
 
         for query in report.get("queries") or []:
             top_items = list(query.get("top_items") or [])
@@ -361,12 +555,15 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         }
         yield StreamEvent(type="judge_done", data=report["judge"])
 
-        # Phase 4b — Filter: remove papers below "worth_reading"
         KEEP_RECOMMENDATIONS = {"must_read", "worth_reading"}
         yield StreamEvent(
             type="progress",
             data={"phase": "filter", "message": "Filtering papers by judge recommendation..."},
         )
+
+        filter_pipeline = EnrichmentPipeline(steps=[FilterStep(keep=KEEP_RECOMMENDATIONS)])
+        await filter_pipeline.run(query_items, context=EnrichmentContext())
+
         filter_log: List[Dict[str, Any]] = []
         total_before = 0
         total_after = 0
@@ -375,35 +572,40 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             items_before = list(query.get("top_items") or [])
             total_before += len(items_before)
             kept: List[Dict[str, Any]] = []
-            removed: List[Dict[str, Any]] = []
             for item in items_before:
-                j = item.get("judge")
-                if isinstance(j, dict):
-                    rec = j.get("recommendation", "")
-                    if rec in KEEP_RECOMMENDATIONS:
-                        kept.append(item)
-                    else:
-                        removed.append(item)
-                        filter_log.append({
+                if item.get("_filtered_out"):
+                    j = item.get("judge") if isinstance(item.get("judge"), dict) else {}
+                    filter_log.append(
+                        {
                             "query": query_name,
                             "title": item.get("title") or "Untitled",
-                            "recommendation": rec,
+                            "recommendation": j.get("recommendation"),
                             "overall": j.get("overall"),
                             "action": "removed",
-                        })
-                else:
-                    # No judge score — keep by default (unjudged papers)
-                    kept.append(item)
+                        }
+                    )
+                    continue
+                kept.append(item)
             total_after += len(kept)
             query["top_items"] = kept
 
-        # Also filter global_top
+        judge_by_key: Dict[str, Dict[str, Any]] = {}
+        for item in query_items:
+            if not isinstance(item.get("judge"), dict):
+                continue
+            key = f"{(item.get('url') or '').strip()}|{(item.get('title') or '').strip().lower()}"
+            if key:
+                judge_by_key[key] = item["judge"]
+
         global_before = list(report.get("global_top") or [])
         global_kept = []
         for item in global_before:
+            key = f"{(item.get('url') or '').strip()}|{(item.get('title') or '').strip().lower()}"
+            if key in judge_by_key:
+                item["judge"] = judge_by_key[key]
             j = item.get("judge")
             if isinstance(j, dict):
-                rec = j.get("recommendation", "")
+                rec = str(j.get("recommendation") or "")
                 if rec in KEEP_RECOMMENDATIONS:
                     global_kept.append(item)
             else:
@@ -428,6 +630,58 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             },
         )
 
+    _pipeline_session_store.save_checkpoint(
+        session_id=session_id,
+        checkpoint="enriched",
+        state={"search_result": search_result, "report": report},
+    )
+    phase_ms["enrich"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+    phase_start = time.perf_counter()
+
+    if req.require_approval:
+        preview_markdown = render_daily_paper_markdown(report)
+        claims, evidences = _count_report_claims_and_evidence(report)
+        pending_payload = {
+            "report": report,
+            "markdown": preview_markdown,
+            "markdown_path": None,
+            "json_path": None,
+            "notify_result": None,
+            "session_id": session_id,
+            "resumed": False,
+            "approval_status": "pending_approval",
+        }
+        _pipeline_session_store.update_status(
+            session_id=session_id,
+            status="pending_approval",
+            checkpoint="approval_pending",
+            state_patch={"search_result": search_result, "report": report},
+            result=pending_payload,
+        )
+        yield StreamEvent(
+            type="approval_required",
+            data={
+                "phase": "approval",
+                "session_id": session_id,
+                "status": "pending_approval",
+            },
+        )
+        yield StreamEvent(type="result", data=pending_payload)
+        metric_store.record_metric(
+            workflow="paperscool_daily",
+            stage="approval_pending",
+            status="pending_approval",
+            claim_count=claims,
+            evidence_count=evidences,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            detail={
+                "session_id": session_id,
+                "phase_ms": phase_ms,
+                "resume": bool(req.resume),
+            },
+        )
+        return
+
     # Phase 5 — Persist + Notify
     yield StreamEvent(type="progress", data={"phase": "save", "message": "Saving to registry..."})
     try:
@@ -441,6 +695,8 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             report["judge_registry_ingest"] = persist_judge_scores_to_registry(report)
         except Exception as exc:
             report["judge_registry_ingest"] = {"error": str(exc)}
+
+    _enqueue_repo_enrichment_async(report)
 
     markdown = render_daily_paper_markdown(report)
 
@@ -459,7 +715,9 @@ async def _dailypaper_stream(req: DailyPaperRequest):
         json_path = artifacts.json_path
 
     if req.notify:
-        yield StreamEvent(type="progress", data={"phase": "notify", "message": "Sending notifications..."})
+        yield StreamEvent(
+            type="progress", data={"phase": "notify", "message": "Sending notifications..."}
+        )
         notify_service = DailyPushService.from_env()
         notify_result = notify_service.push_dailypaper(
             report=report,
@@ -470,16 +728,39 @@ async def _dailypaper_stream(req: DailyPaperRequest):
             email_to_override=_validate_email_list(req.notify_email_to) or None,
         )
 
-    yield StreamEvent(
-        type="result",
-        data={
-            "report": report,
-            "markdown": markdown,
-            "markdown_path": markdown_path,
-            "json_path": json_path,
-            "notify_result": notify_result,
+    phase_ms["persist"] = round((time.perf_counter() - phase_start) * 1000.0, 2)
+
+    result_payload = {
+        "report": report,
+        "markdown": markdown,
+        "markdown_path": markdown_path,
+        "json_path": json_path,
+        "notify_result": notify_result,
+        "session_id": session_id,
+        "resumed": False,
+        "approval_status": "approved",
+    }
+    _pipeline_session_store.save_result(
+        session_id=session_id, result=result_payload, status="completed"
+    )
+
+    claims, evidences = _count_report_claims_and_evidence(report)
+    metric_store.record_metric(
+        workflow="paperscool_daily",
+        stage="result",
+        status="completed",
+        claim_count=claims,
+        evidence_count=evidences,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        detail={
+            "session_id": session_id,
+            "phase_ms": phase_ms,
+            "enable_judge": bool(req.enable_judge),
+            "enable_llm_analysis": bool(req.enable_llm_analysis),
         },
     )
+
+    yield StreamEvent(type="result", data=result_payload)
 
 
 @router.post("/research/paperscool/daily")
@@ -488,24 +769,221 @@ async def generate_daily_report(req: DailyPaperRequest):
     if not cleaned_queries:
         raise HTTPException(status_code=400, detail="queries is required")
 
-    # Fast sync path when no LLM/Judge — avoids SSE overhead
-    if not req.enable_llm_analysis and not req.enable_judge:
-        return _sync_daily_report(req, cleaned_queries)
+    started = time.perf_counter()
+    metric_store = _get_workflow_metric_store()
+
+    # Fast sync path when no long-running step is requested — avoids SSE overhead
+    if (
+        not req.enable_llm_analysis
+        and not req.enable_judge
+        and not req.require_approval
+        and not req.resume
+        and not req.session_id
+    ):
+        try:
+            payload = await _sync_daily_report(req, cleaned_queries)
+            report = payload.report if isinstance(payload, DailyPaperResponse) else {}
+            claims, evidences = _count_report_claims_and_evidence(report)
+            metric_store.record_metric(
+                workflow="paperscool_daily",
+                stage="sync_result",
+                status="completed",
+                claim_count=claims,
+                evidence_count=evidences,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                detail={"mode": "sync"},
+            )
+            return payload
+        except Exception as exc:
+            metric_store.record_metric(
+                workflow="paperscool_daily",
+                stage="sync_result",
+                status="failed",
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                detail={"mode": "sync", "error": str(exc)},
+            )
+            raise
 
     # SSE streaming path for long-running operations
     return StreamingResponse(
-        wrap_generator(_dailypaper_stream(req)),
+        wrap_generator(_dailypaper_stream(req), workflow="paperscool_daily"),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 
-def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
+@router.get("/research/paperscool/sessions/{session_id}", response_model=PipelineSessionResponse)
+async def get_daily_session(session_id: str):
+    session = _pipeline_session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    return PipelineSessionResponse(session=session)
+
+
+@router.get("/research/paperscool/approvals", response_model=ApprovalQueueResponse)
+async def list_pending_approvals(limit: int = 20):
+    rows = _pipeline_session_store.list_sessions(
+        workflow="paperscool_daily",
+        status="pending_approval",
+        limit=max(1, min(int(limit), 200)),
+    )
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        report = result.get("report") if isinstance(result.get("report"), dict) else {}
+        stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
+        items.append(
+            {
+                "session_id": row.get("session_id"),
+                "status": row.get("status"),
+                "checkpoint": row.get("checkpoint"),
+                "updated_at": row.get("updated_at"),
+                "title": report.get("title") or "DailyPaper Digest",
+                "query_count": int(stats.get("query_count") or 0),
+                "unique_items": int(stats.get("unique_items") or 0),
+            }
+        )
+    return ApprovalQueueResponse(items=items)
+
+
+def _finalize_approved_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    payload = session.get("payload") if isinstance(session.get("payload"), dict) else {}
+    state = session.get("state") if isinstance(session.get("state"), dict) else {}
+    result = session.get("result") if isinstance(session.get("result"), dict) else {}
+
+    report = state.get("report") if isinstance(state.get("report"), dict) else {}
+    if not report:
+        report = result.get("report") if isinstance(result.get("report"), dict) else {}
+    if not report:
+        raise HTTPException(status_code=400, detail="session has no report to approve")
+
+    try:
+        report["registry_ingest"] = ingest_daily_report_to_registry(report)
+    except Exception as exc:
+        report["registry_ingest"] = {"error": str(exc)}
+
+    if bool(payload.get("enable_judge")):
+        try:
+            report["judge_registry_ingest"] = persist_judge_scores_to_registry(report)
+        except Exception as exc:
+            report["judge_registry_ingest"] = {"error": str(exc)}
+
+    _enqueue_repo_enrichment_async(report)
+
+    markdown = render_daily_paper_markdown(report)
+    markdown_path = None
+    json_path = None
+    notify_result: Optional[Dict[str, Any]] = None
+
+    if bool(payload.get("save")):
+        reporter = DailyPaperReporter(
+            output_dir=_sanitize_output_dir(
+                str(payload.get("output_dir") or "./reports/dailypaper")
+            )
+        )
+        artifacts = reporter.write(
+            report=report,
+            markdown=markdown,
+            formats=normalize_output_formats(payload.get("formats") or ["both"]),
+            slug=payload.get("title") or report.get("title") or "DailyPaper Digest",
+        )
+        markdown_path = artifacts.markdown_path
+        json_path = artifacts.json_path
+
+    if bool(payload.get("notify")):
+        notify_service = DailyPushService.from_env()
+        notify_result = notify_service.push_dailypaper(
+            report=report,
+            markdown=markdown,
+            markdown_path=markdown_path,
+            json_path=json_path,
+            channels_override=payload.get("notify_channels") or None,
+            email_to_override=_validate_email_list(payload.get("notify_email_to") or []) or None,
+        )
+
+    return {
+        "report": report,
+        "markdown": markdown,
+        "markdown_path": markdown_path,
+        "json_path": json_path,
+        "notify_result": notify_result,
+        "session_id": session.get("session_id"),
+        "resumed": False,
+        "approval_status": "approved",
+    }
+
+
+@router.post(
+    "/research/paperscool/sessions/{session_id}/approve", response_model=PipelineSessionResponse
+)
+async def approve_daily_session(session_id: str):
+    session = _pipeline_session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.get("status") != "pending_approval":
+        raise HTTPException(status_code=409, detail="session is not pending approval")
+
+    final_payload = _finalize_approved_session(session)
+    claims, evidences = _count_report_claims_and_evidence(final_payload.get("report") or {})
+    _pipeline_session_store.update_status(
+        session_id=session_id,
+        status="completed",
+        checkpoint="result",
+        state_patch={"approved_at": True},
+        result=final_payload,
+    )
+    _get_workflow_metric_store().record_metric(
+        workflow="paperscool_daily",
+        stage="approval_finalize",
+        status="completed",
+        claim_count=claims,
+        evidence_count=evidences,
+        detail={"session_id": session_id, "mode": "approval"},
+    )
+    updated = _pipeline_session_store.get_session(session_id)
+    return PipelineSessionResponse(session=updated or {})
+
+
+@router.post(
+    "/research/paperscool/sessions/{session_id}/reject", response_model=PipelineSessionResponse
+)
+async def reject_daily_session(session_id: str, req: ApprovalDecisionRequest):
+    session = _pipeline_session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.get("status") != "pending_approval":
+        raise HTTPException(status_code=409, detail="session is not pending approval")
+
+    current_result = session.get("result") if isinstance(session.get("result"), dict) else {}
+    rejected_result = {
+        **current_result,
+        "session_id": session_id,
+        "approval_status": "rejected",
+        "rejected_reason": req.reason or "",
+    }
+
+    _pipeline_session_store.update_status(
+        session_id=session_id,
+        status="rejected",
+        checkpoint="approval_rejected",
+        state_patch={"reject_reason": req.reason or ""},
+        result=rejected_result,
+    )
+    _get_workflow_metric_store().record_metric(
+        workflow="paperscool_daily",
+        stage="approval_finalize",
+        status="rejected",
+        detail={"session_id": session_id, "reason": req.reason or ""},
+    )
+    updated = _pipeline_session_store.get_session(session_id)
+    return PipelineSessionResponse(session=updated or {})
+
+
+async def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
     """Original synchronous path for fast requests (no LLM/Judge)."""
-    workflow = PapersCoolTopicSearchWorkflow()
     effective_top_k = max(int(req.top_k_per_query), int(req.top_n), 1)
     try:
-        search_result = workflow.run(
+        search_result = await _run_topic_search(
             queries=cleaned_queries,
             sources=req.sources,
             branches=req.branches,
@@ -522,6 +1000,8 @@ def _sync_daily_report(req: DailyPaperRequest, cleaned_queries: List[str]):
         report["registry_ingest"] = ingest_summary
     except Exception as exc:
         report["registry_ingest"] = {"error": str(exc)}
+
+    _enqueue_repo_enrichment_async(report)
 
     markdown = render_daily_paper_markdown(report)
 
@@ -692,16 +1172,19 @@ def _fetch_github_repo_metadata(repo_url: str, token: Optional[str]) -> Dict[str
         }
 
 
-@router.post("/research/paperscool/repos", response_model=PapersCoolReposResponse)
-def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
-    papers: List[Dict[str, Any]] = []
-    if isinstance(req.report, dict):
-        papers.extend(_flatten_report_papers(req.report))
-    papers.extend(list(req.papers or []))
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() not in {"", "0", "false", "off", "no"}
 
-    if not papers:
-        raise HTTPException(status_code=400, detail="report or papers is required")
 
+def _collect_repo_enrichment_rows(
+    *,
+    papers: List[Dict[str, Any]],
+    max_items: int,
+    include_github_api: bool,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     deduped: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for item in papers:
@@ -711,7 +1194,7 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
         seen.add(key)
         deduped.append(item)
 
-    selected = deduped[: max(1, int(req.max_items))]
+    selected = deduped[: max(1, int(max_items))]
     token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
 
     # TODO: GitHub API calls are sequential — switch to concurrent.futures or
@@ -729,14 +1212,75 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
             "paper_url": item.get("url") or item.get("external_url") or "",
             "repo_url": repo_url,
         }
-        if req.include_github_api:
+        if include_github_api:
             row["github"] = _fetch_github_repo_metadata(repo_url=repo_url, token=token)
         repos.append(row)
 
-    if req.include_github_api:
+    if include_github_api:
         repos.sort(
             key=lambda row: int(((row.get("github") or {}).get("stars") or -1)),
             reverse=True,
+        )
+
+    return selected, repos
+
+
+def _persist_repo_enrichment_async(report: Dict[str, Any]) -> None:
+    try:
+        max_items_raw = os.getenv("PAPERBOT_REPO_ENRICH_MAX_ITEMS", "100")
+        max_items = max(1, int(max_items_raw))
+    except Exception:
+        max_items = 100
+
+    include_github_api = _env_flag("PAPERBOT_REPO_ENRICH_INCLUDE_GITHUB_API", default=True)
+
+    try:
+        papers = _flatten_report_papers(report)
+        if not papers:
+            return
+        _, repos = _collect_repo_enrichment_rows(
+            papers=papers,
+            max_items=max_items,
+            include_github_api=include_github_api,
+        )
+        if not repos:
+            return
+        store = SqlAlchemyResearchStore()
+        store.ingest_repo_enrichment_rows(rows=repos, source="paperscool_daily_async")
+    except Exception:
+        # Async best-effort hook: ignore failures to avoid affecting daily report flow.
+        return
+
+
+def _enqueue_repo_enrichment_async(report: Dict[str, Any]) -> None:
+    if not _env_flag("PAPERBOT_REPO_ENRICH_ASYNC", default=True):
+        return
+    Thread(
+        target=_persist_repo_enrichment_async, args=(copy.deepcopy(report),), daemon=True
+    ).start()
+
+
+@router.post("/research/paperscool/repos", response_model=PapersCoolReposResponse)
+def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
+    papers: List[Dict[str, Any]] = []
+    if isinstance(req.report, dict):
+        papers.extend(_flatten_report_papers(req.report))
+    papers.extend(list(req.papers or []))
+
+    if not papers:
+        raise HTTPException(status_code=400, detail="report or papers is required")
+
+    selected, repos = _collect_repo_enrichment_rows(
+        papers=papers,
+        max_items=req.max_items,
+        include_github_api=bool(req.include_github_api),
+    )
+
+    persist_summary: Optional[Dict[str, int]] = None
+    if req.persist:
+        store = SqlAlchemyResearchStore()
+        persist_summary = store.ingest_repo_enrichment_rows(
+            rows=repos, source="paperscool_repos_api"
         )
 
     return PapersCoolReposResponse(
@@ -744,10 +1288,13 @@ def enrich_papers_with_repo_data(req: PapersCoolReposRequest):
         matched_repos=len(repos),
         github_api_used=bool(req.include_github_api),
         repos=repos,
+        persist_summary=persist_summary,
     )
 
 
 async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
+    started = time.perf_counter()
+    metric_store = _get_workflow_metric_store()
     report = copy.deepcopy(req.report)
     llm_service = get_llm_service()
 
@@ -905,6 +1452,20 @@ async def _paperscool_analyze_stream(req: PapersCoolAnalyzeRequest):
         yield StreamEvent(type="judge_done", data=report["judge"])
 
     markdown = render_daily_paper_markdown(report)
+    claims, evidences = _count_report_claims_and_evidence(report)
+    metric_store.record_metric(
+        workflow="paperscool_analyze",
+        stage="result",
+        status="completed",
+        claim_count=claims,
+        evidence_count=evidences,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        detail={
+            "run_judge": bool(req.run_judge),
+            "run_trends": bool(req.run_trends),
+            "run_insight": bool(req.run_insight),
+        },
+    )
     yield StreamEvent(type="result", data={"report": report, "markdown": markdown})
 
 
@@ -919,7 +1480,7 @@ async def analyze_daily_report(req: PapersCoolAnalyzeRequest):
         raise HTTPException(status_code=400, detail="report with queries is required")
 
     return StreamingResponse(
-        wrap_generator(_paperscool_analyze_stream(req)),
+        wrap_generator(_paperscool_analyze_stream(req), workflow="paperscool_analyze"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

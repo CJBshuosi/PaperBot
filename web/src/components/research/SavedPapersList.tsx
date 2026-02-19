@@ -2,12 +2,30 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { Loader2, RefreshCw } from "lucide-react"
+import { Check, ChevronDown, Copy, Download, FileText, Filter, Loader2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 
 
 type SavedPaperSort = "saved_at" | "judge_score" | "published_at"
@@ -42,15 +60,65 @@ type SavedPaperItem = {
 }
 
 type SavedPapersResponse = {
-  papers: SavedPaperItem[]
-  total: number
-  limit: number
-  offset: number
+  items?: SavedPaperItem[]
+  papers?: SavedPaperItem[]
+  total?: number
+  limit?: number
+  offset?: number
 }
 
 type UpdatingAction = "toggleRead" | "unsave"
 
-const PAGE_SIZE_OPTIONS = [10, 20, 50]
+type Track = {
+  id: number
+  name: string
+  is_active?: boolean
+}
+
+type BibtexImportResponse = {
+  parsed?: number
+  imported?: number
+  created?: number
+  updated?: number
+  skipped?: number
+  errors?: string[]
+}
+
+type ZoteroPullResponse = {
+  imported?: number
+  created?: number
+  updated?: number
+  skipped?: number
+  errors?: string[]
+}
+
+type ZoteroPushResponse = {
+  to_push?: number
+  pushed?: number
+  skipped?: number
+  dry_run?: boolean
+  errors?: string[]
+}
+
+type CollectionSummary = {
+  id: number
+  name: string
+  description?: string
+  item_count?: number
+}
+
+type CollectionItem = {
+  id: number
+  paper_id: number
+  note?: string
+  tags?: string[]
+  paper?: {
+    title?: string
+    authors?: string[]
+  }
+}
+
+const PAGE_SIZE = 20
 const SORT_OPTIONS: Array<{ value: SavedPaperSort; label: string }> = [
   { value: "saved_at", label: "Saved Time" },
   { value: "judge_score", label: "Judge Score" },
@@ -77,12 +145,63 @@ function normalizeStatus(value?: string | null): ReadingStatus {
 export default function SavedPapersList() {
   const [items, setItems] = useState<SavedPaperItem[]>([])
   const [sortBy, setSortBy] = useState<SavedPaperSort>("saved_at")
-  const [pageSize, setPageSize] = useState<number>(20)
   const [page, setPage] = useState<number>(1)
   const [loading, setLoading] = useState<boolean>(true)
-  const [refreshTick, setRefreshTick] = useState<number>(0)
   const [error, setError] = useState<string | null>(null)
   const [updatingAction, setUpdatingAction] = useState<{ paperId: number; action: UpdatingAction } | null>(null)
+
+  // Related Work state
+  const [rwOpen, setRwOpen] = useState(false)
+  const [rwTopic, setRwTopic] = useState("")
+  const [rwLoading, setRwLoading] = useState(false)
+  const [rwMarkdown, setRwMarkdown] = useState<string | null>(null)
+  const [rwCopied, setRwCopied] = useState(false)
+
+  // BibTeX import state
+  const [importOpen, setImportOpen] = useState(false)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importTrackName, setImportTrackName] = useState("")
+  const [importBibtex, setImportBibtex] = useState("")
+  const [importResult, setImportResult] = useState<string | null>(null)
+
+  // Zotero sync state
+  const [zoteroOpen, setZoteroOpen] = useState(false)
+  const [zoteroLoading, setZoteroLoading] = useState(false)
+  const [zoteroMode, setZoteroMode] = useState<"pull" | "push">("pull")
+  const [zoteroLibraryType, setZoteroLibraryType] = useState<"user" | "group">("user")
+  const [zoteroLibraryId, setZoteroLibraryId] = useState("")
+  const [zoteroApiKey, setZoteroApiKey] = useState("")
+  const [zoteroDryRun, setZoteroDryRun] = useState(true)
+  const [zoteroTrackName, setZoteroTrackName] = useState("")
+  const [zoteroResult, setZoteroResult] = useState<string | null>(null)
+
+  // Collections state
+  const [collectionsOpen, setCollectionsOpen] = useState(false)
+  const [collectionsLoading, setCollectionsLoading] = useState(false)
+  const [collections, setCollections] = useState<CollectionSummary[]>([])
+  const [collectionItems, setCollectionItems] = useState<CollectionItem[]>([])
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null)
+  const [newCollectionName, setNewCollectionName] = useState("")
+  const [newCollectionDesc, setNewCollectionDesc] = useState("")
+  const [collectionsMessage, setCollectionsMessage] = useState<string | null>(null)
+  const [editingCollectionPaperId, setEditingCollectionPaperId] = useState<number | null>(null)
+  const [editingCollectionNote, setEditingCollectionNote] = useState("")
+  const [editingCollectionTags, setEditingCollectionTags] = useState("")
+
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+
+  // Track filter state
+  const [tracks, setTracks] = useState<Track[]>([])
+  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null)
+
+  // Fetch tracks on mount
+  useEffect(() => {
+    fetch("/api/research/tracks?user_id=default", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => setTracks(data.tracks || []))
+      .catch(() => setTracks([]))
+  }, [])
 
   const loadSavedPapers = useCallback(async () => {
     setLoading(true)
@@ -90,11 +209,13 @@ export default function SavedPapersList() {
     try {
       const qs = new URLSearchParams({
         sort_by: sortBy,
-        sort_order: "desc",
         limit: "500",
         user_id: "default",
       })
-      const res = await fetch(`/api/papers/library?${qs.toString()}`)
+      if (selectedTrackId) {
+        qs.set("track_id", String(selectedTrackId))
+      }
+      const res = await fetch(`/api/research/papers/saved?${qs.toString()}`, { cache: "no-store" })
       if (!res.ok) {
         const errorText = await res.text()
         // Avoid showing raw HTML in error messages
@@ -104,8 +225,9 @@ export default function SavedPapersList() {
         throw new Error(errorText)
       }
       const payload = (await res.json()) as SavedPapersResponse
-      setItems(payload.papers || [])
+      setItems(payload.items || payload.papers || [])
       setPage(1)
+      setSelectedIds(new Set()) // Clear selection on reload
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       setError(detail)
@@ -113,21 +235,49 @@ export default function SavedPapersList() {
     } finally {
       setLoading(false)
     }
-  }, [sortBy])
+  }, [sortBy, selectedTrackId])
 
   useEffect(() => {
     loadSavedPapers().catch(() => {})
-  }, [loadSavedPapers, refreshTick])
+  }, [loadSavedPapers])
 
   const totalPages = useMemo(() => {
-    return Math.max(1, Math.ceil(items.length / pageSize))
-  }, [items.length, pageSize])
+    return Math.max(1, Math.ceil(items.length / PAGE_SIZE))
+  }, [items.length])
 
   const pagedItems = useMemo(() => {
     const safePage = Math.min(page, totalPages)
-    const start = (safePage - 1) * pageSize
-    return items.slice(start, start + pageSize)
-  }, [items, page, pageSize, totalPages])
+    const start = (safePage - 1) * PAGE_SIZE
+    return items.slice(start, start + PAGE_SIZE)
+  }, [items, page, totalPages])
+
+  const hasSelection = selectedIds.size > 0
+  const selectedCollection = useMemo(
+    () => collections.find((item) => item.id === selectedCollectionId) || null,
+    [collections, selectedCollectionId],
+  )
+
+  const toggleSelect = useCallback((paperId: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(paperId)) {
+        next.delete(paperId)
+      } else {
+        next.add(paperId)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleSelectAll = useCallback(() => {
+    if (selectedIds.size === pagedItems.length && pagedItems.length > 0) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(pagedItems.map((item) => item.paper.id)))
+    }
+  }, [selectedIds.size, pagedItems])
+
+  const isAllSelected = pagedItems.length > 0 && selectedIds.size === pagedItems.length
 
   const unsavePaper = useCallback(async (paperId: number) => {
     setUpdatingAction({ paperId, action: "unsave" })
@@ -160,16 +310,13 @@ export default function SavedPapersList() {
       setError(null)
       const newStatus = currentStatus === "read" ? "reading" : "read"
       try {
-        // Use the paper feedback endpoint with action to track reading status
-        const res = await fetch(`/api/research/papers/feedback`, {
+        // Persist reading status so refreshes keep the latest state
+        const res = await fetch(`/api/research/papers/${paperId}/status`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             user_id: "default",
-            paper_id: String(paperId),
-            action: newStatus,
-            weight: 1.0,
-            metadata: { reading_status: newStatus },
+            status: newStatus,
           }),
         })
 
@@ -204,6 +351,353 @@ export default function SavedPapersList() {
     [],
   )
 
+  const handleExport = useCallback(async (format: "bibtex" | "ris" | "markdown" | "csl_json") => {
+    const qs = new URLSearchParams({ format, user_id: "default" })
+    // Add selected paper IDs
+    selectedIds.forEach((id) => qs.append("paper_id", String(id)))
+    try {
+      const res = await fetch(`/api/papers/export?${qs.toString()}`, { cache: "no-store" })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const blob = await res.blob()
+      const extMap: Record<string, string> = { bibtex: "bib", ris: "ris", markdown: "md", csl_json: "csl.json" }
+      const ext = extMap[format] || "txt"
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `papers.${ext}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setError("Export failed")
+    }
+  }, [selectedIds])
+
+  const handleGenerateRelatedWork = useCallback(async () => {
+    if (!rwTopic.trim()) return
+    setRwLoading(true)
+    setRwMarkdown(null)
+    try {
+      const res = await fetch("/api/research/papers/related-work", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          topic: rwTopic.trim(),
+        }),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const data = await res.json()
+      setRwMarkdown(data.markdown || "No output generated.")
+    } catch {
+      setRwMarkdown("Failed to generate related work. Please try again.")
+    } finally {
+      setRwLoading(false)
+    }
+  }, [rwTopic])
+
+  const handleCopyRw = useCallback(async () => {
+    if (!rwMarkdown) return
+    await navigator.clipboard.writeText(rwMarkdown)
+    setRwCopied(true)
+    setTimeout(() => setRwCopied(false), 2000)
+  }, [rwMarkdown])
+
+  const handleBibtexImport = useCallback(async () => {
+    if (!importBibtex.trim()) return
+    setImportLoading(true)
+    setImportResult(null)
+    setError(null)
+    try {
+      const res = await fetch("/api/research/papers/import/bibtex", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          content: importBibtex,
+          track_id: selectedTrackId ?? undefined,
+          track_name: selectedTrackId ? undefined : (importTrackName.trim() || undefined),
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(detail || `HTTP ${res.status}`)
+      }
+      const payload = (await res.json()) as BibtexImportResponse
+      const parsed = payload.parsed ?? 0
+      const imported = payload.imported ?? 0
+      const skipped = payload.skipped ?? 0
+      setImportResult(`Imported ${imported}/${parsed}, skipped ${skipped}.`)
+      await loadSavedPapers()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setImportResult(`Import failed: ${detail}`)
+    } finally {
+      setImportLoading(false)
+    }
+  }, [importBibtex, importTrackName, loadSavedPapers, selectedTrackId])
+
+  const handleZoteroSync = useCallback(async () => {
+    if (!zoteroLibraryId.trim() || !zoteroApiKey.trim()) return
+    setZoteroLoading(true)
+    setZoteroResult(null)
+    setError(null)
+    try {
+      const endpoint =
+        zoteroMode === "pull"
+          ? "/api/research/integrations/zotero/pull"
+          : "/api/research/integrations/zotero/push"
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          track_id: selectedTrackId ?? undefined,
+          track_name: selectedTrackId ? undefined : (zoteroTrackName.trim() || undefined),
+          library_type: zoteroLibraryType,
+          library_id: zoteroLibraryId.trim(),
+          api_key: zoteroApiKey.trim(),
+          max_items: 200,
+          dry_run: zoteroMode === "push" ? zoteroDryRun : undefined,
+        }),
+      })
+      if (!res.ok) {
+        const detail = await res.text()
+        throw new Error(detail || `HTTP ${res.status}`)
+      }
+
+      if (zoteroMode === "pull") {
+        const payload = (await res.json()) as ZoteroPullResponse
+        setZoteroResult(
+          `Pulled ${payload.imported ?? 0} (created ${payload.created ?? 0}, updated ${payload.updated ?? 0}).`,
+        )
+        await loadSavedPapers()
+      } else {
+        const payload = (await res.json()) as ZoteroPushResponse
+        setZoteroResult(
+          `Push ${payload.dry_run ? "preview" : "done"}: ${payload.pushed ?? 0}/${payload.to_push ?? 0}.`,
+        )
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setZoteroResult(`Zotero sync failed: ${detail}`)
+    } finally {
+      setZoteroLoading(false)
+    }
+  }, [
+    loadSavedPapers,
+    selectedTrackId,
+    zoteroApiKey,
+    zoteroDryRun,
+    zoteroLibraryId,
+    zoteroLibraryType,
+    zoteroMode,
+    zoteroTrackName,
+  ])
+
+  const loadCollections = useCallback(async () => {
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const qs = new URLSearchParams({ user_id: "default", limit: "200" })
+      if (selectedTrackId) qs.set("track_id", String(selectedTrackId))
+      const res = await fetch(`/api/research/collections?${qs.toString()}`, { cache: "no-store" })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const payload = await res.json()
+      const rows = (payload.items || []) as CollectionSummary[]
+      setCollections(rows)
+      const nextSelectedId =
+        rows.find((row) => row.id === selectedCollectionId)?.id ?? rows[0]?.id ?? null
+      setSelectedCollectionId(nextSelectedId)
+      if (!nextSelectedId) {
+        setCollectionItems([])
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Failed to load collections: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [selectedCollectionId, selectedTrackId])
+
+  const loadCollectionItems = useCallback(async (collectionId: number) => {
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const qs = new URLSearchParams({ user_id: "default", limit: "500" })
+      const res = await fetch(`/api/research/collections/${collectionId}/items?${qs.toString()}`, {
+        cache: "no-store",
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const payload = await res.json()
+      setCollectionItems((payload.items || []) as CollectionItem[])
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Failed to load collection items: ${detail}`)
+      setCollectionItems([])
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [])
+
+  const createCollection = useCallback(async () => {
+    if (!newCollectionName.trim()) return
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      const res = await fetch("/api/research/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: "default",
+          name: newCollectionName.trim(),
+          description: newCollectionDesc.trim(),
+          track_id: selectedTrackId ?? undefined,
+        }),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      setNewCollectionName("")
+      setNewCollectionDesc("")
+      await loadCollections()
+      setCollectionsMessage("Collection created.")
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Create failed: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [loadCollections, newCollectionDesc, newCollectionName, selectedTrackId])
+
+  const addSelectedToCollection = useCallback(async () => {
+    if (!selectedCollectionId || selectedIds.size === 0) return
+    setCollectionsLoading(true)
+    setCollectionsMessage(null)
+    try {
+      for (const paperId of selectedIds) {
+        await fetch(`/api/research/collections/${selectedCollectionId}/items`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: "default",
+            paper_id: String(paperId),
+            note: "",
+            tags: [],
+          }),
+        })
+      }
+      await loadCollectionItems(selectedCollectionId)
+      await loadCollections()
+      setCollectionsMessage(`Added ${selectedIds.size} papers to collection.`)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      setCollectionsMessage(`Add failed: ${detail}`)
+    } finally {
+      setCollectionsLoading(false)
+    }
+  }, [loadCollectionItems, loadCollections, selectedCollectionId, selectedIds])
+
+  const saveCollectionItemMeta = useCallback(
+    async (item: CollectionItem, note: string, tagsRaw: string) => {
+      if (!selectedCollectionId) return
+      setCollectionsLoading(true)
+      setCollectionsMessage(null)
+      try {
+        const tags = tagsRaw.split(",").map((tag) => tag.trim()).filter(Boolean)
+        const res = await fetch(
+          `/api/research/collections/${selectedCollectionId}/items/${item.paper_id}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              user_id: "default",
+              note,
+              tags,
+            }),
+          },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        await loadCollectionItems(selectedCollectionId)
+        setCollectionsMessage("Note/tags updated.")
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        setCollectionsMessage(`Update failed: ${detail}`)
+      } finally {
+        setCollectionsLoading(false)
+      }
+    },
+    [loadCollectionItems, selectedCollectionId],
+  )
+
+  const startEditingCollectionItem = useCallback((item: CollectionItem) => {
+    setEditingCollectionPaperId(item.paper_id)
+    setEditingCollectionNote(item.note || "")
+    setEditingCollectionTags((item.tags || []).join(", "))
+  }, [])
+
+  const cancelEditingCollectionItem = useCallback(() => {
+    setEditingCollectionPaperId(null)
+    setEditingCollectionNote("")
+    setEditingCollectionTags("")
+  }, [])
+
+  const saveEditingCollectionItem = useCallback(async () => {
+    if (editingCollectionPaperId === null) return
+    const item = collectionItems.find((row) => row.paper_id === editingCollectionPaperId)
+    if (!item) return
+    await saveCollectionItemMeta(item, editingCollectionNote, editingCollectionTags)
+    cancelEditingCollectionItem()
+  }, [
+    cancelEditingCollectionItem,
+    collectionItems,
+    editingCollectionNote,
+    editingCollectionPaperId,
+    editingCollectionTags,
+    saveCollectionItemMeta,
+  ])
+
+  const removeCollectionItem = useCallback(
+    async (paperId: number) => {
+      if (!selectedCollectionId) return
+      setCollectionsLoading(true)
+      setCollectionsMessage(null)
+      try {
+        const qs = new URLSearchParams({ user_id: "default" })
+        const res = await fetch(
+          `/api/research/collections/${selectedCollectionId}/items/${paperId}?${qs.toString()}`,
+          { method: "DELETE" },
+        )
+        if (!res.ok) throw new Error(`${res.status}`)
+        await loadCollectionItems(selectedCollectionId)
+        await loadCollections()
+        if (editingCollectionPaperId === paperId) {
+          cancelEditingCollectionItem()
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        setCollectionsMessage(`Remove failed: ${detail}`)
+      } finally {
+        setCollectionsLoading(false)
+      }
+    },
+    [
+      cancelEditingCollectionItem,
+      editingCollectionPaperId,
+      loadCollectionItems,
+      loadCollections,
+      selectedCollectionId,
+    ],
+  )
+
+  useEffect(() => {
+    if (!collectionsOpen || !selectedCollectionId) return
+    loadCollectionItems(selectedCollectionId).catch(() => {})
+  }, [collectionsOpen, selectedCollectionId, loadCollectionItems])
+
+  useEffect(() => {
+    if (!collectionsOpen) {
+      cancelEditingCollectionItem()
+    }
+  }, [cancelEditingCollectionItem, collectionsOpen])
+
   return (
     <Card>
       <CardHeader className="space-y-3">
@@ -230,33 +724,89 @@ export default function SavedPapersList() {
                 </option>
               ))}
             </select>
-            <label className="text-sm text-muted-foreground" htmlFor="saved-page-size">
-              Per page
-            </label>
-            <select
-              id="saved-page-size"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
-              value={String(pageSize)}
-              onChange={(event) => {
-                setPageSize(Number(event.target.value || 20))
-                setPage(1)
-              }}
-            >
-              {PAGE_SIZE_OPTIONS.map((size) => (
-                <option key={size} value={String(size)}>
-                  {size}
-                </option>
-              ))}
-            </select>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" disabled={loading}>
+                  <Filter className="mr-1 h-4 w-4" />
+                  {selectedTrackId
+                    ? tracks.find((t) => t.id === selectedTrackId)?.name || "Track"
+                    : "All Tracks"}
+                  <ChevronDown className="ml-1 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem
+                  onClick={() => setSelectedTrackId(null)}
+                  className="flex items-center gap-2"
+                >
+                  {selectedTrackId === null ? <Check className="h-4 w-4" /> : <span className="w-4" />}
+                  All Tracks
+                </DropdownMenuItem>
+                {tracks.length > 0 && <DropdownMenuSeparator />}
+                {tracks.map((track) => (
+                  <DropdownMenuItem
+                    key={track.id}
+                    onClick={() => setSelectedTrackId(track.id)}
+                    className="flex items-center gap-2"
+                  >
+                    {selectedTrackId === track.id ? <Check className="h-4 w-4" /> : <span className="w-4" />}
+                    <span className="truncate">{track.name}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setRefreshTick((prev) => prev + 1)}
-              disabled={loading}
+              disabled={loading || items.length === 0}
+              onClick={() => { setRwOpen(true); setRwMarkdown(null); setRwTopic(""); }}
             >
-              {loading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-1 h-4 w-4" />}
-              Refresh
+              <FileText className="mr-1 h-4 w-4" />
+              Related Work
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => {
+                setCollectionsOpen(true)
+                loadCollections().catch(() => {})
+              }}
+            >
+              Collections
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => { setImportOpen(true); setImportResult(null) }}
+            >
+              Import BibTeX
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={() => { setZoteroOpen(true); setZoteroResult(null) }}
+            >
+              Zotero Sync
+            </Button>
+            {hasSelection && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={loading}>
+                    <Download className="mr-1 h-4 w-4" />
+                    Export ({selectedIds.size})
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleExport("bibtex")}>BibTeX</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExport("ris")}>RIS</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExport("markdown")}>Markdown</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExport("csl_json")}>Zotero (CSL-JSON)</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         </div>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
@@ -274,6 +824,13 @@ export default function SavedPapersList() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-[50px]">
+                      <Checkbox
+                        checked={isAllSelected}
+                        onCheckedChange={toggleSelectAll}
+                        aria-label="Select all"
+                      />
+                    </TableHead>
                     <TableHead>Title</TableHead>
                     <TableHead>Source</TableHead>
                     <TableHead>Saved</TableHead>
@@ -293,7 +850,14 @@ export default function SavedPapersList() {
                     const rowUpdating = togglingRead || unsaving
                     return (
                       <TableRow key={paper.id}>
-                        <TableCell className="max-w-[520px]">
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedIds.has(paper.id)}
+                            onCheckedChange={() => toggleSelect(paper.id)}
+                            aria-label={`Select ${paper.title}`}
+                          />
+                        </TableCell>
+                        <TableCell className="max-w-[480px]">
                           <div className="font-medium">{paper.title}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             {(paper.authors || []).slice(0, 4).join(", ") || "Unknown authors"}
@@ -345,8 +909,8 @@ export default function SavedPapersList() {
             </div>
             <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
               <span>
-                Showing {(Math.min(page, totalPages) - 1) * pageSize + 1} -{" "}
-                {Math.min(Math.min(page, totalPages) * pageSize, items.length)} of {items.length}
+                Showing {(Math.min(page, totalPages) - 1) * PAGE_SIZE + 1} -{" "}
+                {Math.min(Math.min(page, totalPages) * PAGE_SIZE, items.length)} of {items.length}
               </span>
               <div className="flex items-center gap-2">
                 <Button
@@ -373,6 +937,367 @@ export default function SavedPapersList() {
           </>
         )}
       </CardContent>
+
+      <Dialog open={collectionsOpen} onOpenChange={setCollectionsOpen}>
+        <DialogContent className="h-[90vh] w-[min(96vw,1280px)] max-w-none overflow-hidden p-0 sm:max-w-none">
+          <div className="flex h-full flex-col">
+            <DialogHeader className="border-b px-6 py-4">
+              <DialogTitle>Collections Workspace</DialogTitle>
+              <DialogDescription>
+                Group saved papers, attach note/tags, and reuse collection-scoped context.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid min-h-0 flex-1 gap-4 px-6 py-4 lg:grid-cols-[320px_1fr]">
+              <div className="min-h-0 min-w-0 space-y-4">
+                <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+                  <p className="text-sm font-medium">Create Collection</p>
+                  <Input
+                    placeholder="Collection name"
+                    value={newCollectionName}
+                    onChange={(event) => setNewCollectionName(event.target.value)}
+                    disabled={collectionsLoading}
+                  />
+                  <Textarea
+                    placeholder="Description (optional)"
+                    value={newCollectionDesc}
+                    onChange={(event) => setNewCollectionDesc(event.target.value)}
+                    disabled={collectionsLoading}
+                    className="min-h-[80px]"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={createCollection}
+                    disabled={collectionsLoading || !newCollectionName.trim()}
+                  >
+                    Create Collection
+                  </Button>
+                </div>
+
+                <div className="flex min-h-0 flex-col space-y-2 rounded-md border p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Collections</p>
+                    <Badge variant="outline">{collections.length}</Badge>
+                  </div>
+                  <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                    {collections.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No collections yet. Create one to start grouping papers.
+                      </p>
+                    ) : (
+                      collections.map((collection) => (
+                        <button
+                          key={collection.id}
+                          className={`min-w-0 w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                            selectedCollectionId === collection.id
+                              ? "border-primary bg-muted"
+                              : "hover:bg-muted/40"
+                          }`}
+                          onClick={() => {
+                            setSelectedCollectionId(collection.id)
+                            cancelEditingCollectionItem()
+                            loadCollectionItems(collection.id).catch(() => {})
+                          }}
+                          type="button"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="line-clamp-2 break-words text-sm font-medium">
+                                {collection.name}
+                              </p>
+                              {collection.description ? (
+                                <p className="mt-0.5 line-clamp-2 break-words text-xs text-muted-foreground">
+                                  {collection.description}
+                                </p>
+                              ) : null}
+                            </div>
+                            <Badge variant="secondary">{collection.item_count || 0}</Badge>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 min-w-0 flex-col space-y-3 rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-medium">
+                      {selectedCollection?.name || "Select a collection"}
+                    </p>
+                    {selectedCollection?.description ? (
+                      <p className="break-words text-xs text-muted-foreground">
+                        {selectedCollection.description}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">
+                      {selectedCollection?.item_count ?? collectionItems.length} papers
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!selectedCollectionId || selectedIds.size === 0 || collectionsLoading}
+                      onClick={addSelectedToCollection}
+                    >
+                      Add Selected ({selectedIds.size})
+                    </Button>
+                  </div>
+                </div>
+
+                {collectionsMessage ? (
+                  <p className="rounded-md border bg-muted/20 px-2 py-1 text-sm text-muted-foreground">
+                    {collectionsMessage}
+                  </p>
+                ) : null}
+
+                {!selectedCollectionId ? (
+                  <p className="text-sm text-muted-foreground">Choose a collection from the left.</p>
+                ) : collectionItems.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No items in this collection yet.</p>
+                ) : (
+                  <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+                    {collectionItems.map((item) => {
+                      const isEditing = editingCollectionPaperId === item.paper_id
+                      return (
+                        <div key={item.id} className="min-w-0 rounded-md border p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="break-words text-sm font-medium">
+                                {item.paper?.title || `Paper #${item.paper_id}`}
+                              </p>
+                              {(item.paper?.authors || []).length > 0 ? (
+                                <p className="break-words text-xs text-muted-foreground">
+                                  {(item.paper?.authors || []).slice(0, 4).join(", ")}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => startEditingCollectionItem(item)}
+                                disabled={collectionsLoading}
+                              >
+                                Edit note/tags
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => removeCollectionItem(item.paper_id).catch(() => {})}
+                                disabled={collectionsLoading}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+
+                          {isEditing ? (
+                            <div className="mt-3 space-y-2 rounded-md border bg-muted/20 p-2">
+                              <Textarea
+                                placeholder="Add a note for this paper..."
+                                value={editingCollectionNote}
+                                onChange={(event) => setEditingCollectionNote(event.target.value)}
+                                disabled={collectionsLoading}
+                                className="min-h-[80px]"
+                              />
+                              <Input
+                                placeholder="tags: theory, baseline, survey"
+                                value={editingCollectionTags}
+                                onChange={(event) => setEditingCollectionTags(event.target.value)}
+                                disabled={collectionsLoading}
+                              />
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => saveEditingCollectionItem().catch(() => {})}
+                                  disabled={collectionsLoading}
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={cancelEditingCollectionItem}
+                                  disabled={collectionsLoading}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-2 space-y-1">
+                              <div className="flex flex-wrap gap-1">
+                                {(item.tags || []).length > 0 ? (
+                                  (item.tags || []).map((tag) => (
+                                    <Badge key={tag} variant="secondary">
+                                      {tag}
+                                    </Badge>
+                                  ))
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">No tags</span>
+                                )}
+                              </div>
+                              <p className="break-words text-xs text-muted-foreground">
+                                {item.note?.trim() ? item.note : "No note yet."}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Import BibTeX</DialogTitle>
+            <DialogDescription>
+              Paste BibTeX entries to import and save to current track.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input
+              placeholder="Track name (optional when no track filter)"
+              value={importTrackName}
+              onChange={(event) => setImportTrackName(event.target.value)}
+              disabled={importLoading || selectedTrackId !== null}
+            />
+            <Textarea
+              placeholder="@article{key, title={...}, author={...}}"
+              value={importBibtex}
+              onChange={(event) => setImportBibtex(event.target.value)}
+              disabled={importLoading}
+              className="min-h-[220px] font-mono text-xs"
+            />
+            {importResult ? <p className="text-sm text-muted-foreground">{importResult}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button onClick={handleBibtexImport} disabled={importLoading || !importBibtex.trim()}>
+              {importLoading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              Import
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={zoteroOpen} onOpenChange={setZoteroOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Zotero Sync</DialogTitle>
+            <DialogDescription>
+              Pull from Zotero into PaperBot or push saved papers to Zotero.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                className="h-9 rounded-md border bg-background px-2 text-sm"
+                value={zoteroMode}
+                onChange={(event) => setZoteroMode(event.target.value as "pull" | "push")}
+                disabled={zoteroLoading}
+              >
+                <option value="pull">Pull from Zotero</option>
+                <option value="push">Push to Zotero</option>
+              </select>
+              <select
+                className="h-9 rounded-md border bg-background px-2 text-sm"
+                value={zoteroLibraryType}
+                onChange={(event) => setZoteroLibraryType(event.target.value as "user" | "group")}
+                disabled={zoteroLoading}
+              >
+                <option value="user">User Library</option>
+                <option value="group">Group Library</option>
+              </select>
+            </div>
+            <Input
+              placeholder="Library ID"
+              value={zoteroLibraryId}
+              onChange={(event) => setZoteroLibraryId(event.target.value)}
+              disabled={zoteroLoading}
+            />
+            <Input
+              type="password"
+              placeholder="Zotero API Key"
+              value={zoteroApiKey}
+              onChange={(event) => setZoteroApiKey(event.target.value)}
+              disabled={zoteroLoading}
+            />
+            <Input
+              placeholder="Track name (optional when no track filter)"
+              value={zoteroTrackName}
+              onChange={(event) => setZoteroTrackName(event.target.value)}
+              disabled={zoteroLoading || selectedTrackId !== null}
+            />
+            {zoteroMode === "push" ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Checkbox
+                  checked={zoteroDryRun}
+                  onCheckedChange={(checked) => setZoteroDryRun(Boolean(checked))}
+                  disabled={zoteroLoading}
+                />
+                Dry run (preview only)
+              </div>
+            ) : null}
+            {zoteroResult ? <p className="text-sm text-muted-foreground">{zoteroResult}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={handleZoteroSync}
+              disabled={zoteroLoading || !zoteroLibraryId.trim() || !zoteroApiKey.trim()}
+            >
+              {zoteroLoading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              {zoteroMode === "pull" ? "Start Pull" : "Start Push"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Related Work Dialog */}
+      <Dialog open={rwOpen} onOpenChange={setRwOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Generate Related Work</DialogTitle>
+            <DialogDescription>
+              Generate a Related Work section draft from your saved papers.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <Input
+                placeholder="Enter research topic..."
+                value={rwTopic}
+                onChange={(e) => setRwTopic(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleGenerateRelatedWork() }}
+                disabled={rwLoading}
+              />
+              <Button onClick={handleGenerateRelatedWork} disabled={rwLoading || !rwTopic.trim()}>
+                {rwLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Generate"}
+              </Button>
+            </div>
+            {rwMarkdown && (
+              <div className="rounded-md border bg-muted/50 p-4">
+                <pre className="whitespace-pre-wrap text-sm font-mono">{rwMarkdown}</pre>
+              </div>
+            )}
+          </div>
+          {rwMarkdown && (
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={handleCopyRw}>
+                <Copy className="mr-1 h-3.5 w-3.5" />
+                {rwCopied ? "Copied" : "Copy"}
+              </Button>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

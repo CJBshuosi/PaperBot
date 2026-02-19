@@ -4,6 +4,8 @@ export function apiBaseUrl() {
 
 export async function proxyJson(req: Request, upstreamUrl: string, method: string) {
   const body = method === "GET" ? undefined : await req.text()
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 120_000) // 2 min timeout
 
   try {
     const upstream = await fetch(upstreamUrl, {
@@ -13,6 +15,7 @@ export async function proxyJson(req: Request, upstreamUrl: string, method: strin
         "Content-Type": req.headers.get("content-type") || "application/json",
       },
       body,
+      signal: controller.signal,
     })
     const text = await upstream.text()
     return new Response(text, {
@@ -24,12 +27,17 @@ export async function proxyJson(req: Request, upstreamUrl: string, method: strin
     })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
+    const isTimeout = error instanceof Error && error.name === "AbortError"
     return Response.json(
       {
-        detail: `Upstream API unreachable: ${upstreamUrl}`,
+        detail: isTimeout
+          ? `Upstream API timed out: ${upstreamUrl}`
+          : `Upstream API unreachable: ${upstreamUrl}`,
         error: detail,
       },
       { status: 502 },
     )
+  } finally {
+    clearTimeout(timeout)
   }
 }

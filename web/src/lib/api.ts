@@ -1,6 +1,19 @@
-import { Activity, Paper, PaperDetails, Scholar, ScholarDetails, Stats, WikiConcept, TrendingTopic, PipelineTask, ReadingQueueItem, LLMUsageRecord } from "./types"
+import {
+    Activity,
+    Paper,
+    PaperDetails,
+    Scholar,
+    ScholarDetails,
+    Stats,
+    WikiConcept,
+    TrendingTopic,
+    PipelineTask,
+    ReadingQueueItem,
+    LLMUsageSummary,
+    DeadlineRadarItem,
+} from "./types"
 
-const API_BASE_URL = process.env.PAPERBOT_API_BASE_URL || "http://127.0.0.1:8000/api"
+const API_BASE_URL = (process.env.PAPERBOT_API_BASE_URL || "http://127.0.0.1:8000") + "/api"
 
 function slugToName(slug: string): string {
     return slug
@@ -26,183 +39,378 @@ async function postJson<T>(path: string, payload: Record<string, unknown>): Prom
 }
 
 export async function fetchStats(): Promise<Stats> {
-    // TODO: Replace with real API call
-    // const res = await fetch(`${API_BASE_URL}/stats`)
-    // return res.json()
-    return {
-        tracked_scholars: 128,
-        new_papers: 12,
-        llm_usage: "45k",
-        read_later: 8
+    try {
+        const [usage, papers, scholars] = await Promise.allSettled([
+            fetchLLMUsage(),
+            fetchPapers(),
+            fetchScholars(),
+        ])
+        const usageData = usage.status === "fulfilled" ? usage.value : null
+        const papersData = papers.status === "fulfilled" ? papers.value : []
+        const scholarsData = scholars.status === "fulfilled" ? scholars.value : []
+        const tokenCount = usageData?.totals?.total_tokens ?? 0
+        const prettyTokens = tokenCount >= 1000 ? `${Math.round(tokenCount / 1000)}k` : `${tokenCount}`
+        return {
+            tracked_scholars: scholarsData.length,
+            new_papers: papersData.length,
+            llm_usage: prettyTokens,
+            read_later: papersData.filter((p) => p.status === "Saved").length,
+        }
+    } catch {
+        return { tracked_scholars: 0, new_papers: 0, llm_usage: "0", read_later: 0 }
     }
 }
 
 export async function fetchActivities(): Promise<Activity[]> {
-    return [
-        {
-            id: "act-1",
-            type: "published",
-            timestamp: "Dec 3, 2025 · 12:00 PM",
-            scholar: {
-                name: "Dawn Song",
-                avatar: "https://avatar.vercel.sh/dawn.png",
-                affiliation: "UC Berkeley"
-            },
-            paper: {
-                title: "Large Language Models for Academic Research: A Comprehensive Review",
-                venue: "NeurIPS",
-                year: "2024",
-                citations: 127,
-                tags: ["Security", "LLM"],
-                abstract_snippet: "This paper provides a comprehensive review of recent advancements in large language models (LLMs) specifically tailored for academic research applications.",
-                is_influential: true
-            }
-        },
-        {
-            id: "act-2",
-            type: "milestone",
-            timestamp: "2h ago",
-            milestone: {
-                title: "Citation Milestone Reached: 1,000 Citations",
-                description: "Your tracked scholar, Andrew Ng, has reached a total of 1,000 citations across all publications.",
-                current_value: 1000,
-                trend: "up"
-            }
-        },
-        {
-            id: "act-3",
-            type: "conference",
-            timestamp: "5h ago",
-            conference: {
-                name: "ICML 2025",
-                location: "Vancouver, Canada",
-                date: "July 2025",
-                deadline_countdown: "5 days, 14 hours"
+    const activities: Activity[] = []
+    try {
+        // Fetch recent harvest runs
+        const runsRes = await fetch(`${API_BASE_URL}/harvest/runs?limit=3`, { cache: "no-store" })
+        if (runsRes.ok) {
+            const runsData = await runsRes.json() as { runs?: Array<{ run_id: number; source: string; status: string; total_found: number; created_at: string }> }
+            for (const run of (runsData.runs || []).slice(0, 2)) {
+                activities.push({
+                    id: `harvest-${run.run_id}`,
+                    type: "milestone",
+                    timestamp: new Date(run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+                    milestone: {
+                        title: `Harvest: ${run.source}`,
+                        description: `Found ${run.total_found} papers (${run.status})`,
+                        current_value: run.total_found,
+                        trend: run.status === "completed" ? "up" : "flat",
+                    },
+                })
             }
         }
-    ]
+    } catch { /* keep going */ }
+
+    try {
+        // Fetch recent saved papers
+        const savedRes = await fetch(`${API_BASE_URL}/research/papers/saved?user_id=default&limit=3`, { cache: "no-store" })
+        if (savedRes.ok) {
+            const savedData = await savedRes.json() as { papers?: Array<{ paper_id: string; title: string; authors?: string[]; venue?: string; year?: number; saved_at?: string }> }
+            for (const paper of (savedData.papers || []).slice(0, 3)) {
+                activities.push({
+                    id: `saved-${paper.paper_id}`,
+                    type: "published",
+                    timestamp: paper.saved_at ? new Date(paper.saved_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "Recently",
+                    scholar: {
+                        name: (paper.authors || [])[0] || "Unknown",
+                        avatar: `https://avatar.vercel.sh/${encodeURIComponent((paper.authors || ["unknown"])[0])}.png`,
+                        affiliation: "",
+                    },
+                    paper: {
+                        title: paper.title,
+                        venue: paper.venue || "",
+                        year: String(paper.year || ""),
+                        citations: 0,
+                        tags: [],
+                        abstract_snippet: "",
+                        is_influential: false,
+                    },
+                })
+            }
+        }
+    } catch { /* keep going */ }
+
+    return activities
 }
 
 export async function fetchTrendingTopics(): Promise<TrendingTopic[]> {
-    return [
-        { text: "Large Language Models", value: 100 },
-        { text: "Transformer", value: 80 },
-        { text: "Reinforcement Learning", value: 60 },
-        { text: "Generative AI", value: 90 },
-        { text: "Computer Vision", value: 50 },
-        { text: "Diffusion Models", value: 70 },
-        { text: "Prompt Engineering", value: 40 },
-        { text: "Ethics", value: 30 }
-    ]
+    try {
+        const res = await fetch(`${API_BASE_URL}/research/tracks?user_id=default`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json() as { tracks?: Array<{ keywords?: string[] }> }
+        const keywordCounts = new Map<string, number>()
+        for (const track of data.tracks || []) {
+            for (const kw of track.keywords || []) {
+                keywordCounts.set(kw, (keywordCounts.get(kw) || 0) + 1)
+            }
+        }
+        return Array.from(keywordCounts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 8)
+            .map(([text, value]) => ({ text, value: value * 30 }))
+    } catch {
+        return []
+    }
 }
 
 export async function fetchPipelineTasks(): Promise<PipelineTask[]> {
-    return [
-        { id: "1", paper_title: "Attention Is All You Need", status: "testing", progress: 80, started_at: "5m ago" },
-        { id: "2", paper_title: "ResNet: Deep Residual Learning", status: "building", progress: 45, started_at: "12m ago" },
-        { id: "3", paper_title: "BERT Pretraining", status: "failed", progress: 100, started_at: "1h ago" }
-    ]
+    try {
+        const res = await fetch(`${API_BASE_URL}/harvest/runs?limit=5`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json() as { runs?: Array<{ run_id: number; source: string; status: string; total_found: number; created_at: string }> }
+        return (data.runs || []).slice(0, 5).map((run) => {
+            const statusMap: Record<string, PipelineTask["status"]> = { completed: "success", running: "building", failed: "failed", pending: "building" }
+            const progressMap: Record<string, number> = { completed: 100, running: 50, failed: 100, pending: 10 }
+            return {
+                id: String(run.run_id),
+                paper_title: `${run.source} harvest (${run.total_found} papers)`,
+                status: statusMap[run.status] || "building" as PipelineTask["status"],
+                progress: progressMap[run.status] || 0,
+                started_at: new Date(run.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+            }
+        })
+    } catch {
+        return []
+    }
 }
 
 export async function fetchReadingQueue(): Promise<ReadingQueueItem[]> {
-    return [
-        { id: "1", paper_id: "attention-is-all-you-need", title: "Attention Is All You Need", estimated_time: "15 min", priority: 1 },
-        { id: "2", paper_id: "bert-pretraining", title: "BERT Pretraining", estimated_time: "20 min", priority: 2 },
-        { id: "3", paper_id: "resnet", title: "ResNet Paper", estimated_time: "10 min", priority: 3 }
-    ]
+    try {
+        const res = await fetch(`${API_BASE_URL}/research/papers/saved?user_id=default&limit=5`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json() as { papers?: Array<{ paper_id: string; title: string }> }
+        return (data.papers || []).slice(0, 5).map((p, i) => ({
+            id: String(i + 1),
+            paper_id: p.paper_id,
+            title: p.title,
+            estimated_time: "",
+            priority: i + 1,
+        }))
+    } catch {
+        return []
+    }
 }
 
-export async function fetchLLMUsage(): Promise<LLMUsageRecord[]> {
-    return [
-        { date: "Mon", gpt4: 12000, claude: 8000, ollama: 3000 },
-        { date: "Tue", gpt4: 15000, claude: 9500, ollama: 4000 },
-        { date: "Wed", gpt4: 10000, claude: 7000, ollama: 5000 },
-        { date: "Thu", gpt4: 18000, claude: 12000, ollama: 2000 },
-        { date: "Fri", gpt4: 14000, claude: 10000, ollama: 6000 },
-        { date: "Sat", gpt4: 8000, claude: 5000, ollama: 1000 },
-        { date: "Sun", gpt4: 6000, claude: 4000, ollama: 500 }
-    ]
+export async function fetchLLMUsage(days: number = 7): Promise<LLMUsageSummary> {
+    try {
+        const qs = new URLSearchParams({ days: String(days) })
+        const res = await fetch(`${API_BASE_URL}/model-endpoints/usage?${qs.toString()}`, {
+            cache: "no-store",
+        })
+        if (!res.ok) throw new Error("usage endpoint unavailable")
+        const payload = await res.json() as { summary?: LLMUsageSummary }
+        if (payload.summary) {
+            return payload.summary
+        }
+    } catch {
+        // Return empty summary when backend is unavailable.
+    }
+
+    return {
+        window_days: days,
+        daily: [],
+        provider_models: [],
+        totals: { calls: 0, total_tokens: 0, total_cost_usd: 0 },
+    }
+}
+
+export async function fetchDeadlineRadar(userId: string = "default"): Promise<DeadlineRadarItem[]> {
+    try {
+        const qs = new URLSearchParams({
+            user_id: userId,
+            days: "180",
+            ccf_levels: "A,B,C",
+            limit: "10",
+        })
+        const res = await fetch(`${API_BASE_URL}/research/deadlines/radar?${qs.toString()}`, {
+            cache: "no-store",
+        })
+        if (!res.ok) return []
+        const payload = await res.json() as { items?: DeadlineRadarItem[] }
+        return payload.items || []
+    } catch {
+        return []
+    }
 }
 
 
 export async function fetchScholars(): Promise<Scholar[]> {
-    // Mock data for now
-    return [
-        {
-            id: "dawn-song",
-            name: "Dawn Song",
-            affiliation: "UC Berkeley",
-            h_index: 120,
-            papers_tracked: 45,
-            recent_activity: "Published 2 days ago",
-            status: "active"
-        },
-        {
-            id: "kaiming-he",
-            name: "Kaiming He",
-            affiliation: "MIT",
-            h_index: 145,
-            papers_tracked: 28,
-            recent_activity: "Cited 500+ times this week",
-            status: "active"
-        },
-        {
-            id: "yann-lecun",
-            name: "Yann LeCun",
-            affiliation: "Meta AI / NYU",
-            h_index: 180,
-            papers_tracked: 15,
-            recent_activity: "New interview",
-            status: "idle"
+    try {
+        const res = await fetch(`${API_BASE_URL}/research/scholars?limit=200`, { cache: "no-store" })
+        if (!res.ok) return []
+        const data = await res.json() as {
+            items?: Array<{
+                id?: string
+                scholar_id?: string
+                semantic_scholar_id?: string | null
+                name?: string
+                affiliation?: string
+                keywords?: string[]
+                h_index?: number
+                paper_count?: number
+                recent_activity?: string
+                status?: "active" | "idle"
+                cached_papers?: number
+                last_updated?: string | null
+                muted?: boolean
+                last_seen_at?: string | null
+                last_seen_cached_papers?: number
+                digest_enabled?: boolean
+                digest_frequency?: "daily" | "weekly" | "monthly" | string
+                alert_enabled?: boolean
+                alert_keywords?: string[]
+            }>
         }
-    ]
+        return (data.items || []).map((row) => ({
+            id: String(row.id || row.semantic_scholar_id || row.scholar_id || row.name || "unknown"),
+            semantic_scholar_id: row.semantic_scholar_id || undefined,
+            name: String(row.name || "Unknown"),
+            affiliation: String(row.affiliation || "Unknown affiliation"),
+            h_index: Number(row.h_index || 0),
+            papers_tracked: Number(row.paper_count || 0),
+            recent_activity: String(row.recent_activity || "No tracking runs yet"),
+            status: row.status === "active" ? "active" : "idle",
+            keywords: row.keywords || [],
+            cached_papers: Number(row.cached_papers || 0),
+            last_updated: row.last_updated || null,
+            muted: !!row.muted,
+            last_seen_at: row.last_seen_at || null,
+            last_seen_cached_papers: Number(row.last_seen_cached_papers || 0),
+            digest_enabled: !!row.digest_enabled,
+            digest_frequency:
+                row.digest_frequency === "daily" || row.digest_frequency === "monthly"
+                    ? row.digest_frequency
+                    : "weekly",
+            alert_enabled: !!row.alert_enabled,
+            alert_keywords: Array.isArray(row.alert_keywords)
+                ? row.alert_keywords.map((kw) => String(kw).trim()).filter(Boolean)
+                : [],
+        }))
+    } catch {
+        return []
+    }
 }
 
 export async function fetchPaperDetails(id: string): Promise<PaperDetails> {
-    // Mock data
-    return {
-        id,
-        title: "Attention Is All You Need",
-        venue: "NeurIPS 2017",
-        authors: "Vaswani et al.",
-        citations: "100k+",
-        status: "Reproduced",
-        tags: ["Transformer", "NLP"],
-        abstract: "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder. The best performing models also connect the encoder and decoder through an attention mechanism. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
-        tldr: "PROPOSED the Transformer, a novel network architecture based solely on attention mechanisms, which achieves state-of-the-art results in machine translation tasks while being parallelizable and requiring significantly less training time.",
-        pis_score: 98,
-        impact_radar: [
-            { subject: 'Novelty', A: 120, fullMark: 150 },
-            { subject: 'Accessibility', A: 98, fullMark: 150 },
-            { subject: 'Rigor', A: 86, fullMark: 150 },
-            { subject: 'Reproducibility', A: 99, fullMark: 150 },
-            { subject: 'Impact', A: 145, fullMark: 150 },
-            { subject: 'Clarity', A: 110, fullMark: 150 },
-        ],
-        sentiment_analysis: [
-            { name: 'Positive', value: 400, fill: '#4ade80' },
-            { name: 'Neutral', value: 300, fill: '#94a3b8' },
-            { name: 'Critical', value: 50, fill: '#f87171' },
-        ],
-        citation_velocity: [
-            { month: 'Jan', citations: 400 },
-            { month: 'Feb', citations: 800 },
-            { month: 'Mar', citations: 1200 },
-            { month: 'Apr', citations: 2000 },
-            { month: 'May', citations: 3500 },
-            { month: 'Jun', citations: 5000 },
-        ],
-        reproduction: {
-            status: "Success",
-            logs: [
-                "[INFO] Environment inferred: PyTorch 2.1, CUDA 12.1",
-                "[INFO] Installing dependencies...",
-                "[SUCCESS] Dependencies installed",
-                "[INFO] Starting training loop...",
-                "[INFO] Epoch 1: Loss 2.45",
-                "[SUCCESS] Reproduction verification passed (BLEU > 28.0)"
+    type PaperDetailPayload = {
+        detail?: {
+            paper?: {
+                title?: string
+                abstract?: string
+                authors?: string[]
+                venue?: string
+                year?: number | null
+                citation_count?: number | null
+                fields_of_study?: string[]
+            }
+            latest_judge?: {
+                overall?: number | null
+                one_line_summary?: string | null
+                novelty?: number | null
+                rigor?: number | null
+                impact?: number | null
+                clarity?: number | null
+            } | null
+            feedback_summary?: Record<string, number> | null
+            repos?: Array<{ name?: string; stars?: number | null }> | null
+        }
+    }
+
+    try {
+        const res = await fetch(
+            `${API_BASE_URL}/research/papers/${encodeURIComponent(id)}?user_id=default`,
+            { cache: "no-store" },
+        )
+        if (!res.ok) throw new Error("paper detail unavailable")
+        const data = await res.json() as PaperDetailPayload
+        const detail = data.detail || {}
+        const paper = detail.paper || {}
+        const judge = detail.latest_judge || null
+        const feedback = detail.feedback_summary || {}
+        const repos = detail.repos || []
+
+        const title = (paper.title || "").trim() || `Paper #${id}`
+        const authorsList = Array.isArray(paper.authors) ? paper.authors.filter(Boolean) : []
+        const authors = authorsList.length > 0 ? authorsList.join(", ") : "Unknown authors"
+        const abstract = (paper.abstract || "").trim() || "No abstract available."
+        const citations = Number(paper.citation_count || 0)
+        const judgeOverall = Number(judge?.overall || 0)
+        const pisScore = Math.max(0, Math.min(100, Math.round(judgeOverall * 20)))
+        const tldr =
+            (judge?.one_line_summary || "").trim() ||
+            abstract.split(".").slice(0, 2).join(". ").trim() ||
+            "No summary available."
+
+        const positive = Number(feedback.like || 0)
+        const neutral = Number(feedback.save || 0)
+        const critical = Number(feedback.dislike || 0) + Number(feedback.skip || 0)
+
+        return {
+            id,
+            title,
+            venue: [paper.venue, paper.year].filter(Boolean).join(" • ") || "Unknown venue",
+            authors,
+            citations: citations > 0 ? `${citations}` : "0",
+            status: "Saved",
+            tags: Array.isArray(paper.fields_of_study) ? paper.fields_of_study.slice(0, 4) : [],
+            abstract,
+            tldr,
+            pis_score: pisScore,
+            impact_radar: [
+                { subject: "Novelty", A: Number(judge?.novelty || 0) * 30, fullMark: 150 },
+                { subject: "Accessibility", A: Number(judge?.clarity || 0) * 30, fullMark: 150 },
+                { subject: "Rigor", A: Number(judge?.rigor || 0) * 30, fullMark: 150 },
+                { subject: "Reproducibility", A: Number(judge?.rigor || 0) * 28, fullMark: 150 },
+                { subject: "Impact", A: Number(judge?.impact || 0) * 30, fullMark: 150 },
+                { subject: "Clarity", A: Number(judge?.clarity || 0) * 30, fullMark: 150 },
             ],
-            dockerfile: "FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime\nRUN pip install transformers datasets\nCOPY . /app\nWORKDIR /app\nCMD [\"python\", \"train.py\"]"
+            sentiment_analysis: [
+                { name: "Positive", value: positive, fill: "#4ade80" },
+                { name: "Neutral", value: neutral, fill: "#94a3b8" },
+                { name: "Critical", value: critical, fill: "#f87171" },
+            ],
+            citation_velocity: [
+                { month: "Jan", citations: Math.max(0, Math.round(citations * 0.1)) },
+                { month: "Feb", citations: Math.max(0, Math.round(citations * 0.25)) },
+                { month: "Mar", citations: Math.max(0, Math.round(citations * 0.45)) },
+                { month: "Apr", citations: Math.max(0, Math.round(citations * 0.65)) },
+                { month: "May", citations: Math.max(0, Math.round(citations * 0.82)) },
+                { month: "Jun", citations: Math.max(0, citations) },
+            ],
+            reproduction: {
+                status: repos.length > 0 ? "Linked Repos Available" : "No linked repos",
+                logs:
+                    repos.length > 0
+                        ? repos.slice(0, 6).map((repo) => {
+                            const stars = Number(repo.stars || 0)
+                            return `[REPO] ${repo.name || "unknown"} · ${stars} stars`
+                        })
+                        : ["[INFO] No repository metadata has been linked to this paper yet."],
+                dockerfile:
+                    "# No generated Dockerfile yet.\n# Trigger reproduction workflow to create runnable artifacts.",
+            },
+        }
+    } catch {
+        return {
+            id,
+            title: "Paper details unavailable",
+            venue: "Unknown venue",
+            authors: "Unknown authors",
+            citations: "0",
+            status: "Saved",
+            tags: [],
+            abstract: "Failed to load paper details from backend.",
+            tldr: "Please retry after backend is available.",
+            pis_score: 0,
+            impact_radar: [
+                { subject: "Novelty", A: 0, fullMark: 150 },
+                { subject: "Accessibility", A: 0, fullMark: 150 },
+                { subject: "Rigor", A: 0, fullMark: 150 },
+                { subject: "Reproducibility", A: 0, fullMark: 150 },
+                { subject: "Impact", A: 0, fullMark: 150 },
+                { subject: "Clarity", A: 0, fullMark: 150 },
+            ],
+            sentiment_analysis: [
+                { name: "Positive", value: 0, fill: "#4ade80" },
+                { name: "Neutral", value: 1, fill: "#94a3b8" },
+                { name: "Critical", value: 0, fill: "#f87171" },
+            ],
+            citation_velocity: [
+                { month: "Jan", citations: 0 },
+                { month: "Feb", citations: 0 },
+                { month: "Mar", citations: 0 },
+                { month: "Apr", citations: 0 },
+                { month: "May", citations: 0 },
+                { month: "Jun", citations: 0 },
+            ],
+            reproduction: {
+                status: "Unavailable",
+                logs: ["[ERROR] Failed to load reproduction context."],
+                dockerfile: "# unavailable",
+            },
         }
     }
 }
@@ -210,7 +418,10 @@ export async function fetchPaperDetails(id: string): Promise<PaperDetails> {
 // TODO: add unit tests for fetchScholarDetails — cover successful network+trends,
 //  partial responses, and both-null fallback path.
 export async function fetchScholarDetails(id: string): Promise<ScholarDetails> {
-    const scholarName = slugToName(id)
+    const scholarId = decodeURIComponent(id)
+    const roster = await fetchScholars()
+    const listed = roster.find((item) => item.id === scholarId || item.semantic_scholar_id === scholarId)
+    const scholarName = listed?.name || slugToName(scholarId)
 
     type ScholarNetworkResponse = {
         scholar?: { name?: string; affiliations?: string[]; citation_count?: number; paper_count?: number; h_index?: number }
@@ -220,73 +431,85 @@ export async function fetchScholarDetails(id: string): Promise<ScholarDetails> {
 
     type ScholarTrendsResponse = {
         scholar?: { name?: string; affiliations?: string[]; citation_count?: number; paper_count?: number; h_index?: number }
-        trend_summary?: { publication_trend?: "up" | "down" | "flat"; citation_trend?: "up" | "down" | "flat" }
+        trend_summary?: { publication_trend?: "up" | "down" | "flat"; citation_trend?: "up" | "down" | "flat"; window?: number }
         topic_distribution?: Array<{ topic?: string; count?: number }>
+        venue_distribution?: Array<{ venue?: string; count?: number }>
+        publication_velocity?: Array<{ year?: number; papers?: number; citations?: number }>
         recent_papers?: Array<{ title?: string; year?: number; citation_count?: number; venue?: string; url?: string }>
     }
 
+    const payloadBase = listed?.semantic_scholar_id || /^\d+$/.test(scholarId)
+        ? { scholar_id: listed?.semantic_scholar_id || scholarId }
+        : { scholar_name: scholarName }
+
     const [network, trends] = await Promise.all([
         postJson<ScholarNetworkResponse>("/research/scholar/network", {
-            scholar_name: scholarName,
+            ...payloadBase,
             max_papers: 120,
             recent_years: 5,
             max_nodes: 30,
         }),
         postJson<ScholarTrendsResponse>("/research/scholar/trends", {
-            scholar_name: scholarName,
+            ...payloadBase,
             max_papers: 200,
             year_window: 10,
         }),
     ])
 
-    // TODO: mock fallback is hardcoded to Dawn Song — replace with generic
-    //  placeholder or remove entirely once real scholar data is always available.
-    // Fallback to mock data if the scholar is not configured in subscriptions yet.
+    // Fallback to minimal profile when upstream scholar APIs are unavailable.
     if (!network && !trends) {
-        const papers = await fetchPapers()
         return {
-            id,
+            id: scholarId,
+            semantic_scholar_id: listed?.semantic_scholar_id || scholarId,
             name: scholarName,
-            affiliation: "University of California, Berkeley",
-            h_index: 120,
-            papers_tracked: 45,
-            recent_activity: "Published 2 days ago",
-            status: "active",
-            bio: "Dawn Song is a Professor in the Department of Electrical Engineering and Computer Science at UC Berkeley. Her research interest lies in deep learning, security, and blockchain.",
-            location: "Berkeley, CA",
-            website: "https://dawnsong.io",
+            affiliation: listed?.affiliation || "Unknown affiliation",
+            h_index: listed?.h_index || 0,
+            papers_tracked: listed?.papers_tracked || 0,
+            recent_activity: listed?.recent_activity || "No tracking runs yet",
+            status: listed?.status || "idle",
+            keywords: listed?.keywords || [],
+            cached_papers: listed?.cached_papers || 0,
+            bio: "Live scholar signals are unavailable right now. Check Semantic Scholar API configuration and retry.",
+            location: "N/A",
+            website: "",
             expertise_radar: [
-                { subject: "Security", A: 100, fullMark: 100 },
-                { subject: "Deep Learning", A: 90, fullMark: 100 },
-                { subject: "Blockchain", A: 80, fullMark: 100 },
-                { subject: "Systems", A: 85, fullMark: 100 },
-                { subject: "Privacy", A: 95, fullMark: 100 },
+                { subject: "Coverage", A: 0, fullMark: 100 },
+                { subject: "Recency", A: 0, fullMark: 100 },
+                { subject: "Citation", A: 0, fullMark: 100 },
             ],
-            publications: papers,
-            co_authors: [
-                { name: "Dan Hendrycks", avatar: "https://avatar.vercel.sh/dan.png" },
-                { name: "Kevin Eykholt", avatar: "https://avatar.vercel.sh/kevin.png" },
-            ],
+            publications: [],
+            co_authors: [],
             stats: {
-                total_citations: 54321,
-                papers_count: 230,
-                h_index: 120,
+                total_citations: 0,
+                papers_count: listed?.papers_tracked || 0,
+                h_index: listed?.h_index || 0,
             },
+            trend_summary: {
+                publication_trend: "flat",
+                citation_trend: "flat",
+                window: 10,
+            },
+            publication_velocity: [],
+            top_topics: [],
+            top_venues: [],
         }
     }
 
     const scholar = network?.scholar || trends?.scholar || {}
-    const topicDist = (trends?.topic_distribution || []).slice(0, 5)
+    const topicDist = (trends?.topic_distribution || []).slice(0, 6)
+    const venueDist = (trends?.venue_distribution || []).slice(0, 6)
+    const velocity = (trends?.publication_velocity || []).slice(-10)
     const maxTopicCount = Math.max(1, ...topicDist.map((t) => Number(t.count || 0)))
 
     const publications: Paper[] = (trends?.recent_papers || []).slice(0, 15).map((paper, idx) => ({
-        id: `sch-${id}-paper-${idx}`,
+        id: `sch-${scholarId}-paper-${idx}`,
         title: String(paper.title || "Untitled"),
         venue: String(paper.venue || "Unknown venue"),
         authors: String(scholar.name || scholarName),
         citations: Number(paper.citation_count || 0),
         status: "analyzing",
         tags: topicDist.map((t) => String(t.topic || "")).filter(Boolean).slice(0, 3),
+        url: paper.url || "",
     }))
 
     const coauthors = (network?.nodes || [])
@@ -309,13 +532,16 @@ export async function fetchScholarDetails(id: string): Promise<ScholarDetails> {
             : "Publication trend stable"
 
     return {
-        id,
+        id: scholarId,
+        semantic_scholar_id: listed?.semantic_scholar_id || (payloadBase as { scholar_id?: string }).scholar_id,
         name: String(scholar.name || scholarName),
-        affiliation: String((scholar.affiliations || ["Unknown affiliation"])[0] || "Unknown affiliation"),
-        h_index: Number(scholar.h_index || 0),
-        papers_tracked: Number(scholar.paper_count || 0),
+        affiliation: String((scholar.affiliations || [listed?.affiliation || "Unknown affiliation"])[0] || "Unknown affiliation"),
+        h_index: Number(scholar.h_index || listed?.h_index || 0),
+        papers_tracked: Number(scholar.paper_count || listed?.papers_tracked || 0),
         recent_activity: recentActivity,
         status: publicationTrend === "up" ? "active" : "idle",
+        keywords: listed?.keywords || topicDist.map((t) => String(t.topic || "")).filter(Boolean).slice(0, 6),
+        cached_papers: listed?.cached_papers || 0,
         bio: `Trend snapshot: ${trends?.trend_summary?.citation_trend || "flat"} citation trend over the recent analysis window.`,
         location: "N/A",
         website: "",
@@ -331,6 +557,24 @@ export async function fetchScholarDetails(id: string): Promise<ScholarDetails> {
             papers_count: Number(scholar.paper_count || 0),
             h_index: Number(scholar.h_index || 0),
         },
+        trend_summary: {
+            publication_trend: trends?.trend_summary?.publication_trend || "flat",
+            citation_trend: trends?.trend_summary?.citation_trend || "flat",
+            window: Number(trends?.trend_summary?.window || 10),
+        },
+        publication_velocity: velocity.map((row) => ({
+            year: Number(row.year || 0),
+            papers: Number(row.papers || 0),
+            citations: Number(row.citations || 0),
+        })),
+        top_topics: topicDist.map((row) => ({
+            topic: String(row.topic || "Unknown"),
+            count: Number(row.count || 0),
+        })),
+        top_venues: venueDist.map((row) => ({
+            venue: String(row.venue || "Unknown"),
+            count: Number(row.count || 0),
+        })),
     }
 }
 
@@ -398,7 +642,6 @@ export async function fetchPapers(): Promise<Paper[]> {
     try {
         const res = await fetch(`${API_BASE_URL}/papers/library`)
         if (!res.ok) {
-            console.error("Failed to fetch papers library:", res.status)
             return []
         }
         const data = await res.json()
@@ -412,8 +655,7 @@ export async function fetchPapers(): Promise<Paper[]> {
             status: item.action === "save" ? "Saved" : "pending",
             tags: Array.isArray(item.paper.fields_of_study) ? item.paper.fields_of_study.slice(0, 3) : []
         }))
-    } catch (e) {
-        console.error("Error fetching papers:", e)
+    } catch {
         return []
     }
 }

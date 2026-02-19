@@ -21,13 +21,20 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_digest_frequency(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"daily", "weekly", "monthly"}:
+        return normalized
+    return "weekly"
+
+
 class SubscriptionService:
     """学者订阅配置管理服务"""
-    
+
     def __init__(self, config_path: Optional[str] = None):
         """
         初始化订阅服务
-        
+
         Args:
             config_path: 配置文件路径，默认为 config/scholar_subscriptions.yaml
         """
@@ -35,59 +42,59 @@ class SubscriptionService:
             # 默认配置文件路径
             project_root = Path(__file__).parent.parent.parent.parent.parent
             config_path = project_root / "config" / "scholar_subscriptions.yaml"
-        
+
         self.config_path = Path(config_path)
         self._config: Optional[Dict[str, Any]] = None
         self._scholars: Optional[List] = None
-    
+
     def load_config(self) -> Dict[str, Any]:
         """加载配置文件"""
         if self._config is not None:
             return self._config
-        
+
         if not self.config_path.exists():
             raise FileNotFoundError(f"Subscription config not found: {self.config_path}")
-        
+
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 self._config = yaml.safe_load(f)
-            
+
             self._validate_config()
             logger.info(f"Loaded subscription config from {self.config_path}")
             return self._config
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML in config file: {e}")
-    
+
     def _validate_config(self):
         """校验配置文件结构"""
         if not self._config:
             raise ValueError("Config is empty")
-        
+
         subscriptions = self._config.get("subscriptions", {})
         if not subscriptions:
             raise ValueError("Missing 'subscriptions' section in config")
-        
+
         scholars = subscriptions.get("scholars", [])
         if not scholars:
             logger.warning("No scholars configured for tracking")
-        
+
         # 校验每个学者的必填字段
         for i, scholar in enumerate(scholars):
             if not scholar.get("name"):
                 raise ValueError(f"Scholar at index {i} missing 'name'")
             if not scholar.get("semantic_scholar_id"):
                 raise ValueError(f"Scholar '{scholar.get('name')}' missing 'semantic_scholar_id'")
-        
+
         # 校验 settings
         settings = subscriptions.get("settings", {})
         # 只验证关键的 check_interval 和 papers_per_scholar 是否存在，其余允许使用默认值
         if settings.get("check_interval") not in ["daily", "weekly", "monthly", None]:
-             raise ValueError(f"Invalid check_interval: {settings.get('check_interval')}")
-        
+            raise ValueError(f"Invalid check_interval: {settings.get('check_interval')}")
+
         if settings.get("min_influence_score") is not None:
-             score = settings.get("min_influence_score")
-             if not (0 <= score <= 100):
-                 raise ValueError(f"min_influence_score must be between 0 and 100, got {score}")
+            score = settings.get("min_influence_score")
+            if not (0 <= score <= 100):
+                raise ValueError(f"min_influence_score must be between 0 and 100, got {score}")
 
         # 检查 API 配置是否存在（如果提供了 api 字段）
         if "api" in settings:
@@ -97,30 +104,33 @@ class SubscriptionService:
                 if not semantic_api.get("base_url"):
                     logger.warning("Semantic Scholar API config missing 'base_url', using default")
 
-    
     def get_scholars(self) -> List:
         """获取所有订阅的学者"""
         if self._scholars is not None:
             return self._scholars
-        
+
         config = self.load_config()
         scholars_config = config.get("subscriptions", {}).get("scholars", [])
-        
+
         if Scholar is not None:
-            self._scholars = [
-                Scholar.from_config(s) for s in scholars_config
-            ]
+            self._scholars = [Scholar.from_config(s) for s in scholars_config]
         else:
             self._scholars = scholars_config
-        
+
         logger.info(f"Loaded {len(self._scholars)} scholars from config")
         return self._scholars
-    
+
+    def get_scholar_configs(self) -> List[Dict[str, Any]]:
+        """获取原始订阅学者配置（包含扩展字段）。"""
+        config = self.load_config()
+        scholars = config.get("subscriptions", {}).get("scholars", [])
+        return [dict(row) for row in scholars if isinstance(row, dict)]
+
     def get_settings(self) -> Dict[str, Any]:
         """获取全局设置"""
         config = self.load_config()
         settings = config.get("subscriptions", {}).get("settings", {})
-        
+
         # 返回带默认值的设置
         return {
             "check_interval": settings.get("check_interval", "weekly"),
@@ -137,33 +147,300 @@ class SubscriptionService:
         """获取报告输出配置"""
         settings = self.get_settings()
         return settings.get("reporting", {})
-    
+
     def get_api_config(self, api_name: str) -> Dict[str, Any]:
         """获取特定 API 的配置"""
         settings = self.get_settings()
         return settings.get("api", {}).get(api_name, {})
-    
+
     def get_output_dir(self) -> Path:
         """获取报告输出目录"""
         settings = self.get_settings()
         output_dir = settings.get("output_dir", "output/reports")
-        
+
         # 转为绝对路径
         if not os.path.isabs(output_dir):
             project_root = Path(__file__).parent.parent.parent.parent.parent
             output_dir = project_root / output_dir
-        
+
         return Path(output_dir)
-    
+
+    def save_config(self):
+        """保存配置文件到磁盘"""
+        if self._config is None:
+            self.load_config()
+
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                self._config,
+                f,
+                sort_keys=False,
+                allow_unicode=True,
+                default_flow_style=False,
+            )
+
+    def add_scholar(self, scholar: Dict[str, Any]) -> Dict[str, Any]:
+        """新增订阅学者并持久化配置。"""
+        config = self.load_config()
+        subscriptions = config.setdefault("subscriptions", {})
+        scholars = subscriptions.setdefault("scholars", [])
+
+        name = str(scholar.get("name") or "").strip()
+        semantic_id = str(scholar.get("semantic_scholar_id") or "").strip()
+        if not name:
+            raise ValueError("name is required")
+        if not semantic_id:
+            raise ValueError("semantic_scholar_id is required")
+
+        normalized_id = semantic_id.lower()
+        for existing in scholars:
+            existing_id = str(existing.get("semantic_scholar_id") or "").strip().lower()
+            if existing_id and existing_id == normalized_id:
+                raise ValueError("semantic_scholar_id already exists")
+
+        payload: Dict[str, Any] = {
+            "name": name,
+            "semantic_scholar_id": semantic_id,
+        }
+
+        keywords = scholar.get("keywords")
+        if isinstance(keywords, list):
+            payload["keywords"] = [str(v).strip() for v in keywords if str(v).strip()]
+
+        affiliations = scholar.get("affiliations")
+        if isinstance(affiliations, list):
+            payload["affiliations"] = [str(v).strip() for v in affiliations if str(v).strip()]
+
+        research_fields = scholar.get("research_fields")
+        if isinstance(research_fields, list):
+            payload["research_fields"] = [str(v).strip() for v in research_fields if str(v).strip()]
+
+        if scholar.get("muted") is not None:
+            payload["muted"] = bool(scholar.get("muted"))
+
+        if scholar.get("last_seen_at") is not None:
+            payload["last_seen_at"] = str(scholar.get("last_seen_at") or "").strip()
+
+        if scholar.get("last_seen_cached_papers") is not None:
+            try:
+                payload["last_seen_cached_papers"] = max(
+                    0, int(scholar.get("last_seen_cached_papers") or 0)
+                )
+            except Exception:
+                payload["last_seen_cached_papers"] = 0
+
+        if scholar.get("digest_enabled") is not None:
+            payload["digest_enabled"] = bool(scholar.get("digest_enabled"))
+
+        if scholar.get("digest_frequency") is not None:
+            payload["digest_frequency"] = _normalize_digest_frequency(
+                scholar.get("digest_frequency")
+            )
+
+        if scholar.get("alert_enabled") is not None:
+            payload["alert_enabled"] = bool(scholar.get("alert_enabled"))
+
+        if scholar.get("alert_keywords") is not None:
+            alert_keywords = scholar.get("alert_keywords")
+            if isinstance(alert_keywords, list):
+                payload["alert_keywords"] = [
+                    str(v).strip() for v in alert_keywords if str(v).strip()
+                ]
+            else:
+                payload["alert_keywords"] = []
+
+        scholars.append(payload)
+        self.save_config()
+        self._scholars = None
+        return payload
+
+    def update_scholar(self, scholar_ref: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """更新订阅学者配置。"""
+        ref = str(scholar_ref or "").strip()
+        if not ref:
+            return None
+
+        config = self.load_config()
+        subscriptions = config.setdefault("subscriptions", {})
+        scholars = subscriptions.setdefault("scholars", [])
+
+        target_index: Optional[int] = None
+        ref_key = ref.lower()
+        for idx, row in enumerate(scholars):
+            row_semantic = str(row.get("semantic_scholar_id") or "").strip().lower()
+            row_id = str(row.get("scholar_id") or row.get("id") or "").strip().lower()
+            row_name = str(row.get("name") or "").strip().lower()
+            if ref_key in {row_semantic, row_id, row_name}:
+                target_index = idx
+                break
+
+        if target_index is None:
+            return None
+
+        current = dict(scholars[target_index])
+
+        name = str(updates.get("name") or current.get("name") or "").strip()
+        semantic_id = str(
+            updates.get("semantic_scholar_id")
+            if updates.get("semantic_scholar_id") is not None
+            else current.get("semantic_scholar_id") or ""
+        ).strip()
+
+        if not name:
+            raise ValueError("name is required")
+        if not semantic_id:
+            raise ValueError("semantic_scholar_id is required")
+
+        normalized_id = semantic_id.lower()
+        for idx, existing in enumerate(scholars):
+            if idx == target_index:
+                continue
+            existing_id = str(existing.get("semantic_scholar_id") or "").strip().lower()
+            if existing_id and existing_id == normalized_id:
+                raise ValueError("semantic_scholar_id already exists")
+
+        # Keep unknown fields (e.g. UI state metadata) and overwrite managed fields.
+        payload: Dict[str, Any] = dict(current)
+        payload["name"] = name
+        payload["semantic_scholar_id"] = semantic_id
+
+        if updates.get("keywords") is not None:
+            keywords = updates.get("keywords")
+            if isinstance(keywords, list):
+                payload["keywords"] = [str(v).strip() for v in keywords if str(v).strip()]
+            else:
+                payload.pop("keywords", None)
+        elif isinstance(current.get("keywords"), list):
+            payload["keywords"] = [
+                str(v).strip() for v in current.get("keywords", []) if str(v).strip()
+            ]
+
+        if updates.get("affiliations") is not None:
+            affiliations = updates.get("affiliations")
+            if isinstance(affiliations, list):
+                payload["affiliations"] = [str(v).strip() for v in affiliations if str(v).strip()]
+            else:
+                payload.pop("affiliations", None)
+        elif isinstance(current.get("affiliations"), list):
+            payload["affiliations"] = [
+                str(v).strip() for v in current.get("affiliations", []) if str(v).strip()
+            ]
+
+        if updates.get("research_fields") is not None:
+            research_fields = updates.get("research_fields")
+            if isinstance(research_fields, list):
+                payload["research_fields"] = [
+                    str(v).strip() for v in research_fields if str(v).strip()
+                ]
+            else:
+                payload.pop("research_fields", None)
+        elif isinstance(current.get("research_fields"), list):
+            payload["research_fields"] = [
+                str(v).strip() for v in current.get("research_fields", []) if str(v).strip()
+            ]
+
+        if updates.get("muted") is not None:
+            payload["muted"] = bool(updates.get("muted"))
+        elif current.get("muted") is not None:
+            payload["muted"] = bool(current.get("muted"))
+
+        if updates.get("last_seen_at") is not None:
+            payload["last_seen_at"] = str(updates.get("last_seen_at") or "").strip()
+        elif current.get("last_seen_at") is not None:
+            payload["last_seen_at"] = str(current.get("last_seen_at") or "").strip()
+
+        if updates.get("last_seen_cached_papers") is not None:
+            try:
+                payload["last_seen_cached_papers"] = max(
+                    0, int(updates.get("last_seen_cached_papers") or 0)
+                )
+            except Exception:
+                payload["last_seen_cached_papers"] = 0
+        elif current.get("last_seen_cached_papers") is not None:
+            try:
+                payload["last_seen_cached_papers"] = max(
+                    0, int(current.get("last_seen_cached_papers") or 0)
+                )
+            except Exception:
+                payload["last_seen_cached_papers"] = 0
+
+        if updates.get("digest_enabled") is not None:
+            payload["digest_enabled"] = bool(updates.get("digest_enabled"))
+        elif current.get("digest_enabled") is not None:
+            payload["digest_enabled"] = bool(current.get("digest_enabled"))
+
+        if updates.get("digest_frequency") is not None:
+            payload["digest_frequency"] = _normalize_digest_frequency(
+                updates.get("digest_frequency")
+            )
+        elif current.get("digest_frequency") is not None:
+            payload["digest_frequency"] = _normalize_digest_frequency(
+                current.get("digest_frequency")
+            )
+
+        if updates.get("alert_enabled") is not None:
+            payload["alert_enabled"] = bool(updates.get("alert_enabled"))
+        elif current.get("alert_enabled") is not None:
+            payload["alert_enabled"] = bool(current.get("alert_enabled"))
+
+        if updates.get("alert_keywords") is not None:
+            alert_keywords = updates.get("alert_keywords")
+            if isinstance(alert_keywords, list):
+                payload["alert_keywords"] = [
+                    str(v).strip() for v in alert_keywords if str(v).strip()
+                ]
+            else:
+                payload["alert_keywords"] = []
+        elif isinstance(current.get("alert_keywords"), list):
+            payload["alert_keywords"] = [
+                str(v).strip() for v in current.get("alert_keywords", []) if str(v).strip()
+            ]
+
+        scholars[target_index] = payload
+        self.save_config()
+        self._scholars = None
+        return payload
+
+    def remove_scholar(self, scholar_ref: str) -> Optional[Dict[str, Any]]:
+        """按 semantic_scholar_id / scholar_id / name 删除订阅学者。"""
+        ref = str(scholar_ref or "").strip()
+        if not ref:
+            return None
+
+        config = self.load_config()
+        subscriptions = config.setdefault("subscriptions", {})
+        scholars = subscriptions.setdefault("scholars", [])
+
+        target_index: Optional[int] = None
+        target_row: Optional[Dict[str, Any]] = None
+        ref_key = ref.lower()
+
+        for idx, row in enumerate(scholars):
+            row_semantic = str(row.get("semantic_scholar_id") or "").strip().lower()
+            row_id = str(row.get("scholar_id") or row.get("id") or "").strip().lower()
+            row_name = str(row.get("name") or "").strip().lower()
+            if ref_key in {row_semantic, row_id, row_name}:
+                target_index = idx
+                target_row = row
+                break
+
+        if target_index is None:
+            return None
+
+        scholars.pop(target_index)
+        self.save_config()
+        self._scholars = None
+        return target_row
+
     def get_cache_dir(self) -> Path:
         """获取缓存目录"""
         settings = self.get_settings()
         cache_dir = settings.get("cache_dir", "cache/scholar_papers")
-        
+
         # 转为绝对路径
         if not os.path.isabs(cache_dir):
             project_root = Path(__file__).parent.parent.parent.parent.parent
             cache_dir = project_root / cache_dir
-        
-        return Path(cache_dir)
 
+        return Path(cache_dir)

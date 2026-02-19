@@ -6,7 +6,12 @@ import logging
 from typing import Any, Dict, Generator, List, Optional, Sequence
 
 from paperbot.application.prompts import PromptRegistry
+from paperbot.application.services.provider_resolver import (
+    ProviderResolver,
+    RouterBackedProviderResolver,
+)
 from paperbot.infrastructure.llm.router import ModelRouter
+from paperbot.infrastructure.stores.llm_usage_store import LLMUsageStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,16 +22,25 @@ class LLMService:
     def __init__(
         self,
         router: Optional[ModelRouter] = None,
+        provider_resolver: Optional[ProviderResolver] = None,
         prompt_registry: Optional[PromptRegistry] = None,
+        usage_store: Optional[LLMUsageStore] = None,
         *,
         enable_cache: bool = True,
         raise_errors: bool = False,
     ) -> None:
-        self._router = router or ModelRouter.from_env()
+        resolved_router = router or ModelRouter.from_env()
+        self._provider_resolver = provider_resolver or RouterBackedProviderResolver(resolved_router)
         self._prompts = prompt_registry or PromptRegistry()
         self._enable_cache = enable_cache
         self._raise_errors = raise_errors
         self._cache: Dict[str, str] = {}
+        self._usage_store = usage_store
+        if self._usage_store is None:
+            try:
+                self._usage_store = LLMUsageStore()
+            except Exception:
+                self._usage_store = None
 
     def complete(
         self,
@@ -42,8 +56,15 @@ class LLMService:
             return self._cache[cache_key]
 
         try:
-            provider = self._router.get_provider(task_type)
+            provider = self._provider_resolver.get_provider(task_type)
             result = (provider.invoke_simple(system, user, **kwargs) or "").strip()
+            self._record_usage(
+                task_type=task_type,
+                provider=provider,
+                system=system,
+                user=user,
+                completion=result,
+            )
         except Exception as exc:  # pragma: no cover - exercised via fallback tests
             logger.warning("LLM complete failed task_type=%s error=%s", task_type, exc)
             if self._raise_errors:
@@ -63,12 +84,24 @@ class LLMService:
         **kwargs,
     ) -> Generator[str, None, None]:
         try:
-            provider = self._router.get_provider(task_type)
+            provider = self._provider_resolver.get_provider(task_type)
             messages = [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ]
-            yield from provider.stream_invoke(messages, **kwargs)
+            chunks: List[str] = []
+            for chunk in provider.stream_invoke(messages, **kwargs):
+                text = str(chunk or "")
+                if text:
+                    chunks.append(text)
+                    yield text
+            self._record_usage(
+                task_type=task_type,
+                provider=provider,
+                system=system,
+                user=user,
+                completion="".join(chunks),
+            )
         except Exception as exc:  # pragma: no cover - stream failures are runtime/network specific
             logger.warning("LLM stream failed task_type=%s error=%s", task_type, exc)
             if self._raise_errors:
@@ -138,6 +171,33 @@ class LLMService:
             ),
         )
 
+    def extract_structured_card(self, title: str, abstract: str) -> Dict[str, Any]:
+        prompt = self._prompts.get("structured_card")
+        raw = self.complete(
+            task_type="extraction",
+            system=prompt.system,
+            user=prompt.user.format(title=title or "", abstract=abstract or ""),
+        )
+        parsed = _safe_parse_json(raw)
+        if parsed is None:
+            return {"method": "", "dataset": "N/A", "conclusion": "", "limitations": "Not stated"}
+        return {
+            "method": str(parsed.get("method") or ""),
+            "dataset": str(parsed.get("dataset") or "N/A"),
+            "conclusion": str(parsed.get("conclusion") or ""),
+            "limitations": str(parsed.get("limitations") or "Not stated"),
+        }
+
+    def generate_related_work(self, papers: List[Dict[str, Any]], topic: str) -> str:
+        prompt = self._prompts.get("related_work")
+        formatted = _format_papers_for_related_work(papers)
+        return self.complete(
+            task_type="default",
+            system=prompt.system,
+            user=prompt.user.format(topic=topic or "", papers_formatted=formatted),
+            use_cache=False,
+        )
+
     def _cache_key(self, *, task_type: str, system: str, user: str, kwargs: Dict[str, Any]) -> str:
         payload = json.dumps(
             {
@@ -151,10 +211,53 @@ class LLMService:
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    def _record_usage(
+        self,
+        *,
+        task_type: str,
+        provider: Any,
+        system: str,
+        user: str,
+        completion: str,
+    ) -> None:
+        if self._usage_store is None:
+            return
+
+        prompt_tokens = _estimate_tokens(system) + _estimate_tokens(user)
+        completion_tokens = _estimate_tokens(completion)
+
+        try:
+            info = provider.info
+            provider_name = str(getattr(info, "provider_name", "unknown") or "unknown")
+            model_name = str(getattr(info, "model_name", "") or "")
+        except Exception:
+            provider_name = "unknown"
+            model_name = ""
+
+        cost_usd = _estimate_cost_usd(
+            provider_name=provider_name,
+            model_name=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+        try:
+            self._usage_store.record_usage(
+                task_type=task_type,
+                provider_name=provider_name,
+                model_name=model_name,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                estimated_cost_usd=cost_usd,
+                metadata={"estimated": True},
+            )
+        except Exception:
+            return
+
     def describe_task_provider(self, task_type: str = "default") -> Dict[str, Any]:
         """Expose selected provider metadata for auditing/judge reports."""
         try:
-            provider = self._router.get_provider(task_type)
+            provider = self._provider_resolver.get_provider(task_type)
             info = provider.info
             return {
                 "provider_name": info.provider_name,
@@ -191,6 +294,25 @@ def _format_papers_for_prompt(papers: Sequence[Dict[str, Any]], limit: int = 12)
             )
         )
     return "\n".join(rows)
+
+
+def _format_papers_for_related_work(papers: Sequence[Dict[str, Any]], limit: int = 20) -> str:
+    rows: List[str] = []
+    for idx, paper in enumerate(list(papers)[: max(1, int(limit))], start=1):
+        authors = paper.get("authors") or []
+        author_str = authors[0].split()[-1] if authors else "Unknown"
+        year = paper.get("year") or "n.d."
+        cite_key = f"[{author_str}{year}]"
+        rows.append(
+            "{idx}. {cite_key} {title}\n   Authors: {authors}\n   Abstract: {abstract}".format(
+                idx=idx,
+                cite_key=cite_key,
+                title=paper.get("title") or "Untitled",
+                authors=", ".join(authors[:5]) or "Unknown",
+                abstract=(paper.get("snippet") or paper.get("abstract") or "")[:300],
+            )
+        )
+    return "\n\n".join(rows)
 
 
 def _safe_parse_json(raw: str) -> Optional[Dict[str, Any]]:
@@ -244,3 +366,34 @@ def _tokenize(text: str) -> List[str]:
         seen.add(token)
         dedup.append(token)
     return dedup
+
+
+def _estimate_tokens(text: str) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    # Lightweight heuristic: ~4 chars/token for mixed English+code prompts.
+    return max(1, int(len(raw) / 4))
+
+
+def _estimate_cost_usd(
+    *, provider_name: str, model_name: str, prompt_tokens: int, completion_tokens: int
+) -> float:
+    provider = (provider_name or "").lower()
+    model = (model_name or "").lower()
+
+    in_price = 0.0
+    out_price = 0.0
+
+    if provider == "openai" and "gpt-4o-mini" in model:
+        in_price, out_price = 0.15, 0.60
+    elif provider == "openai" and "gpt-4o" in model:
+        in_price, out_price = 2.50, 10.00
+    elif provider == "anthropic" and "claude-3-5-sonnet" in model:
+        in_price, out_price = 3.00, 15.00
+    elif provider == "deepseek":
+        in_price, out_price = 0.55, 2.19
+    elif provider == "ollama":
+        in_price, out_price = 0.0, 0.0
+
+    return ((prompt_tokens * in_price) + (completion_tokens * out_price)) / 1_000_000
