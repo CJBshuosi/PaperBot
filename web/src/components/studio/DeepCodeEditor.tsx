@@ -14,9 +14,9 @@ export function DeepCodeEditor() {
     const activeFileData = activeFile ? files[activeFile] : null
 
     return (
-        <div className="h-full flex flex-col bg-background">
+        <div className="h-full w-full flex flex-col bg-background overflow-hidden">
             {/* File Tabs */}
-            <div className="flex items-center bg-muted/40 border-b overflow-x-auto no-scrollbar">
+            <div className="flex items-center bg-muted/40 border-b overflow-x-auto no-scrollbar shrink-0">
                 {Object.values(files).map((file) => (
                     <div
                         key={file.name}
@@ -43,7 +43,7 @@ export function DeepCodeEditor() {
             </div>
 
             {/* Editor Area */}
-            <div className="flex-1 relative">
+            <div className="flex-1 min-h-0 relative overflow-hidden">
                 {activeFileData ? (
                     <Editor
                         height="100%"

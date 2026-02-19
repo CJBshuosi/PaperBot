@@ -147,24 +147,31 @@ async def gen_code_stream(
                 }
             )
 
+        # Extract blueprint info from plan/spec if available
+        blueprint_info = {"architectureType": "unknown", "domain": "unknown"}
+        if hasattr(result, "blueprint") and result.blueprint:
+            blueprint_info = {
+                "architectureType": getattr(result.blueprint, "architecture_type", "unknown"),
+                "domain": getattr(result.blueprint, "domain", "unknown"),
+            }
+        elif result.spec and result.spec.model_type:
+            blueprint_info["architectureType"] = result.spec.model_type
+
+        # Check verification status
+        verification_passed = False
+        if result.verification_results:
+            verification_passed = all(v.passed for v in result.verification_results)
+        elif result.verification:
+            verification_passed = result.verification.get("all_passed", False)
+
         yield StreamEvent(
             type="result",
             data={
-                "success": result.status.value == "completed",
+                "success": result.status.value == "completed" or len(result.generated_files) > 0,
                 "outputDir": str(output_dir),
                 "files": files,
-                "blueprint": {
-                    "architectureType": (
-                        result.blueprint.architecture_type if result.blueprint else "unknown"
-                    ),
-                    "domain": result.blueprint.domain if result.blueprint else "unknown",
-                },
-                "verificationPassed": (
-                    len(result.verification_results) > 0
-                    and all(v.passed for v in result.verification_results)
-                    if result.verification_results
-                    else False
-                ),
+                "blueprint": blueprint_info,
+                "verificationPassed": verification_passed,
             },
         )
 

@@ -1,3 +1,7 @@
+/**
+ * @deprecated This component has been removed from the new 3-panel layout.
+ * MCP configuration will be handled elsewhere. Kept for reference during transition.
+ */
 "use client"
 
 import { useState } from "react"

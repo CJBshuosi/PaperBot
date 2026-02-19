@@ -70,7 +70,7 @@ class CodingAgent(BaseAgent):
         try:
             # Step 1: Analyze for implementation spec
             self.log("Analyzing paper for implementation details...")
-            analysis_result = await self.analysis_node.run(paper_context)
+            analysis_result = await self.analysis_node.run((paper_context, plan))
 
             if not analysis_result.success:
                 self.log(f"Analysis warning: {analysis_result.error}, using defaults")
