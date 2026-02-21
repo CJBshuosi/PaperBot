@@ -5,7 +5,6 @@ Provides endpoints for:
 - Task queue management (view/cancel/retry)
 - Run logs streaming
 - Resource metrics streaming
-- Manual job submission
 - System status
 """
 
@@ -23,16 +22,6 @@ router = APIRouter()
 
 
 # --- Request/Response Models ---
-
-
-class SubmitRequest(BaseModel):
-    """Request body for job submission"""
-
-    type: str = "paper2code"
-    paper_url: Optional[str] = None
-    paper_id: Optional[str] = None
-    executor: str = "e2b"  # e2b or docker
-    options: Dict[str, Any] = {}
 
 
 class CancelResponse(BaseModel):
@@ -165,45 +154,6 @@ async def retry_job(job_id: str, http_request: Request) -> RetryResponse:
             await manager.close()
     except Exception as e:
         return RetryResponse(status="error", old_job_id=job_id, message=str(e))
-
-
-# --- Job Submission ---
-
-
-@router.post("/sandbox/submit")
-async def submit_job(body: SubmitRequest, http_request: Request):
-    """
-    Submit a new sandbox job.
-
-    Supports Paper2Code and other job types.
-    """
-    try:
-        from paperbot.infrastructure.queue.job_manager import JobManager
-
-        manager = JobManager()
-        await manager.connect()
-        try:
-            if body.type == "paper2code":
-                result = await manager.submit_paper2code(
-                    paper_url=body.paper_url,
-                    paper_id=body.paper_id,
-                    executor=body.executor,
-                    options=body.options,
-                )
-                return {
-                    "status": "enqueued",
-                    "job_id": result["job_id"],
-                    "run_id": result["run_id"],
-                    "trace_id": result["trace_id"],
-                }
-            else:
-                raise HTTPException(status_code=400, detail=f"Unknown job type: {body.type}")
-        finally:
-            await manager.close()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Log Streaming ---
@@ -340,7 +290,7 @@ async def get_system_status(http_request: Request):
     """
     Get overall sandbox system status.
 
-    Returns status for E2B, Docker, and Redis/queue.
+    Returns status for Redis/queue.
     """
     try:
         from paperbot.infrastructure.monitoring.resource_monitor import get_resource_monitor
@@ -350,7 +300,5 @@ async def get_system_status(http_request: Request):
         return status.to_dict()
     except Exception as e:
         return {
-            "e2b": {"status": "unknown", "error": str(e)},
-            "docker": {"status": "unknown"},
-            "queue": {"status": "unknown"},
+            "queue": {"status": "unknown", "error": str(e)},
         }

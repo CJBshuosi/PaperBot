@@ -24,6 +24,10 @@ export interface AgentAction {
         mcpServer?: string
         mcpTool?: string
         mcpResult?: unknown
+        // For chat messages
+        role?: 'user' | 'assistant'
+        mode?: 'Code' | 'Plan' | 'Ask'
+        model?: string
     }
 }
 
@@ -47,6 +51,59 @@ export type PaperDraft = {
     title: string
     abstract: string
     methodSection: string
+}
+
+// Studio Paper - represents a paper being reproduced
+export type StudioPaperStatus = 'draft' | 'generating' | 'ready' | 'running' | 'completed' | 'error'
+
+export interface StudioPaper {
+    id: string
+    title: string
+    abstract: string
+    methodSection?: string
+
+    // Reproduction state
+    status: StudioPaperStatus
+    outputDir?: string
+    lastGenCodeResult?: GenCodeResult
+
+    // Workspace confirmation - must be confirmed before operations
+    workspaceConfirmed?: boolean
+
+    // Timestamps
+    createdAt: string
+    updatedAt: string
+
+    // Linked runs
+    taskIds: string[]
+}
+
+const STORAGE_KEY = 'paperbot-studio-papers'
+
+function generateId(): string {
+    return `paper-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+function loadPapersFromStorage(): StudioPaper[] {
+    if (typeof window === 'undefined') return []
+    try {
+        const stored = localStorage.getItem(STORAGE_KEY)
+        if (stored) {
+            return JSON.parse(stored) as StudioPaper[]
+        }
+    } catch (e) {
+        console.error('Failed to load papers from localStorage:', e)
+    }
+    return []
+}
+
+function savePapersToStorage(papers: StudioPaper[]): void {
+    if (typeof window === 'undefined') return
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(papers))
+    } catch (e) {
+        console.error('Failed to save papers to localStorage:', e)
+    }
 }
 
 interface StudioState {
