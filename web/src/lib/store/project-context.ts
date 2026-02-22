@@ -19,7 +19,7 @@ interface ProjectState {
 }
 
 export const useProjectContext = create<ProjectState>((set) => ({
-    files: {},
+    files: DEFAULT_FILES,
     activeFile: null,  // No file selected by default - shows "Ready to reproduce"
 
     addFile: (name, content, language = "python") => set((state) => ({

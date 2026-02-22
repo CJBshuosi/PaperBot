@@ -37,6 +37,7 @@ export interface Task {
     status: 'running' | 'completed' | 'pending' | 'error'
     actions: AgentAction[]
     createdAt: Date
+    paperId?: string  // Link task to a paper
 }
 
 export type GenCodeResult = {
@@ -66,9 +67,6 @@ export interface StudioPaper {
     status: StudioPaperStatus
     outputDir?: string
     lastGenCodeResult?: GenCodeResult
-
-    // Workspace confirmation - must be confirmed before operations
-    workspaceConfirmed?: boolean
 
     // Timestamps
     createdAt: string
@@ -107,6 +105,11 @@ function savePapersToStorage(papers: StudioPaper[]): void {
 }
 
 interface StudioState {
+    // Paper management
+    papers: StudioPaper[]
+    selectedPaperId: string | null
+
+    // Task management (scoped to selected paper)
     tasks: Task[]
     activeTaskId: string | null
     selectedFileForDiff: string | null
@@ -114,7 +117,15 @@ interface StudioState {
     lastGenCodeResult: GenCodeResult | null
     workspaceSnapshotId: number | null
 
-    // Actions
+    // Paper actions
+    addPaper: (paper: Omit<StudioPaper, 'id' | 'createdAt' | 'updatedAt' | 'taskIds' | 'status'>) => string
+    updatePaper: (paperId: string, updates: Partial<Omit<StudioPaper, 'id' | 'createdAt'>>) => void
+    deletePaper: (paperId: string) => void
+    selectPaper: (paperId: string | null) => void
+    loadPapers: () => void
+    getSelectedPaper: () => StudioPaper | null
+
+    // Task actions
     addTask: (name: string) => string
     updateTaskStatus: (taskId: string, status: Task['status']) => void
     addAction: (taskId: string, action: Omit<AgentAction, 'id' | 'timestamp'>) => void
@@ -125,7 +136,12 @@ interface StudioState {
     setWorkspaceSnapshotId: (snapshotId: number | null) => void
 }
 
-export const useStudioStore = create<StudioState>((set, _get) => ({
+export const useStudioStore = create<StudioState>((set, get) => ({
+    // Paper state
+    papers: [],
+    selectedPaperId: null,
+
+    // Task state
     tasks: [],
     activeTaskId: null,
     selectedFileForDiff: null,
@@ -133,18 +149,128 @@ export const useStudioStore = create<StudioState>((set, _get) => ({
     lastGenCodeResult: null,
     workspaceSnapshotId: null,
 
+    // Paper actions
+    addPaper: (paper) => {
+        const id = generateId()
+        const now = new Date().toISOString()
+        const newPaper: StudioPaper = {
+            ...paper,
+            id,
+            status: 'draft',
+            createdAt: now,
+            updatedAt: now,
+            taskIds: [],
+        }
+        set(state => {
+            const newPapers = [...state.papers, newPaper]
+            savePapersToStorage(newPapers)
+            return {
+                papers: newPapers,
+                selectedPaperId: id,
+                // Sync paperDraft with new paper
+                paperDraft: {
+                    title: newPaper.title,
+                    abstract: newPaper.abstract,
+                    methodSection: newPaper.methodSection || '',
+                },
+                lastGenCodeResult: null,
+                workspaceSnapshotId: null,
+            }
+        })
+        return id
+    },
+
+    updatePaper: (paperId, updates) => {
+        set(state => {
+            const newPapers = state.papers.map(p =>
+                p.id === paperId
+                    ? { ...p, ...updates, updatedAt: new Date().toISOString() }
+                    : p
+            )
+            savePapersToStorage(newPapers)
+            return { papers: newPapers }
+        })
+    },
+
+    deletePaper: (paperId) => {
+        set(state => {
+            const newPapers = state.papers.filter(p => p.id !== paperId)
+            savePapersToStorage(newPapers)
+            // Clear selection if deleted paper was selected
+            const newSelectedPaperId = state.selectedPaperId === paperId ? null : state.selectedPaperId
+            return {
+                papers: newPapers,
+                selectedPaperId: newSelectedPaperId,
+                // Clear draft if deleted paper was selected
+                ...(state.selectedPaperId === paperId ? {
+                    paperDraft: { title: '', abstract: '', methodSection: '' },
+                    lastGenCodeResult: null,
+                } : {}),
+            }
+        })
+    },
+
+    selectPaper: (paperId) => {
+        const state = get()
+        const paper = paperId ? state.papers.find(p => p.id === paperId) : null
+        set({
+            selectedPaperId: paperId,
+            // Sync paperDraft with selected paper
+            paperDraft: paper
+                ? { title: paper.title, abstract: paper.abstract, methodSection: paper.methodSection || '' }
+                : { title: '', abstract: '', methodSection: '' },
+            // Load paper's lastGenCodeResult if available
+            lastGenCodeResult: paper?.lastGenCodeResult || null,
+            workspaceSnapshotId: null,
+            // Clear active task when switching papers
+            activeTaskId: null,
+        })
+    },
+
+    loadPapers: () => {
+        const papers = loadPapersFromStorage()
+        set({ papers })
+    },
+
+    getSelectedPaper: () => {
+        const state = get()
+        return state.selectedPaperId
+            ? state.papers.find(p => p.id === state.selectedPaperId) || null
+            : null
+    },
+
+    // Task actions
     addTask: (name) => {
+        const state = get()
         const id = `task-${Date.now()}`
-        set(state => ({
-            tasks: [...state.tasks, {
+        const paperId = state.selectedPaperId
+        set(currentState => ({
+            tasks: [...currentState.tasks, {
                 id,
                 name,
                 status: 'running',
                 actions: [],
-                createdAt: new Date()
+                createdAt: new Date(),
+                paperId: paperId || undefined,
             }],
             activeTaskId: id
         }))
+
+        // Link task to paper if one is selected
+        if (paperId) {
+            const paper = state.papers.find(p => p.id === paperId)
+            if (paper) {
+                set(currentState => ({
+                    papers: currentState.papers.map(p =>
+                        p.id === paperId
+                            ? { ...p, taskIds: [...p.taskIds, id], updatedAt: new Date().toISOString() }
+                            : p
+                    )
+                }))
+                // Persist updated papers
+                savePapersToStorage(get().papers)
+            }
+        }
         return id
     },
 
@@ -178,6 +304,29 @@ export const useStudioStore = create<StudioState>((set, _get) => ({
         paperDraft: { ...state.paperDraft, ...partial }
     })),
 
-    setLastGenCodeResult: (result) => set({ lastGenCodeResult: result }),
+    setLastGenCodeResult: (result) => {
+        const state = get()
+        set({ lastGenCodeResult: result })
+        // Also update the selected paper's lastGenCodeResult and outputDir
+        if (state.selectedPaperId && result) {
+            const updates: Partial<StudioPaper> = {
+                lastGenCodeResult: result,
+                status: result.success ? 'ready' : 'error',
+            }
+            if (result.outputDir) {
+                updates.outputDir = result.outputDir
+            }
+            set(currentState => {
+                const newPapers = currentState.papers.map(p =>
+                    p.id === state.selectedPaperId
+                        ? { ...p, ...updates, updatedAt: new Date().toISOString() }
+                        : p
+                )
+                savePapersToStorage(newPapers)
+                return { papers: newPapers }
+            })
+        }
+    },
+
     setWorkspaceSnapshotId: (snapshotId) => set({ workspaceSnapshotId: snapshotId }),
 }))

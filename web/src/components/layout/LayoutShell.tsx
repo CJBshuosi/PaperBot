@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { Sidebar } from "./Sidebar"
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
 
   return (
     <div className="flex min-h-screen">

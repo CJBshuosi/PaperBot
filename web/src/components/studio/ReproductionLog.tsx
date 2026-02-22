@@ -1,17 +1,20 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { Label } from "@/components/ui/label"
 import { GenCodeResult, useStudioStore, AgentAction } from "@/lib/store/studio-store"
 import { useProjectContext } from "@/lib/store/project-context"
 import { readSSE } from "@/lib/sse"
 import { CodeBlock } from "@/components/ai-elements"
 import { DiffModal } from "./DiffViewer"
-import { WorkspaceSetupDialog } from "./WorkspaceSetupDialog"
 import { cn } from "@/lib/utils"
 import {
+    Play,
     Sparkles,
     CheckCircle2,
     AlertCircle,
@@ -24,21 +27,25 @@ import {
     ChevronRight,
     Clock,
     Loader2,
+    Zap,
+    Plus,
     X,
     Save,
-    Send,
-    Paperclip,
-    Code,
-    User,
-    MessageSquare,
-    Folder,
 } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
 import Editor from "@monaco-editor/react"
 import { useTheme } from "next-themes"
 
 type StepStatus = "idle" | "running" | "success" | "error"
-type Mode = "Code" | "Plan" | "Ask"
+type Executor = "openai_ci"
 
 const actionIcons: Record<string, React.ElementType> = {
     thinking: Sparkles,
@@ -71,23 +78,9 @@ interface ActionItemProps {
 
 function ActionItem({ action, onViewDiff, isLast }: ActionItemProps) {
     const [expanded, setExpanded] = useState(false)
-
-    // Handle chat messages with role metadata
-    const isUserMessage = action.metadata?.role === "user"
-    const isAssistantMessage = action.metadata?.role === "assistant"
-
     const iconKey = action.metadata?.functionName || action.type
-    let Icon = actionIcons[iconKey] || actionIcons[action.type] || Bot
-    let colors = actionColors[iconKey] || actionColors[action.type] || actionColors.text
-
-    // Override for chat messages
-    if (isUserMessage) {
-        Icon = User
-        colors = { bg: "bg-blue-50 dark:bg-blue-950/30", text: "text-blue-600 dark:text-blue-400", border: "border-blue-200 dark:border-blue-800" }
-    } else if (isAssistantMessage) {
-        Icon = Bot
-        colors = { bg: "bg-emerald-50 dark:bg-emerald-950/30", text: "text-emerald-600 dark:text-emerald-400", border: "border-emerald-200 dark:border-emerald-800" }
-    }
+    const Icon = actionIcons[iconKey] || actionIcons[action.type] || Bot
+    const colors = actionColors[iconKey] || actionColors[action.type] || actionColors.text
 
     const hasExpandableContent = Boolean(action.metadata?.params || action.metadata?.result)
     const stringifyPayload = (payload: unknown): string =>
@@ -157,23 +150,6 @@ function ActionItem({ action, onViewDiff, isLast }: ActionItemProps) {
                             </div>
                         ) : action.type === 'complete' ? (
                             <span className={cn("text-xs font-medium", colors.text)}>Completed</span>
-                        ) : isUserMessage ? (
-                            <div className="space-y-1">
-                                <span className="text-[10px] font-medium text-muted-foreground">You</span>
-                                <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{action.content}</p>
-                            </div>
-                        ) : isAssistantMessage ? (
-                            <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                    <span className="text-[10px] font-medium text-muted-foreground">Claude</span>
-                                    {action.metadata?.mode && (
-                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-                                            {action.metadata.mode}
-                                        </span>
-                                    )}
-                                </div>
-                                <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{action.content}</p>
-                            </div>
                         ) : (
                             <p className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed">{action.content}</p>
                         )}
@@ -189,6 +165,22 @@ function ActionItem({ action, onViewDiff, isLast }: ActionItemProps) {
     )
 }
 
+function StatusBadge({ status }: { status: StepStatus }) {
+    const props = useMemo(() => {
+        if (status === "running") return { label: "running", className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", icon: Loader2, animate: true }
+        if (status === "success") return { label: "success", className: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300", icon: CheckCircle2, animate: false }
+        if (status === "error") return { label: "error", className: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", icon: AlertCircle, animate: false }
+        return { label: "idle", className: "bg-muted text-muted-foreground", icon: null, animate: false }
+    }, [status])
+
+    return (
+        <Badge variant="secondary" className={cn("text-[10px] h-5", props.className)}>
+            {props.icon && <props.icon className={cn("h-3 w-3 mr-1", props.animate && "animate-spin")} />}
+            {props.label}
+        </Badge>
+    )
+}
+
 export function ReproductionLog() {
     const { theme } = useTheme()
     const {
@@ -197,83 +189,67 @@ export function ReproductionLog() {
         activeTaskId,
         selectedPaperId,
         lastGenCodeResult,
+        addPaper,
+        selectPaper,
         addTask,
         addAction,
         updateTaskStatus,
         setLastGenCodeResult,
         updatePaper,
-        selectPaper,
     } = useStudioStore()
 
-    const { files, activeFile, updateFile, setActiveFile } = useProjectContext()
+    const { files, activeFile, updateFile } = useProjectContext()
     const activeFileData = activeFile ? files[activeFile] : null
 
     const selectedPaper = useMemo(() =>
         selectedPaperId ? papers.find(p => p.id === selectedPaperId) ?? null : null,
         [papers, selectedPaperId]
     )
-
     const [status, setStatus] = useState<StepStatus>("idle")
     const runIdRef = useRef<string | null>(null)
-    const [mode, setMode] = useState<Mode>("Code")
-    const [model, setModel] = useState("claude-sonnet-4-5")
+    const executor: Executor = "openai_ci"
+    const allowNetwork = false
+    const [ciModel, setCiModel] = useState("gpt-4o")
+    const [pipelineRunning, setPipelineRunning] = useState(false)
+    const pipelineRunningRef = useRef(false)
     const [lastError, setLastError] = useState<string | null>(null)
     const [diffAction, setDiffAction] = useState<AgentAction | null>(null)
+    const [newPaperOpen, setNewPaperOpen] = useState(false)
+    const [newTitle, setNewTitle] = useState("")
+    const [newAbstract, setNewAbstract] = useState("")
     const [saving, setSaving] = useState(false)
-    const [messageInput, setMessageInput] = useState("")
-    const [chatHistory, setChatHistory] = useState<Array<{ role: string; content: string }>>([])
-    const [streamingContent, setStreamingContent] = useState("")
-    const [cliStatus, setCliStatus] = useState<{ available: boolean; version?: string } | null>(null)
-    const [showWorkspaceSetup, setShowWorkspaceSetup] = useState(false)
 
-    // Check Claude CLI status on mount
-    useEffect(() => {
-        fetch("/api/studio/status")
-            .then(res => res.json())
-            .then(data => {
-                setCliStatus({
-                    available: data.claude_cli === true,
-                    version: data.claude_version,
-                })
-            })
-            .catch(() => {
-                setCliStatus({ available: false })
-            })
-    }, [])
-
-    // Show workspace setup dialog when selecting an unconfirmed paper
-    useEffect(() => {
-        if (selectedPaper && !selectedPaper.workspaceConfirmed) {
-            setShowWorkspaceSetup(true)
-        } else {
-            setShowWorkspaceSetup(false)
-        }
-    }, [selectedPaper?.id, selectedPaper?.workspaceConfirmed])
-
-    const handleWorkspaceConfirm = (directory: string) => {
-        if (selectedPaperId) {
-            updatePaper(selectedPaperId, {
-                outputDir: directory,
-                workspaceConfirmed: true,
-            })
-        }
-        setShowWorkspaceSetup(false)
-    }
-
-    const handleWorkspaceCancel = () => {
-        setShowWorkspaceSetup(false)
-        // Optionally deselect the paper if user cancels
-        // selectPaper(null)
-    }
+    const [, setStepStatuses] = useState<Record<string, StepStatus>>({
+        install: "idle",
+        data: "idle",
+        train: "idle",
+        eval: "idle",
+        report: "idle",
+    })
 
     const activeTask = tasks.find(t => t.id === activeTaskId)
-    const projectDir = selectedPaper?.outputDir || lastGenCodeResult?.outputDir || null
+    const paperTasks = useMemo(() => {
+        if (!selectedPaperId) return tasks
+        return tasks.filter(t => t.paperId === selectedPaperId)
+    }, [tasks, selectedPaperId])
 
-    // Can only run operations if workspace is confirmed
-    const hasValidPaper = (selectedPaper?.title.trim().length ?? 0) > 0 && (selectedPaper?.abstract.trim().length ?? 0) > 0
-    const isWorkspaceReady = selectedPaper?.workspaceConfirmed === true
-    const canRun = hasValidPaper && isWorkspaceReady
-    const isBusy = status === "running"
+    const canRun = (selectedPaper?.title.trim().length ?? 0) > 0 && (selectedPaper?.abstract.trim().length ?? 0) > 0
+    const projectDir = selectedPaper?.outputDir || lastGenCodeResult?.outputDir || null
+    const isBusy = status === "running" || pipelineRunning
+
+    const setPipelineActive = (active: boolean) => {
+        pipelineRunningRef.current = active
+        setPipelineRunning(active)
+    }
+
+    const handleCreatePaper = () => {
+        if (newTitle.trim() && newAbstract.trim()) {
+            addPaper({ title: newTitle.trim(), abstract: newAbstract.trim() })
+            setNewTitle("")
+            setNewAbstract("")
+            setNewPaperOpen(false)
+        }
+    }
 
     const saveActiveFile = async () => {
         if (!projectDir || !activeFile || !activeFileData) return
@@ -296,10 +272,130 @@ export function ReproductionLog() {
         }
     }
 
-    const runPaper2Code = async () => {
-        if (!selectedPaper || !canRun || isBusy) return
+    const streamRunLogsToTimeline = async (runId: string, taskId: string) => {
+        const res = await fetch(`/api/sandbox/runs/${encodeURIComponent(runId)}/logs/stream`, {
+            headers: { Accept: "text/event-stream" },
+        })
+        if (!res.ok || !res.body) {
+            addAction(taskId, { type: "error", content: `Failed to stream logs (${res.status})` })
+            return
+        }
 
-        setStatus("running")
+        for await (const evt of readSSE(res.body)) {
+            if (evt?.type === "log") {
+                const data = (evt.data ?? {}) as { level?: string; message?: string }
+                const level = (data.level || "info").toLowerCase()
+                const message = data.message || ""
+                if (!message) continue
+                addAction(taskId, { type: level === "error" ? "error" : "text", content: message })
+            }
+        }
+    }
+
+    const runStep = async (
+        stepName: "install" | "data" | "train" | "eval" | "report",
+        body: Record<string, unknown>,
+        options: { projectDir?: string; pipeline?: boolean } = {}
+    ) => {
+        const pipeline = options.pipeline === true
+        const targetDir = options.projectDir ?? projectDir
+        if (!targetDir) return { ok: false, error: "Project directory not set" }
+        if (!pipeline && (status === "running" || pipelineRunningRef.current)) return { ok: false, error: "Busy" }
+        if (!pipeline) setStatus("running")
+
+        setStepStatuses((prev) => ({ ...prev, [stepName]: "running" }))
+        setLastError(null)
+
+        const taskId = addTask(`${stepName} — ${targetDir.split("/").pop()}`)
+        addAction(taskId, { type: "thinking", content: `Starting ${stepName}…` })
+
+        try {
+            const res = await fetch(`/api/runbook/${stepName}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    project_dir: targetDir,
+                    executor,
+                    allow_network: allowNetwork,
+                    model: ciModel,
+                    ...body,
+                }),
+            })
+            if (!res.ok) {
+                const text = await res.text()
+                throw new Error(`Failed to start ${stepName} (${res.status}): ${text}`)
+            }
+
+            const data = (await res.json()) as { run_id?: string; ok?: boolean; path?: string }
+
+            if (stepName === "report") {
+                if (data.ok) {
+                    setStepStatuses((prev) => ({ ...prev, [stepName]: "success" }))
+                    updateTaskStatus(taskId, "completed")
+                    addAction(taskId, { type: "complete", content: `Report generated: ${data.path}` })
+                    return { ok: true }
+                } else {
+                    setStepStatuses((prev) => ({ ...prev, [stepName]: "error" }))
+                    updateTaskStatus(taskId, "error")
+                    addAction(taskId, { type: "error", content: "Report generation failed" })
+                    setLastError("Report generation failed")
+                    return { ok: false, error: "Report generation failed" }
+                }
+            }
+
+            if (!data.run_id) throw new Error("No run_id returned")
+
+            addAction(taskId, { type: "thinking", content: `run_id: ${data.run_id}` })
+            await streamRunLogsToTimeline(data.run_id, taskId)
+
+            const statusRes = await fetch(`/api/runbook/runs/${encodeURIComponent(data.run_id)}`)
+            if (statusRes.ok) {
+                const info = (await statusRes.json()) as { status: string; exit_code?: number; error?: string }
+                if (info.status === "success") {
+                    setStepStatuses((prev) => ({ ...prev, [stepName]: "success" }))
+                    updateTaskStatus(taskId, "completed")
+                    addAction(taskId, { type: "complete", content: `${stepName} succeeded` })
+                    return { ok: true }
+                } else {
+                    setStepStatuses((prev) => ({ ...prev, [stepName]: "error" }))
+                    updateTaskStatus(taskId, "error")
+                    const message = info.error || `${stepName} finished with status: ${info.status}`
+                    addAction(taskId, { type: "error", content: message })
+                    setLastError(message)
+                    return { ok: false, error: message }
+                }
+            } else {
+                setStepStatuses((prev) => ({ ...prev, [stepName]: "success" }))
+                updateTaskStatus(taskId, "completed")
+                return { ok: true }
+            }
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e)
+            setStepStatuses((prev) => ({ ...prev, [stepName]: "error" }))
+            updateTaskStatus(taskId, "error")
+            addAction(taskId, { type: "error", content: message })
+            setLastError(message)
+            return { ok: false, error: message }
+        } finally {
+            if (!pipeline) setStatus("idle")
+        }
+    }
+
+    const runPaper2Code = async (options: { pipeline?: boolean } = {}) => {
+        const pipeline = options.pipeline === true
+        if (!selectedPaper) {
+            const error = "Select or create a paper first."
+            setLastError(error)
+            return { ok: false, error }
+        }
+        if (!canRun) {
+            const error = "Paper needs title and abstract."
+            setLastError(error)
+            return { ok: false, error }
+        }
+        if (!pipeline && (status === "running" || pipelineRunningRef.current)) return { ok: false, error: "Busy" }
+
+        if (!pipeline) setStatus("running")
         setLastError(null)
 
         if (selectedPaperId) {
@@ -346,116 +442,226 @@ export function ReproductionLog() {
                     setLastGenCodeResult(result)
                     addAction(taskId, { type: "complete", content: "Run completed" })
                     updateTaskStatus(taskId, "completed")
-                    if (selectedPaperId && outputDir) {
-                        updatePaper(selectedPaperId, { status: 'ready', outputDir })
-                    }
-                    setStatus("success")
+                    if (!pipeline) setStatus("success")
                 } else if (evt?.type === "error") {
                     addAction(taskId, { type: "error", content: evt.message || "Run failed" })
                     updateTaskStatus(taskId, "error")
                     if (selectedPaperId) updatePaper(selectedPaperId, { status: 'error' })
-                    setLastError(evt.message || "Run failed")
-                    setStatus("error")
-                    return
+                    const error = evt.message || "Run failed"
+                    setLastError(error)
+                    if (!pipeline) setStatus("error")
+                    return { ok: false, error }
                 }
             }
+            if (!outputDir) {
+                const error = "Paper2Code completed without an output directory."
+                setLastError(error)
+                if (selectedPaperId) updatePaper(selectedPaperId, { status: 'error' })
+                if (!pipeline) setStatus("error")
+                return { ok: false, error }
+            }
+            return { ok: true, outputDir }
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e)
             addAction(taskId, { type: "error", content: message })
             updateTaskStatus(taskId, "error")
             if (selectedPaperId) updatePaper(selectedPaperId, { status: 'error' })
             setLastError(message)
-            setStatus("error")
+            if (!pipeline) setStatus("error")
+            return { ok: false, error: message }
         }
     }
 
-    const handleSendMessage = async () => {
-        if (!messageInput.trim() || isBusy) return
+    const runSmoke = async (options: { projectDir?: string; pipeline?: boolean } = {}) => {
+        const pipeline = options.pipeline === true
+        const targetDir = options.projectDir ?? projectDir
+        if (!targetDir) return { ok: false, error: "Project directory not set" }
+        if (!pipeline && (status === "running" || pipelineRunningRef.current)) return { ok: false, error: "Busy" }
+        if (!pipeline) setStatus("running")
 
-        const userMessage = messageInput.trim()
-        setMessageInput("")
-        setStatus("running")
         setLastError(null)
-        setStreamingContent("")
-
-        // Create task for this chat interaction
-        const taskId = addTask(`${mode} — ${userMessage.slice(0, 40)}${userMessage.length > 40 ? "…" : ""}`)
-        addAction(taskId, { type: "text", content: userMessage, metadata: { role: "user" } })
-        updateTaskStatus(taskId, "running")
-
-        // Add to history
-        const newHistory = [...chatHistory, { role: "user", content: userMessage }]
-        setChatHistory(newHistory)
+        const taskId = addTask(`Smoke — ${targetDir.split("/").slice(-1)[0]}`)
+        addAction(taskId, { type: "thinking", content: `Starting smoke test…` })
 
         try {
-            const res = await fetch("/api/studio/chat", {
+            const res = await fetch("/api/runbook/smoke", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    message: userMessage,
-                    mode,
-                    model,
-                    paper: selectedPaper ? {
-                        title: selectedPaper.title,
-                        abstract: selectedPaper.abstract,
-                        method_section: selectedPaper.methodSection,
-                    } : undefined,
-                    project_dir: projectDir,
-                    history: chatHistory.slice(-10), // Keep last 10 messages for context
+                    project_dir: targetDir,
+                    executor,
+                    allow_network: allowNetwork,
+                    model: ciModel,
                 }),
             })
-
-            if (!res.ok || !res.body) {
-                throw new Error(`Failed to start chat (${res.status})`)
+            if (!res.ok) {
+                const text = await res.text()
+                throw new Error(`Failed to start smoke (${res.status}): ${text}`)
             }
+            const data = (await res.json()) as { run_id: string }
+            addAction(taskId, { type: "thinking", content: `run_id: ${data.run_id}` })
 
-            let fullContent = ""
-            for await (const evt of readSSE(res.body)) {
-                if (evt?.type === "progress") {
-                    const data = (evt.data ?? {}) as { delta?: string; content?: string; phase?: string; message?: string }
-                    if (data.delta) {
-                        fullContent += data.delta
-                        setStreamingContent(fullContent)
-                    } else if (data.message) {
-                        addAction(taskId, { type: "thinking", content: data.message })
-                    }
-                } else if (evt?.type === "result") {
-                    const data = (evt.data ?? {}) as { content?: string }
-                    fullContent = data.content || fullContent
-                    addAction(taskId, { type: "text", content: fullContent, metadata: { role: "assistant", mode, model } })
-                    setChatHistory([...newHistory, { role: "assistant", content: fullContent }])
+            await streamRunLogsToTimeline(data.run_id, taskId)
+
+            const statusRes = await fetch(`/api/runbook/runs/${encodeURIComponent(data.run_id)}`)
+            if (statusRes.ok) {
+                const info = (await statusRes.json()) as { status: string; exit_code?: number; error?: string }
+                if (info.status === "success") {
                     updateTaskStatus(taskId, "completed")
-                    setStreamingContent("")
-                    setStatus("success")
-                } else if (evt?.type === "error") {
-                    addAction(taskId, { type: "error", content: evt.message || "Chat failed" })
+                    addAction(taskId, { type: "complete", content: `Smoke succeeded` })
+                    if (!pipeline) setStatus("success")
+                    return { ok: true }
+                } else {
                     updateTaskStatus(taskId, "error")
-                    setLastError(evt.message || "Chat failed")
-                    setStatus("error")
-                    return
+                    const message = info.error || `Smoke finished with status: ${info.status}`
+                    addAction(taskId, { type: "error", content: message })
+                    setLastError(message)
+                    if (!pipeline) setStatus("error")
+                    return { ok: false, error: message }
                 }
+            } else {
+                updateTaskStatus(taskId, "completed")
+                if (!pipeline) setStatus("success")
+                return { ok: true }
             }
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e)
-            addAction(taskId, { type: "error", content: message })
             updateTaskStatus(taskId, "error")
+            addAction(taskId, { type: "error", content: message })
             setLastError(message)
-            setStatus("error")
+            if (!pipeline) setStatus("error")
+            return { ok: false, error: message }
         }
     }
 
+    const runPipeline = async () => {
+        if (status === "running" || pipelineRunningRef.current) return
+        if (!canRun) {
+            setLastError("Paper needs title and abstract.")
+            return
+        }
+
+        setPipelineActive(true)
+        setStatus("running")
+        setLastError(null)
+        setStepStatuses({
+            install: "idle",
+            data: "idle",
+            train: "idle",
+            eval: "idle",
+            report: "idle",
+        })
+
+        if (selectedPaperId) updatePaper(selectedPaperId, { status: 'running' })
+
+        const taskId = addTask(`Full Pipeline — ${selectedPaper?.title.slice(0, 40)}${(selectedPaper?.title.length ?? 0) > 40 ? "…" : ""}`)
+        updateTaskStatus(taskId, "running")
+        addAction(taskId, { type: "thinking", content: "Starting Paper2Code → Smoke → Install → Train → Eval → Report…" })
+
+        try {
+            const paperResult = await runPaper2Code({ pipeline: true })
+            if (!paperResult.ok) throw new Error(paperResult.error || "Paper2Code failed")
+            const pipelineProjectDir = paperResult.outputDir || projectDir
+            if (!pipelineProjectDir) throw new Error("Paper2Code did not return a project directory.")
+
+            addAction(taskId, { type: "thinking", content: "Running smoke..." })
+            const smokeResult = await runSmoke({ pipeline: true, projectDir: pipelineProjectDir })
+            if (!smokeResult.ok) throw new Error(smokeResult.error || "Smoke failed")
+
+            addAction(taskId, { type: "thinking", content: "Running install..." })
+            const installResult = await runStep("install", { pip_cache: true }, { pipeline: true, projectDir: pipelineProjectDir })
+            if (!installResult.ok) throw new Error(installResult.error || "Install failed")
+
+            addAction(taskId, { type: "thinking", content: "Running train (mini)..." })
+            const trainResult = await runStep("train", { mini_mode: true, max_epochs: 2, max_samples: 100 }, { pipeline: true, projectDir: pipelineProjectDir })
+            if (!trainResult.ok) throw new Error(trainResult.error || "Train failed")
+
+            addAction(taskId, { type: "thinking", content: "Running eval..." })
+            const evalResult = await runStep("eval", {}, { pipeline: true, projectDir: pipelineProjectDir })
+            if (!evalResult.ok) throw new Error(evalResult.error || "Eval failed")
+
+            addAction(taskId, { type: "thinking", content: "Generating report..." })
+            const reportResult = await runStep("report", { output_format: "html" }, { pipeline: true, projectDir: pipelineProjectDir })
+            if (!reportResult.ok) throw new Error(reportResult.error || "Report failed")
+
+            updateTaskStatus(taskId, "completed")
+            addAction(taskId, { type: "complete", content: "Pipeline completed successfully." })
+            if (selectedPaperId) updatePaper(selectedPaperId, { status: 'completed' })
+            setStatus("success")
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e)
+            updateTaskStatus(taskId, "error")
+            addAction(taskId, { type: "error", content: message })
+            if (selectedPaperId) updatePaper(selectedPaperId, { status: 'error' })
+            setLastError(message)
+            setStatus("error")
+        } finally {
+            setPipelineActive(false)
+        }
+    }
+
+    const openFiles = useMemo(() => Object.values(files), [files])
+    const { setActiveFile } = useProjectContext()
+
     return (
         <div className="h-full flex flex-col min-w-0 min-h-0 bg-background">
-            {/* Simplified Action Bar */}
-            <div className="px-4 py-2 flex items-center gap-2 shrink-0 border-b">
+            {/* Action buttons + file tabs row */}
+            <div className="px-4 py-2.5 flex items-center gap-1.5 shrink-0 border-b overflow-x-auto">
                 <button
-                    onClick={runPaper2Code}
+                    onClick={() => runPaper2Code()}
                     disabled={!canRun || isBusy}
-                    className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
                 >
-                    <Sparkles className="h-4 w-4" />
-                    Generate code
+                    <Sparkles className="h-3.5 w-3.5 mr-1.5 inline" />
+                    Paper2Code
                 </button>
+                <button
+                    onClick={() => runSmoke()}
+                    disabled={!projectDir || isBusy}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                >
+                    Smoke
+                </button>
+                <button
+                    onClick={() => runStep("install", { pip_cache: true })}
+                    disabled={!projectDir || isBusy}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                >
+                    Install
+                </button>
+                <button
+                    onClick={() => runStep("train", { mini_mode: true, max_epochs: 2, max_samples: 100 })}
+                    disabled={!projectDir || isBusy}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                >
+                    Train
+                </button>
+                <button
+                    onClick={() => runStep("eval", {})}
+                    disabled={!projectDir || isBusy}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                >
+                    Eval
+                </button>
+                <button
+                    onClick={() => runStep("report", { output_format: "html" })}
+                    disabled={!projectDir || isBusy}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                >
+                    Report
+                </button>
+
+                <div className="flex-1" />
+
+                <Select value={ciModel} onValueChange={setCiModel}>
+                    <SelectTrigger className="h-7 w-[90px] text-xs border-0 bg-muted/50 shrink-0">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="gpt-4o">gpt-4o</SelectItem>
+                        <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
+                    </SelectContent>
+                </Select>
             </div>
 
             {/* Error banner */}
@@ -466,11 +672,12 @@ export function ReproductionLog() {
                 </div>
             )}
 
-            {/* Main content area */}
+            {/* Main content area - Timeline or File Viewer */}
             <div className="flex-1 min-h-0 overflow-hidden">
                 {activeFileData ? (
-                    /* File Viewer */
+                    /* File Viewer - full panel when file is selected */
                     <div className="h-full flex flex-col">
+                        {/* File header */}
                         <div className="px-4 py-2 border-b flex items-center justify-between bg-muted/30 shrink-0">
                             <div className="flex items-center gap-2 text-sm">
                                 <FileCode className="h-4 w-4 text-muted-foreground" />
@@ -488,7 +695,10 @@ export function ReproductionLog() {
                                     {saving ? "Saving..." : "Save"}
                                 </Button>
                                 <button
-                                    onClick={() => setActiveFile("")}
+                                    onClick={() => {
+                                        // Close view: deselect file (file stays in Files panel)
+                                        setActiveFile("")
+                                    }}
                                     className="p-1.5 rounded hover:bg-muted transition-colors"
                                     title="Close"
                                 >
@@ -496,6 +706,7 @@ export function ReproductionLog() {
                                 </button>
                             </div>
                         </div>
+                        {/* Monaco Editor */}
                         <div className="flex-1 min-h-0 overflow-hidden">
                             <Editor
                                 height="100%"
@@ -516,148 +727,119 @@ export function ReproductionLog() {
                         </div>
                     </div>
                 ) : (
-                    /* Timeline */
+                    /* Timeline - show when no file is selected */
                     <ScrollArea className="h-full">
-                        <div className="p-4">
-                            {!activeTask || activeTask.actions.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center text-muted-foreground py-20 space-y-4">
-                                    <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center">
-                                        <Sparkles className="h-8 w-8 opacity-30" />
-                                    </div>
-                                    <div className="text-center space-y-2">
-                                        <p className="font-medium">
-                                            {selectedPaper && !selectedPaper.workspaceConfirmed
-                                                ? "Set up workspace"
-                                                : "Ready to reproduce"}
-                                        </p>
-                                        <p className="text-xs max-w-[280px]">
-                                            {!selectedPaper
-                                                ? "Select or create a paper to get started"
-                                                : !selectedPaper.workspaceConfirmed
-                                                    ? "Confirm your workspace directory to start coding"
-                                                    : "Click Generate code or send a message to get started"}
-                                        </p>
-                                        {selectedPaper && !selectedPaper.workspaceConfirmed && (
-                                            <Button
-                                                variant="outline"
-                                                size="sm"
-                                                onClick={() => setShowWorkspaceSetup(true)}
-                                                className="mt-2"
-                                            >
-                                                <Folder className="h-4 w-4 mr-2" />
-                                                Set Up Workspace
-                                            </Button>
-                                        )}
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="space-y-0">
-                                    {activeTask.actions.map((action, index) => (
-                                        <ActionItem
-                                            key={action.id}
-                                            action={action}
-                                            onViewDiff={setDiffAction}
-                                            isLast={index === activeTask.actions.length - 1 && !streamingContent}
-                                        />
-                                    ))}
-                                    {/* Streaming response indicator */}
-                                    {streamingContent && (
-                                        <div className="relative flex gap-2.5">
-                                            <div className="relative z-10 w-5 h-5 flex items-center justify-center shrink-0 rounded-md border bg-purple-50 dark:bg-purple-950/30 border-purple-200 dark:border-purple-800">
-                                                <Loader2 className="h-2.5 w-2.5 text-purple-600 dark:text-purple-400 animate-spin" />
-                                            </div>
-                                            <div className="flex-1 min-w-0 pb-3">
-                                                <p className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed">
-                                                    {streamingContent}
-                                                    <span className="inline-block w-1.5 h-3.5 bg-foreground/50 animate-pulse ml-0.5" />
-                                                </p>
-                                            </div>
-                                        </div>
-                                    )}
+                <div className="p-4">
+                    {!activeTask || activeTask.actions.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center text-muted-foreground py-20 space-y-4">
+                            <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center">
+                                <Sparkles className="h-8 w-8 opacity-30" />
+                            </div>
+                            <div className="text-center space-y-2">
+                                <p className="font-medium">Ready to reproduce</p>
+                                <p className="text-xs max-w-[280px]">
+                                    {selectedPaper
+                                        ? "Click Paper2Code to generate code from the selected paper"
+                                        : "Select or create a paper to get started"}
+                                </p>
+                            </div>
+                            {!selectedPaper && (
+                                <div className="flex items-center gap-2 pt-2">
+                                    <Select
+                                        value={selectedPaperId || ""}
+                                        onValueChange={(id) => id && selectPaper(id)}
+                                    >
+                                        <SelectTrigger className="h-9 w-[200px]">
+                                            <SelectValue placeholder="Select a paper..." />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {papers.map(paper => (
+                                                <SelectItem key={paper.id} value={paper.id}>
+                                                    {paper.title.slice(0, 40)}{paper.title.length > 40 ? "…" : ""}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-9"
+                                        onClick={() => setNewPaperOpen(true)}
+                                    >
+                                        <Plus className="h-4 w-4 mr-1" />
+                                        New
+                                    </Button>
                                 </div>
                             )}
                         </div>
+                    ) : (
+                        <div className="space-y-0">
+                            {activeTask.actions.map((action, index) => (
+                                <ActionItem
+                                    key={action.id}
+                                    action={action}
+                                    onViewDiff={setDiffAction}
+                                    isLast={index === activeTask.actions.length - 1}
+                                />
+                            ))}
+                        </div>
+                    )}
+                    </div>
                     </ScrollArea>
                 )}
             </div>
 
-            {/* Rich Input Area - CodePilot Style */}
-            <div className="border-t p-4 shrink-0">
-                <div className="border rounded-xl bg-muted/30 overflow-hidden">
-                    <Textarea
-                        value={messageInput}
-                        onChange={(e) => setMessageInput(e.target.value)}
-                        placeholder="Message Claude..."
-                        className="border-0 bg-transparent resize-none min-h-[60px] focus-visible:ring-0 px-4 py-3"
-                        onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault()
-                                handleSendMessage()
-                            }
-                        }}
-                    />
-                    <div className="px-3 py-2 flex items-center justify-between border-t bg-background/50">
-                        <div className="flex items-center gap-2">
-                            {/* Paper attachment indicator */}
-                            {selectedPaper && (
-                                <div className="flex items-center gap-1.5 px-2 py-1 bg-muted rounded-md text-xs text-muted-foreground">
-                                    <FileText className="h-3.5 w-3.5" />
-                                    <span className="max-w-[150px] truncate">{selectedPaper.title}</span>
-                                </div>
-                            )}
-                            {/* Mode selector */}
-                            <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
-                                <SelectTrigger className="h-7 w-[90px] text-xs border-0 bg-muted">
-                                    <Code className="h-3.5 w-3.5 mr-1" />
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="Code">Code</SelectItem>
-                                    <SelectItem value="Plan">Plan</SelectItem>
-                                    <SelectItem value="Ask">Ask</SelectItem>
-                                </SelectContent>
-                            </Select>
+            {/* Minimal footer with paper info */}
+            {selectedPaper && (
+                <div className="border-t px-4 py-2 flex items-center gap-2 text-xs text-muted-foreground shrink-0">
+                    <FileText className="h-3.5 w-3.5" />
+                    <span className="truncate">{selectedPaper.title}</span>
+                </div>
+            )}
+
+            {/* New Paper Dialog */}
+            <Dialog open={newPaperOpen} onOpenChange={setNewPaperOpen}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>New Paper</DialogTitle>
+                        <DialogDescription>
+                            Add a paper for code reproduction.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                        <div className="space-y-2">
+                            <Label htmlFor="title">Title</Label>
+                            <Input
+                                id="title"
+                                value={newTitle}
+                                onChange={(e) => setNewTitle(e.target.value)}
+                                placeholder="Paper title"
+                            />
                         </div>
-                        <div className="flex items-center gap-2">
-                            {/* CLI Status indicator */}
-                            {cliStatus && (
-                                <div
-                                    className={cn(
-                                        "flex items-center gap-1 px-2 py-1 rounded text-[10px]",
-                                        cliStatus.available
-                                            ? "bg-emerald-100 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400"
-                                            : "bg-amber-100 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
-                                    )}
-                                    title={cliStatus.available ? `Claude CLI ${cliStatus.version || ''}` : "Using Anthropic API"}
-                                >
-                                    <Terminal className="h-3 w-3" />
-                                    {cliStatus.available ? "CLI" : "API"}
-                                </div>
-                            )}
-                            {/* Model selector */}
-                            <Select value={model} onValueChange={setModel}>
-                                <SelectTrigger className="h-7 w-[130px] text-xs border-0 bg-muted">
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="claude-sonnet-4-5">Sonnet 4.5</SelectItem>
-                                    <SelectItem value="claude-opus-4-5">Opus 4.5</SelectItem>
-                                    <SelectItem value="claude-haiku-4-5">Haiku 4.5</SelectItem>
-                                </SelectContent>
-                            </Select>
-                            {/* Send button */}
-                            <Button
-                                size="icon"
-                                className="h-8 w-8 rounded-full"
-                                onClick={handleSendMessage}
-                                disabled={!messageInput.trim() || isBusy}
-                            >
-                                <Send className="h-4 w-4" />
-                            </Button>
+                        <div className="space-y-2">
+                            <Label htmlFor="abstract">Abstract</Label>
+                            <Textarea
+                                id="abstract"
+                                value={newAbstract}
+                                onChange={(e) => setNewAbstract(e.target.value)}
+                                placeholder="Paste the paper abstract"
+                                className="min-h-[120px]"
+                            />
                         </div>
                     </div>
-                </div>
-            </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setNewPaperOpen(false)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleCreatePaper}
+                            disabled={!newTitle.trim() || !newAbstract.trim()}
+                        >
+                            Add Paper
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* Diff Modal */}
             <DiffModal
@@ -669,16 +851,6 @@ export function ReproductionLog() {
                 onApply={() => setDiffAction(null)}
                 onReject={() => setDiffAction(null)}
             />
-
-            {/* Workspace Setup Dialog */}
-            {selectedPaper && (
-                <WorkspaceSetupDialog
-                    paper={selectedPaper}
-                    open={showWorkspaceSetup}
-                    onConfirm={handleWorkspaceConfirm}
-                    onCancel={handleWorkspaceCancel}
-                />
-            )}
         </div>
     )
 }

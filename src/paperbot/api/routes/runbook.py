@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,8 +24,13 @@ from pydantic import BaseModel, Field
 from paperbot.application.collaboration.message_schema import new_run_id
 from paperbot.infrastructure.stores.models import AgentRunModel, ArtifactModel, Base
 from paperbot.infrastructure.stores.sqlalchemy_db import SessionProvider
+from paperbot.repro.e2b_executor import E2BExecutor
+from paperbot.repro.execution_result import ExecutionResult
+from paperbot.repro.openai_ci_executor import OpenAICodeInterpreterExecutor
 
 router = APIRouter()
+
+ExecutorType = Literal["docker", "e2b", "openai_ci"]
 
 _provider = SessionProvider()
 Base.metadata.create_all(_provider.engine)
@@ -32,6 +38,15 @@ Base.metadata.create_all(_provider.engine)
 
 def _allowed_workdir(workdir: Path) -> bool:
     allowed_prefixes = [Path(tempfile.gettempdir()).resolve()]
+    # macOS: /tmp -> /private/tmp, but tempfile.gettempdir() returns /var/folders/...
+    # Add common temp paths for cross-platform compatibility
+    for tmp_path in ["/tmp", "/private/tmp"]:
+        try:
+            resolved_tmp = Path(tmp_path).resolve()
+            if resolved_tmp not in allowed_prefixes:
+                allowed_prefixes.append(resolved_tmp)
+        except Exception:
+            pass
     extra = os.getenv("PAPERBOT_RUNBOOK_ALLOW_DIR_PREFIXES", "").strip()
     if extra:
         for p in extra.split(","):
@@ -66,9 +81,419 @@ def _resolve_under_root(root: Path, relative_path: str) -> Path:
     return target
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Snapshot Management
-# ──────────────────────────────────────────────────────────────────────────────
+class SmokeRequest(BaseModel):
+    project_dir: str = Field(..., description="Project directory on the API host (typically /tmp/... from gen-code)")
+    executor: ExecutorType = Field("openai_ci", description="Execution backend: docker, e2b, or openai_ci")
+    allow_network: bool = Field(False, description="Allow network (pip install, downloads). Docker disables network by default.")
+    timeout_sec: int = Field(300, ge=10, le=3600)
+    docker_image: str = Field("python:3.10-slim", description="Docker image to use when executor=docker")
+    model: Optional[str] = Field(None, description="OpenAI model for Code Interpreter (executor=openai_ci)")
+
+
+class StepRequest(BaseModel):
+    """Base request for all runbook steps."""
+    project_dir: str = Field(..., description="Project directory on the API host")
+    executor: ExecutorType = Field("openai_ci", description="Execution backend: docker, e2b, or openai_ci")
+    allow_network: bool = Field(True, description="Allow network access")
+    timeout_sec: int = Field(600, ge=10, le=7200)
+    docker_image: str = Field("python:3.10-slim", description="Docker image for executor=docker")
+    command_override: Optional[str] = Field(None, description="Override auto-detected command")
+    model: Optional[str] = Field(None, description="OpenAI model for Code Interpreter (executor=openai_ci)")
+
+
+class InstallRequest(StepRequest):
+    """Request for install step."""
+    pip_cache: bool = Field(True, description="Use pip cache directory")
+
+
+class DataRequest(StepRequest):
+    """Request for data preparation step."""
+    data_cmd: Optional[str] = Field(None, description="Custom data command (alternative to command_override)")
+
+
+class TrainRequest(StepRequest):
+    """Request for training step."""
+    mini_mode: bool = Field(True, description="Run in mini mode with limited epochs/samples")
+    max_epochs: int = Field(2, ge=1, le=100, description="Max epochs for mini mode")
+    max_samples: int = Field(100, ge=1, le=100000, description="Max samples for mini mode")
+
+
+class EvalRequest(StepRequest):
+    """Request for evaluation step."""
+    checkpoint_path: Optional[str] = Field(None, description="Path to checkpoint file")
+
+
+class ReportRequest(BaseModel):
+    """Request for report generation (no sandbox needed)."""
+    project_dir: str = Field(..., description="Project directory")
+    run_id: Optional[str] = Field(None, description="Run ID to include in report")
+    output_format: str = Field("html", description="Output format: html or json")
+
+
+class SmokeStartResponse(BaseModel):
+    run_id: str
+    status: str = "running"
+
+
+class RunStatusResponse(BaseModel):
+    run_id: str
+    status: str
+    exit_code: Optional[int] = None
+    error: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    steps: Optional[List[Dict[str, Any]]] = None
+
+
+@router.post("/runbook/smoke", response_model=SmokeStartResponse)
+async def start_smoke(body: SmokeRequest) -> SmokeStartResponse:
+    workdir = Path(body.project_dir)
+    if not workdir.exists() or not workdir.is_dir():
+        raise HTTPException(status_code=400, detail="project_dir must be an existing directory on the API host")
+    if not _allowed_workdir(workdir):
+        raise HTTPException(
+            status_code=403,
+            detail="project_dir is not allowed; set PAPERBOT_RUNBOOK_ALLOW_DIR_PREFIXES to allow additional roots",
+        )
+
+    run_id = new_run_id()
+    started_at = datetime.now(timezone.utc).isoformat()
+    commands = _build_smoke_commands(allow_network=(body.allow_network if body.executor == "docker" else body.allow_network))
+
+    # Persist run + step records (long-term source of truth).
+    with _provider.session() as session:
+        run = AgentRunModel(
+            run_id=run_id,
+            workflow="runbook",
+            started_at=datetime.now(timezone.utc),
+            ended_at=None,
+            status="running",
+            executor_type=body.executor,
+            timeout_seconds=body.timeout_sec,
+            paper_url=None,
+            paper_id=None,
+            metadata_json=json.dumps(
+                {
+                    "kind": "smoke",
+                    "project_dir": str(workdir),
+                    "allow_network": body.allow_network,
+                    "docker_image": body.docker_image,
+                    "model": body.model,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session.merge(run)
+
+        step = RunbookStepModel(
+            run_id=run_id,
+            step_name="smoke",
+            status="running",
+            executor_type=body.executor,
+            started_at=datetime.now(timezone.utc),
+            ended_at=None,
+            command="\n".join(commands),
+            exit_code=None,
+            error=None,
+            metadata_json=json.dumps({"allow_network": body.allow_network}, ensure_ascii=False),
+        )
+        session.add(step)
+        session.commit()
+
+    logger = get_execution_logger()
+    logger.start_run(run_id)
+    logger.log(run_id, "info", f"Smoke started (executor={body.executor}, allow_network={body.allow_network})", source="system")
+    logger.log(run_id, "info", f"Project dir: {str(workdir)}", source="system")
+
+    monitor = get_resource_monitor()
+    monitor.start_run(run_id, timeout_seconds=float(body.timeout_sec))
+
+    asyncio.create_task(_run_smoke_async(run_id, workdir, body))
+    return SmokeStartResponse(run_id=run_id, status="running")
+
+
+@router.get("/runbook/detect-commands")
+async def detect_commands(project_dir: str = Query(..., description="Project directory to analyze")) -> Dict[str, Any]:
+    """Auto-detect commands for each step by analyzing project structure."""
+    workdir = Path(project_dir)
+    if not workdir.exists() or not workdir.is_dir():
+        raise HTTPException(status_code=400, detail="project_dir must be an existing directory")
+    if not _allowed_workdir(workdir):
+        raise HTTPException(status_code=403, detail="project_dir is not allowed")
+
+    return _detect_project_commands(workdir)
+
+
+@router.get("/runbook/executor-status")
+async def get_executor_status() -> Dict[str, Any]:
+    """Check availability of each executor backend."""
+    result: Dict[str, Any] = {
+        "docker": {"available": False, "error": None},
+        "e2b": {"available": False, "error": None},
+        "openai_ci": {"available": False, "error": None},
+    }
+
+    # Check Docker
+    try:
+        import docker  # type: ignore
+        client = docker.from_env()
+        client.ping()
+        result["docker"]["available"] = True
+        client.close()
+    except ImportError:
+        result["docker"]["error"] = "Docker SDK not installed (pip install docker)"
+    except Exception as e:
+        result["docker"]["error"] = f"Docker not running: {str(e)[:100]}"
+
+    # Check E2B
+    api_key = _load_e2b_api_key()
+    if api_key:
+        try:
+            from e2b_code_interpreter import Sandbox
+            result["e2b"]["available"] = True
+        except ImportError:
+            result["e2b"]["error"] = "E2B SDK not installed (pip install e2b-code-interpreter)"
+    else:
+        result["e2b"]["error"] = "E2B_API_KEY not set"
+
+    # Check OpenAI Code Interpreter
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    # Also check model endpoints for OpenAI key
+    if not openai_key or openai_key.startswith("sk-or-"):
+        try:
+            from paperbot.infrastructure.stores.model_endpoint_store import ModelEndpointStore
+            store = ModelEndpointStore(auto_create_schema=False)
+            endpoints = store.list_endpoints(enabled_only=True, include_secrets=True)
+            for ep in endpoints:
+                if ep.get("vendor") == "openai" and ep.get("api_key"):
+                    key = ep["api_key"]
+                    if key and not key.startswith("***") and not key.startswith("sk-or-"):
+                        openai_key = key
+                        break
+            store.close()
+        except Exception:
+            pass
+
+    if openai_key:
+        if openai_key.startswith("sk-or-"):
+            result["openai_ci"]["error"] = "OpenRouter key detected - need direct OpenAI key for Code Interpreter"
+        else:
+            try:
+                from openai import OpenAI
+                result["openai_ci"]["available"] = True
+            except ImportError:
+                result["openai_ci"]["error"] = "OpenAI SDK not installed (pip install openai)"
+    else:
+        result["openai_ci"]["error"] = "OPENAI_API_KEY not set (configure in Settings > Model Endpoints)"
+
+    return result
+
+
+async def _start_step(
+    step_name: str,
+    body: StepRequest,
+    commands: List[str],
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> SmokeStartResponse:
+    """Generic step starter - creates run/step records and launches async execution."""
+    workdir = Path(body.project_dir)
+    if not workdir.exists() or not workdir.is_dir():
+        raise HTTPException(status_code=400, detail="project_dir must be an existing directory on the API host")
+    if not _allowed_workdir(workdir):
+        raise HTTPException(
+            status_code=403,
+            detail="project_dir is not allowed; set PAPERBOT_RUNBOOK_ALLOW_DIR_PREFIXES to allow additional roots",
+        )
+
+    run_id = new_run_id()
+    metadata = {
+        "kind": step_name,
+        "project_dir": str(workdir),
+        "allow_network": body.allow_network,
+        "docker_image": body.docker_image,
+        "model": body.model,
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    with _provider.session() as session:
+        run = AgentRunModel(
+            run_id=run_id,
+            workflow="runbook",
+            started_at=datetime.now(timezone.utc),
+            ended_at=None,
+            status="running",
+            executor_type=body.executor,
+            timeout_seconds=body.timeout_sec,
+            paper_url=None,
+            paper_id=None,
+            metadata_json=json.dumps(metadata, ensure_ascii=False),
+        )
+        session.merge(run)
+
+        step = RunbookStepModel(
+            run_id=run_id,
+            step_name=step_name,
+            status="running",
+            executor_type=body.executor,
+            started_at=datetime.now(timezone.utc),
+            ended_at=None,
+            command="\n".join(commands),
+            exit_code=None,
+            error=None,
+            metadata_json=json.dumps({"allow_network": body.allow_network}, ensure_ascii=False),
+        )
+        session.add(step)
+        session.commit()
+
+    logger = get_execution_logger()
+    logger.start_run(run_id)
+    logger.log(run_id, "info", f"{step_name.title()} started (executor={body.executor}, allow_network={body.allow_network})", source="system")
+    logger.log(run_id, "info", f"Project dir: {str(workdir)}", source="system")
+
+    monitor = get_resource_monitor()
+    monitor.start_run(run_id, timeout_seconds=float(body.timeout_sec))
+
+    asyncio.create_task(_run_step_async(run_id, step_name, workdir, commands, body))
+    return SmokeStartResponse(run_id=run_id, status="running")
+
+
+@router.post("/runbook/install", response_model=SmokeStartResponse)
+async def start_install(body: InstallRequest) -> SmokeStartResponse:
+    """Start install step - installs dependencies."""
+    workdir = Path(body.project_dir)
+    detected = _detect_project_commands(workdir).get("install", {})
+    commands = _build_install_commands(body, detected)
+    return await _start_step("install", body, commands, {"pip_cache": body.pip_cache})
+
+
+@router.post("/runbook/data", response_model=SmokeStartResponse)
+async def start_data(body: DataRequest) -> SmokeStartResponse:
+    """Start data step - prepares dataset."""
+    workdir = Path(body.project_dir)
+    detected = _detect_project_commands(workdir).get("data", {})
+    commands = _build_data_commands(body, detected)
+    return await _start_step("data", body, commands, {"data_cmd": body.data_cmd})
+
+
+@router.post("/runbook/train", response_model=SmokeStartResponse)
+async def start_train(body: TrainRequest) -> SmokeStartResponse:
+    """Start train step - runs training (optionally in mini mode)."""
+    workdir = Path(body.project_dir)
+    detected = _detect_project_commands(workdir).get("train", {})
+    commands = _build_train_commands(body, detected)
+    return await _start_step(
+        "train",
+        body,
+        commands,
+        {"mini_mode": body.mini_mode, "max_epochs": body.max_epochs, "max_samples": body.max_samples},
+    )
+
+
+@router.post("/runbook/eval", response_model=SmokeStartResponse)
+async def start_eval(body: EvalRequest) -> SmokeStartResponse:
+    """Start eval step - runs evaluation."""
+    workdir = Path(body.project_dir)
+    detected = _detect_project_commands(workdir).get("eval", {})
+    commands = _build_eval_commands(body, detected)
+    return await _start_step("eval", body, commands, {"checkpoint_path": body.checkpoint_path})
+
+
+@router.post("/runbook/report")
+async def generate_report(body: ReportRequest) -> Dict[str, Any]:
+    """Generate execution report - runs locally (no sandbox)."""
+    workdir = Path(body.project_dir)
+    if not workdir.exists() or not workdir.is_dir():
+        raise HTTPException(status_code=400, detail="project_dir must be an existing directory")
+    if not _allowed_workdir(workdir):
+        raise HTTPException(status_code=403, detail="project_dir is not allowed")
+
+    run_id = body.run_id or new_run_id()
+    report_dir = workdir / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect execution info from the project
+    report_data: Dict[str, Any] = {
+        "run_id": run_id,
+        "project_dir": str(workdir),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "files": [],
+        "logs": [],
+    }
+
+    # List Python files
+    for py_file in workdir.rglob("*.py"):
+        try:
+            rel_path = py_file.relative_to(workdir)
+            report_data["files"].append(str(rel_path))
+        except ValueError:
+            pass
+
+    # Check for any log files
+    for log_file in workdir.rglob("*.log"):
+        try:
+            rel_path = log_file.relative_to(workdir)
+            report_data["logs"].append(str(rel_path))
+        except ValueError:
+            pass
+
+    if body.output_format == "html":
+        # Generate simple HTML report
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Execution Report - {run_id}</title>
+    <style>
+        body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+        h1 {{ color: #333; }}
+        .section {{ margin: 20px 0; padding: 15px; background: #f5f5f5; border-radius: 8px; }}
+        .file-list {{ font-family: monospace; font-size: 14px; }}
+        .timestamp {{ color: #666; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <h1>Execution Report</h1>
+    <p class="timestamp">Generated: {report_data['generated_at']}</p>
+    <p>Run ID: <code>{run_id}</code></p>
+    <p>Project: <code>{workdir}</code></p>
+
+    <div class="section">
+        <h2>Files ({len(report_data['files'])})</h2>
+        <div class="file-list">
+            {'<br>'.join(report_data['files'][:50])}
+            {'<br>...' + str(len(report_data['files']) - 50) + ' more' if len(report_data['files']) > 50 else ''}
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Log Files ({len(report_data['logs'])})</h2>
+        <div class="file-list">
+            {'<br>'.join(report_data['logs']) if report_data['logs'] else 'No log files found'}
+        </div>
+    </div>
+</body>
+</html>"""
+        report_path = report_dir / f"report_{run_id}.html"
+        report_path.write_text(html_content, encoding="utf-8")
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "format": "html",
+            "path": str(report_path),
+            "file_count": len(report_data["files"]),
+        }
+    else:
+        # JSON format
+        report_path = report_dir / f"report_{run_id}.json"
+        report_path.write_text(json.dumps(report_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "format": "json",
+            "path": str(report_path),
+            "file_count": len(report_data["files"]),
+        }
 
 
 def _snapshot_root() -> Path:
@@ -659,3 +1084,613 @@ async def revert_hunks(body: RevertHunksRequest):
     target.write_text(new_text, encoding="utf-8")
 
     return {"ok": True, "applied": applied, "failed": failed}
+
+
+@router.get("/runbook/runs/{run_id}", response_model=RunStatusResponse)
+async def get_run_status(run_id: str) -> RunStatusResponse:
+    with _provider.session() as session:
+        run = session.get(AgentRunModel, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        steps = (
+            session.query(RunbookStepModel)
+            .filter(RunbookStepModel.run_id == run_id)
+            .order_by(RunbookStepModel.id.asc())
+            .all()
+        )
+        return RunStatusResponse(
+            run_id=run.run_id,
+            status=run.status,
+            exit_code=run.get_metadata().get("exit_code"),
+            error=run.get_metadata().get("error"),
+            started_at=run.started_at.isoformat() if run.started_at else None,
+            finished_at=run.ended_at.isoformat() if run.ended_at else None,
+            steps=[
+                {
+                    "id": s.id,
+                    "name": s.step_name,
+                    "status": s.status,
+                    "executor": s.executor_type,
+                    "exit_code": s.exit_code,
+                    "error": s.error,
+                    "started_at": s.started_at.isoformat() if s.started_at else None,
+                    "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+                }
+                for s in steps
+            ],
+        )
+
+
+async def _run_smoke_async(run_id: str, workdir: Path, body: SmokeRequest) -> None:
+    logger = get_execution_logger()
+    monitor = get_resource_monitor()
+
+    try:
+        loop = asyncio.get_running_loop()
+        if body.executor == "docker":
+            result = await loop.run_in_executor(None, _run_docker_smoke_blocking, run_id, workdir, body)
+        elif body.executor == "e2b":
+            result = await loop.run_in_executor(None, _run_e2b_smoke_blocking, run_id, workdir, body)
+        else:
+            result = await loop.run_in_executor(None, _run_openai_ci_smoke_blocking, run_id, workdir, body)
+
+        status = "success" if result.success else ("failed" if result.status != "error" else "error")
+
+        with _provider.session() as session:
+            run = session.get(AgentRunModel, run_id)
+            if run is not None:
+                run.status = status
+                run.ended_at = datetime.now(timezone.utc)
+                meta = run.get_metadata()
+                meta["exit_code"] = result.exit_code
+                if result.error:
+                    meta["error"] = result.error
+                run.set_metadata(meta)
+
+            step = (
+                session.query(RunbookStepModel)
+                .filter(RunbookStepModel.run_id == run_id, RunbookStepModel.step_name == "smoke")
+                .order_by(RunbookStepModel.id.desc())
+                .first()
+            )
+            if step is not None:
+                step.status = status
+                step.ended_at = datetime.now(timezone.utc)
+                step.exit_code = result.exit_code
+                step.error = result.error
+            session.commit()
+
+        if result.success:
+            logger.log(run_id, "info", f"Smoke completed successfully (exit_code={result.exit_code})", source="system")
+        else:
+            if result.error:
+                logger.log(run_id, "error", f"Smoke failed: {result.error}", source="system")
+            logger.log(run_id, "error", f"Smoke failed (exit_code={result.exit_code})", source="system")
+    except Exception as e:
+        with _provider.session() as session:
+            run = session.get(AgentRunModel, run_id)
+            if run is not None:
+                run.status = "error"
+                run.ended_at = datetime.now(timezone.utc)
+                meta = run.get_metadata()
+                meta["error"] = str(e)
+                run.set_metadata(meta)
+            step = (
+                session.query(RunbookStepModel)
+                .filter(RunbookStepModel.run_id == run_id, RunbookStepModel.step_name == "smoke")
+                .order_by(RunbookStepModel.id.desc())
+                .first()
+            )
+            if step is not None:
+                step.status = "error"
+                step.ended_at = datetime.now(timezone.utc)
+                step.exit_code = 1
+                step.error = str(e)
+            session.commit()
+        logger.log(run_id, "error", f"Smoke runner crashed: {e}", source="system")
+    finally:
+        try:
+            with _provider.session() as session:
+                run = session.get(AgentRunModel, run_id)
+                status = run.status if run is not None else "completed"
+            monitor.stop_run(run_id, status=status)
+        except Exception:
+            pass
+        try:
+            logger.stop_run(run_id)
+        except Exception:
+            pass
+
+
+async def _run_step_async(
+    run_id: str, step_name: str, workdir: Path, commands: List[str], body: StepRequest
+) -> None:
+    """Generic async step runner - follows _run_smoke_async pattern but parameterized by step_name."""
+    logger = get_execution_logger()
+    monitor = get_resource_monitor()
+
+    try:
+        loop = asyncio.get_running_loop()
+        if body.executor == "docker":
+            result = await loop.run_in_executor(
+                None, _run_docker_step_blocking, run_id, step_name, workdir, commands, body
+            )
+        elif body.executor == "e2b":
+            result = await loop.run_in_executor(
+                None, _run_e2b_step_blocking, run_id, step_name, workdir, commands, body
+            )
+        else:
+            result = await loop.run_in_executor(
+                None, _run_openai_ci_step_blocking, run_id, step_name, workdir, commands, body
+            )
+
+        status = "success" if result.success else ("failed" if result.status != "error" else "error")
+
+        with _provider.session() as session:
+            run = session.get(AgentRunModel, run_id)
+            if run is not None:
+                run.status = status
+                run.ended_at = datetime.now(timezone.utc)
+                meta = run.get_metadata()
+                meta["exit_code"] = result.exit_code
+                if result.error:
+                    meta["error"] = result.error
+                run.set_metadata(meta)
+
+            step = (
+                session.query(RunbookStepModel)
+                .filter(RunbookStepModel.run_id == run_id, RunbookStepModel.step_name == step_name)
+                .order_by(RunbookStepModel.id.desc())
+                .first()
+            )
+            if step is not None:
+                step.status = status
+                step.ended_at = datetime.now(timezone.utc)
+                step.exit_code = result.exit_code
+                step.error = result.error
+            session.commit()
+
+        if result.success:
+            logger.log(run_id, "info", f"{step_name.title()} completed successfully (exit_code={result.exit_code})", source="system")
+        else:
+            if result.error:
+                logger.log(run_id, "error", f"{step_name.title()} failed: {result.error}", source="system")
+            logger.log(run_id, "error", f"{step_name.title()} failed (exit_code={result.exit_code})", source="system")
+    except Exception as e:
+        with _provider.session() as session:
+            run = session.get(AgentRunModel, run_id)
+            if run is not None:
+                run.status = "error"
+                run.ended_at = datetime.now(timezone.utc)
+                meta = run.get_metadata()
+                meta["error"] = str(e)
+                run.set_metadata(meta)
+            step = (
+                session.query(RunbookStepModel)
+                .filter(RunbookStepModel.run_id == run_id, RunbookStepModel.step_name == step_name)
+                .order_by(RunbookStepModel.id.desc())
+                .first()
+            )
+            if step is not None:
+                step.status = "error"
+                step.ended_at = datetime.now(timezone.utc)
+                step.exit_code = 1
+                step.error = str(e)
+            session.commit()
+        logger.log(run_id, "error", f"{step_name.title()} runner crashed: {e}", source="system")
+    finally:
+        try:
+            with _provider.session() as session:
+                run = session.get(AgentRunModel, run_id)
+                status = run.status if run is not None else "completed"
+            monitor.stop_run(run_id, status=status)
+        except Exception:
+            pass
+        try:
+            logger.stop_run(run_id)
+        except Exception:
+            pass
+
+
+def _build_smoke_commands(*, allow_network: bool) -> List[str]:
+    commands: List[str] = []
+    commands.append("python -V")
+    commands.append("python -m pip --version || true")
+    if allow_network:
+        commands.append("test -f requirements.txt && python -m pip install -r requirements.txt || true")
+    commands.append("python -m compileall -q .")
+    return commands
+
+
+def _detect_project_commands(workdir: Path) -> Dict[str, Dict[str, Any]]:
+    """Analyze project structure to suggest commands for each step."""
+    results: Dict[str, Dict[str, Any]] = {}
+
+    # Install: requirements.txt, setup.py, pyproject.toml
+    if (workdir / "requirements.txt").exists():
+        results["install"] = {"detected": True, "command": "pip install -r requirements.txt"}
+    elif (workdir / "setup.py").exists():
+        results["install"] = {"detected": True, "command": "pip install -e ."}
+    elif (workdir / "pyproject.toml").exists():
+        results["install"] = {"detected": True, "command": "pip install -e ."}
+    else:
+        results["install"] = {"detected": False, "command": None}
+
+    # Data: download_data.py, prepare_data.py, get_data.py
+    data_patterns = ["download_data.py", "prepare_data.py", "get_data.py", "data.py"]
+    for pattern in data_patterns:
+        matches = list(workdir.rglob(pattern))
+        if matches:
+            rel_path = matches[0].relative_to(workdir)
+            results["data"] = {"detected": True, "command": f"python {rel_path}"}
+            break
+    else:
+        results["data"] = {"detected": False, "command": None}
+
+    # Train: train.py, main.py
+    if (workdir / "train.py").exists():
+        results["train"] = {"detected": True, "command": "python train.py"}
+    elif (workdir / "main.py").exists():
+        results["train"] = {"detected": True, "command": "python main.py train"}
+    elif (workdir / "run.py").exists():
+        results["train"] = {"detected": True, "command": "python run.py"}
+    else:
+        results["train"] = {"detected": False, "command": None}
+
+    # Eval: eval.py, evaluate.py, test.py
+    eval_names = ["eval.py", "evaluate.py", "test.py"]
+    for name in eval_names:
+        if (workdir / name).exists():
+            results["eval"] = {"detected": True, "command": f"python {name}"}
+            break
+    else:
+        results["eval"] = {"detected": False, "command": None}
+
+    return results
+
+
+def _build_install_commands(body: InstallRequest, detected: Dict[str, Any]) -> List[str]:
+    """Build commands for install step."""
+    commands = ["python -V", "pip -V"]
+    if body.command_override:
+        commands.append(body.command_override)
+    elif detected.get("command"):
+        commands.append(detected["command"])
+    else:
+        commands.append("test -f requirements.txt && pip install -r requirements.txt || true")
+    return commands
+
+
+def _build_data_commands(body: DataRequest, detected: Dict[str, Any]) -> List[str]:
+    """Build commands for data preparation step."""
+    # Install dependencies first (each step runs in fresh container)
+    commands = ["test -f requirements.txt && pip install -q -r requirements.txt || true"]
+    if body.command_override:
+        commands.append(body.command_override)
+    elif body.data_cmd:
+        commands.append(body.data_cmd)
+    elif detected.get("command"):
+        commands.append(detected["command"])
+    else:
+        commands.append("echo 'No data command detected'")
+    return commands
+
+
+def _build_train_commands(body: TrainRequest, detected: Dict[str, Any]) -> List[str]:
+    """Build commands for training step."""
+    # Install dependencies first (each step runs in fresh container)
+    commands = ["test -f requirements.txt && pip install -q -r requirements.txt || true"]
+    base = body.command_override or detected.get("command") or "python train.py"
+    if body.mini_mode:
+        # Try with mini mode flags, fall back to base command if flags not supported
+        commands.append(f"{base} --max_epochs {body.max_epochs} --max_samples {body.max_samples} || {base}")
+    else:
+        commands.append(base)
+    return commands
+
+
+def _build_eval_commands(body: EvalRequest, detected: Dict[str, Any]) -> List[str]:
+    """Build commands for evaluation step."""
+    # Install dependencies first (each step runs in fresh container)
+    commands = ["test -f requirements.txt && pip install -q -r requirements.txt || true"]
+    base = body.command_override or detected.get("command") or "python eval.py"
+    if body.checkpoint_path:
+        commands.append(f"{base} --checkpoint {body.checkpoint_path}")
+    else:
+        commands.append(base)
+    return commands
+
+
+def _load_e2b_api_key() -> Optional[str]:
+    """Load E2B API key from environment or saved settings."""
+    # Check environment first
+    key = os.getenv("E2B_API_KEY")
+    if key:
+        return key
+
+    # Check saved settings file
+    settings_file = Path.home() / ".paperbot" / "sandbox_settings.json"
+    if settings_file.exists():
+        try:
+            import json
+            settings = json.loads(settings_file.read_text())
+            key = settings.get("e2b_api_key")
+            if key:
+                # Also set in environment for this session
+                os.environ["E2B_API_KEY"] = key
+                return key
+        except Exception:
+            pass
+    return None
+
+
+def _resolve_ci_model(requested: Optional[str]) -> str:
+    if requested:
+        return requested
+    return os.getenv("PAPERBOT_CI_MODEL") or "gpt-4.1"
+
+
+def _run_e2b_smoke_blocking(run_id: str, workdir: Path, body: SmokeRequest) -> ExecutionResult:
+    logger = get_execution_logger()
+
+    # Load API key from settings if not in environment
+    api_key = _load_e2b_api_key()
+
+    executor = E2BExecutor(api_key=api_key)
+    if not executor.available():
+        return ExecutionResult(status="error", exit_code=1, error="E2B not available (missing SDK or E2B_API_KEY)")
+
+    # Use a single shell invocation so compound commands work reliably.
+    commands = _build_smoke_commands(allow_network=body.allow_network)
+    import shlex
+    script = "set -e\n" + "\n".join(commands) + "\n"
+    result = executor.run(workdir=workdir, commands=[f"/bin/sh -lc {shlex.quote(script)}"], timeout_sec=body.timeout_sec)
+    if result.logs:
+        for line in result.logs.splitlines():
+            logger.log(run_id, "info", line, source="stdout")
+    return result
+
+
+def _run_openai_ci_smoke_blocking(run_id: str, workdir: Path, body: SmokeRequest) -> ExecutionResult:
+    logger = get_execution_logger()
+    if body.allow_network:
+        logger.log(run_id, "warning", "Code Interpreter ignores allow_network; network is restricted.", source="system")
+
+    model = _resolve_ci_model(body.model)
+    executor = OpenAICodeInterpreterExecutor(model=model)
+    commands = _build_smoke_commands(allow_network=False)
+    return executor.run(workdir=workdir, commands=commands, run_id=run_id, logger=logger, timeout_sec=body.timeout_sec)
+
+
+def _run_docker_smoke_blocking(run_id: str, workdir: Path, body: SmokeRequest) -> ExecutionResult:
+    logger = get_execution_logger()
+
+    try:
+        import docker  # type: ignore
+        from docker.errors import DockerException, APIError  # type: ignore
+    except Exception:
+        return ExecutionResult(status="error", exit_code=1, error="Docker SDK not installed. Install `docker` python package.")
+
+    client = None
+    try:
+        client = docker.from_env()
+    except DockerException as e:
+        return ExecutionResult(status="error", exit_code=1, error=f"Docker not available: {e}")
+
+    commands = _build_smoke_commands(allow_network=body.allow_network)
+    script = "set -e\n" + "\n".join(commands) + "\n"
+    command = ["/bin/sh", "-lc", script]
+
+    start = time.time()
+    container = None
+    waiter_done = threading.Event()
+    result: Dict[str, Any] = {"exit_code": 1, "timed_out": False, "error": None}
+
+    cache_dir = Path(tempfile.gettempdir()) / "paperbot_cache" / run_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        binds = {
+            str(workdir): {"bind": "/workspace", "mode": "rw"},  # rw needed for compileall to write .pyc
+            str(cache_dir): {"bind": "/cache", "mode": "rw"},
+        }
+
+        container = client.containers.run(
+            body.docker_image,
+            command=command,
+            working_dir="/workspace",
+            detach=True,
+            network_disabled=not body.allow_network,
+            volumes=binds,
+            environment={"PIP_CACHE_DIR": "/cache/pip"},
+        )
+
+        def waiter() -> None:
+            try:
+                res = container.wait(timeout=body.timeout_sec)  # type: ignore[union-attr]
+                result["exit_code"] = int(res.get("StatusCode", 1))
+            except Exception as e:
+                result["timed_out"] = True
+                result["error"] = str(e)
+                try:
+                    container.kill()  # type: ignore[union-attr]
+                except Exception:
+                    pass
+            finally:
+                waiter_done.set()
+
+        threading.Thread(target=waiter, daemon=True).start()
+
+        try:
+            for raw in container.logs(stream=True, follow=True):  # type: ignore[union-attr]
+                line = raw.decode(errors="ignore").rstrip("\n")
+                if line:
+                    logger.log(run_id, "info", line, source="stdout")
+                if waiter_done.is_set():
+                    # container may still flush trailing logs; keep draining
+                    continue
+        except APIError as e:
+            result["error"] = str(e)
+
+        waiter_done.wait(timeout=5)
+        duration = time.time() - start
+
+        if result["timed_out"]:
+            return ExecutionResult(
+                status="failed",
+                exit_code=int(result.get("exit_code") or 1),
+                error=f"Timeout after {body.timeout_sec}s",
+                duration_sec=duration,
+            )
+
+        exit_code = result.get("exit_code")
+        if exit_code is None:
+            exit_code = 1
+        exit_code = int(exit_code)
+        status = "success" if exit_code == 0 else "failed"
+        return ExecutionResult(status=status, exit_code=exit_code, duration_sec=duration, error=result.get("error"))
+    finally:
+        if container is not None:
+            try:
+                container.remove(force=True)  # type: ignore[union-attr]
+            except Exception:
+                pass
+        try:
+            if client is not None:
+                client.close()
+        except Exception:
+            pass
+
+
+def _run_e2b_step_blocking(
+    run_id: str, step_name: str, workdir: Path, commands: List[str], body: StepRequest
+) -> ExecutionResult:
+    """Generic E2B step executor."""
+    logger = get_execution_logger()
+
+    api_key = _load_e2b_api_key()
+    executor = E2BExecutor(api_key=api_key)
+    if not executor.available():
+        return ExecutionResult(status="error", exit_code=1, error="E2B not available (missing SDK or E2B_API_KEY)")
+
+    # Build script with explicit cd to /home/user where files are uploaded
+    script = "set -e\ncd /home/user\n" + "\n".join(commands) + "\n"
+    # Use /bin/bash without -l to avoid login shell issues with 'source'
+    result = executor.run(workdir=workdir, commands=[f"/bin/bash -c {shlex.quote(script)}"], timeout_sec=body.timeout_sec)
+    if result.logs:
+        for line in result.logs.splitlines():
+            logger.log(run_id, "info", line, source="stdout")
+    return result
+
+
+def _run_openai_ci_step_blocking(
+    run_id: str, step_name: str, workdir: Path, commands: List[str], body: StepRequest
+) -> ExecutionResult:
+    logger = get_execution_logger()
+    if body.allow_network:
+        logger.log(run_id, "warning", "Code Interpreter ignores allow_network; network is restricted.", source="system")
+
+    model = _resolve_ci_model(body.model)
+    executor = OpenAICodeInterpreterExecutor(model=model)
+    return executor.run(workdir=workdir, commands=commands, run_id=run_id, logger=logger, timeout_sec=body.timeout_sec)
+
+
+def _run_docker_step_blocking(
+    run_id: str, step_name: str, workdir: Path, commands: List[str], body: StepRequest
+) -> ExecutionResult:
+    """Generic Docker step executor."""
+    logger = get_execution_logger()
+
+    try:
+        import docker  # type: ignore
+        from docker.errors import DockerException, APIError  # type: ignore
+    except Exception:
+        return ExecutionResult(status="error", exit_code=1, error="Docker SDK not installed. Install `docker` python package.")
+
+    client = None
+    try:
+        client = docker.from_env()
+    except DockerException as e:
+        return ExecutionResult(status="error", exit_code=1, error=f"Docker not available: {e}")
+
+    script = "set -e\n" + "\n".join(commands) + "\n"
+    command = ["/bin/sh", "-lc", script]
+
+    start = time.time()
+    container = None
+    waiter_done = threading.Event()
+    result: Dict[str, Any] = {"exit_code": 1, "timed_out": False, "error": None}
+
+    cache_dir = Path(tempfile.gettempdir()) / "paperbot_cache" / run_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        binds = {
+            str(workdir): {"bind": "/workspace", "mode": "rw"},  # rw for steps that write (train, eval)
+            str(cache_dir): {"bind": "/cache", "mode": "rw"},
+        }
+
+        container = client.containers.run(
+            body.docker_image,
+            command=command,
+            working_dir="/workspace",
+            detach=True,
+            network_disabled=not body.allow_network,
+            volumes=binds,
+            environment={"PIP_CACHE_DIR": "/cache/pip"},
+        )
+
+        def waiter() -> None:
+            try:
+                res = container.wait(timeout=body.timeout_sec)  # type: ignore[union-attr]
+                result["exit_code"] = int(res.get("StatusCode", 1))
+            except Exception as e:
+                result["timed_out"] = True
+                result["error"] = str(e)
+                try:
+                    container.kill()  # type: ignore[union-attr]
+                except Exception:
+                    pass
+            finally:
+                waiter_done.set()
+
+        threading.Thread(target=waiter, daemon=True).start()
+
+        try:
+            for raw in container.logs(stream=True, follow=True):  # type: ignore[union-attr]
+                line = raw.decode(errors="ignore").rstrip("\n")
+                if line:
+                    logger.log(run_id, "info", line, source="stdout")
+                if waiter_done.is_set():
+                    continue
+        except APIError as e:
+            result["error"] = str(e)
+
+        waiter_done.wait(timeout=5)
+        duration = time.time() - start
+
+        if result["timed_out"]:
+            return ExecutionResult(
+                status="failed",
+                exit_code=int(result.get("exit_code") or 1),
+                error=f"Timeout after {body.timeout_sec}s",
+                duration_sec=duration,
+            )
+
+        exit_code = result.get("exit_code")
+        if exit_code is None:
+            exit_code = 1
+        exit_code = int(exit_code)
+        status = "success" if exit_code == 0 else "failed"
+        return ExecutionResult(status=status, exit_code=exit_code, duration_sec=duration, error=result.get("error"))
+    finally:
+        if container is not None:
+            try:
+                container.remove(force=True)  # type: ignore[union-attr]
+            except Exception:
+                pass
+        try:
+            if client is not None:
+                client.close()
+        except Exception:
+            pass

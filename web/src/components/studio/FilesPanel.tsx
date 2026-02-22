@@ -7,16 +7,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { useStudioStore } from "@/lib/store/studio-store"
 import { useProjectContext } from "@/lib/store/project-context"
 import { cn } from "@/lib/utils"
-import { FileText, Folder, FolderOpen, RefreshCw, Search, ChevronRight, ChevronDown, FolderInput } from "lucide-react"
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog"
-import { Label } from "@/components/ui/label"
+import { FileText, Folder, FolderOpen, RefreshCw, Search, ChevronRight, ChevronDown } from "lucide-react"
 
 type FileIndexResponse = {
     project_dir: string
@@ -113,9 +104,9 @@ function FileTreeItem({ node, depth, activeFile, expandedDirs, onToggleDir, onSe
                         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                     )}
                     {isExpanded ? (
-                        <FolderOpen className="h-4 w-4 text-blue-500 shrink-0" />
+                        <FolderOpen className="h-4 w-4 text-amber-500 shrink-0" />
                     ) : (
-                        <Folder className="h-4 w-4 text-blue-500 shrink-0" />
+                        <Folder className="h-4 w-4 text-amber-500 shrink-0" />
                     )}
                     <span className="truncate">{node.name}</span>
                 </button>
@@ -150,15 +141,8 @@ function FileTreeItem({ node, depth, activeFile, expandedDirs, onToggleDir, onSe
     )
 }
 
-function truncatePath(path: string, maxLength: number = 30): string {
-    if (path.length <= maxLength) return path
-    const parts = path.split('/')
-    if (parts.length <= 2) return '...' + path.slice(-maxLength + 3)
-    return parts[0] + '/.../' + parts.slice(-2).join('/')
-}
-
 export function FilesPanel() {
-    const { papers, selectedPaperId, lastGenCodeResult, updatePaper } = useStudioStore()
+    const { papers, selectedPaperId, lastGenCodeResult } = useStudioStore()
     const selectedPaper = useMemo(() =>
         selectedPaperId ? papers.find(p => p.id === selectedPaperId) ?? null : null,
         [papers, selectedPaperId]
@@ -172,8 +156,7 @@ export function FilesPanel() {
     const [loadingIndex, setLoadingIndex] = useState(false)
     const [query, setQuery] = useState("")
     const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
-    const [dirDialogOpen, setDirDialogOpen] = useState(false)
-    const [newDirPath, setNewDirPath] = useState("")
+
 
     const filteredFiles = useMemo(() => {
         const q = query.trim().toLowerCase()
@@ -233,70 +216,44 @@ export function FilesPanel() {
         })
     }
 
-    const handleSetDirectory = () => {
-        if (!selectedPaperId || !newDirPath.trim()) return
-        updatePaper(selectedPaperId, { outputDir: newDirPath.trim() })
-        setDirDialogOpen(false)
-        setNewDirPath("")
-    }
-
-    const openDirDialog = () => {
-        setNewDirPath(projectDir || "")
-        setDirDialogOpen(true)
-    }
-
-
     return (
-        <div className="h-full min-w-0 min-h-0 bg-muted/30 dark:bg-zinc-900/50 flex flex-col overflow-hidden">
+        <div className="h-full min-w-0 min-h-0 bg-muted/30 dark:bg-zinc-900/50 flex flex-col overflow-hidden border-l">
             {/* Header */}
-            <div className="px-4 py-3 shrink-0 border-b">
-                <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-semibold text-muted-foreground tracking-wide">FILES</span>
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        onClick={refreshIndex}
-                        disabled={!projectDir || loadingIndex}
-                    >
-                        <RefreshCw className={cn("h-3.5 w-3.5", loadingIndex && "animate-spin")} />
-                    </Button>
-                </div>
-
-                {/* Directory Path - Clickable */}
-                <button
-                    onClick={openDirDialog}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-md transition-colors text-left"
-                    title={projectDir || "Click to set output directory"}
+            <div className="px-4 h-12 flex items-center justify-between shrink-0">
+                <span className="text-sm font-semibold">Files</span>
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={refreshIndex}
+                    disabled={!projectDir || loadingIndex}
                 >
-                    <FolderInput className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate flex-1">
-                        {projectDir ? truncatePath(projectDir) : "Set output directory..."}
-                    </span>
-                </button>
+                    <RefreshCw className={cn("h-4 w-4", loadingIndex && "animate-spin")} />
+                </Button>
             </div>
 
             {/* Search */}
-            <div className="px-3 py-2">
+            <div className="px-3 pb-2">
                 <div className="relative">
                     <Search className="absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
                     <Input
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Filter files..."
-                        className="pl-8 h-8 bg-muted/50 dark:bg-zinc-800/50 border-0 rounded-lg focus-visible:ring-1"
+                        className="pl-8 h-8 bg-background/60 border-0 focus-visible:ring-1"
                         disabled={!projectDir}
                     />
                 </div>
             </div>
 
-            {/* File Tree */}
+            {/* File Tree or Open Files */}
             <ScrollArea className="flex-1 min-h-0">
                 <div className="px-2 pb-4">
                     {projectDir ? (
+                        /* Show file tree when project directory exists */
                         fileTree.length === 0 ? (
                             <div className="text-sm text-muted-foreground text-center py-8">
-                                {loadingIndex ? "Loading..." : "No files yet"}
+                                {loadingIndex ? "Loading..." : "No files"}
                             </div>
                         ) : (
                             fileTree.map(node => (
@@ -312,6 +269,7 @@ export function FilesPanel() {
                             ))
                         )
                     ) : openFiles.length > 0 ? (
+                        /* Show open files when no project directory */
                         openFiles.map((file) => (
                             <button
                                 key={file.name}
@@ -328,49 +286,11 @@ export function FilesPanel() {
                     ) : (
                         <div className="flex flex-col items-center justify-center text-muted-foreground py-12 px-4 text-center">
                             <Folder className="h-10 w-10 mb-3 opacity-20" />
-                            <p className="text-sm">Set a directory or generate code</p>
+                            <p className="text-sm">Run Paper2Code to generate files</p>
                         </div>
                     )}
                 </div>
             </ScrollArea>
-
-            {/* Directory Selection Dialog */}
-            <Dialog open={dirDialogOpen} onOpenChange={setDirDialogOpen}>
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>Set Output Directory</DialogTitle>
-                        <DialogDescription>
-                            Enter the local directory path where generated code will be saved for this paper.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 py-2">
-                        <div className="space-y-2">
-                            <Label htmlFor="dir-path">Directory Path</Label>
-                            <Input
-                                id="dir-path"
-                                value={newDirPath}
-                                onChange={(e) => setNewDirPath(e.target.value)}
-                                placeholder="/Users/username/projects/paper-code"
-                                className="font-mono text-sm"
-                            />
-                            <div className="text-xs text-muted-foreground space-y-1">
-                                <p>Enter the full path to a directory on your local machine.</p>
-                                <p className="text-muted-foreground/70">
-                                    Tip: In terminal, navigate to your folder and run <code className="bg-muted px-1 rounded">pwd</code> to get the full path.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setDirDialogOpen(false)}>
-                            Cancel
-                        </Button>
-                        <Button onClick={handleSetDirectory} disabled={!newDirPath.trim() || !selectedPaperId}>
-                            Set Directory
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
         </div>
     )
 }

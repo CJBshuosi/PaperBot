@@ -1,3 +1,7 @@
+/**
+ * @deprecated This component has been replaced by PapersPanel and NewPaperModal
+ * in the new 3-panel CodePilot-style layout. Kept for reference during transition.
+ */
 "use client"
 
 import { useState } from "react"
