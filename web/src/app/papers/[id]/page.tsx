@@ -6,6 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Download, Play, MessageSquare, FileCode, Bot } from "lucide-react"
+import Link from "next/link"
 
 import { ImpactRadar } from "@/components/paper/ImpactRadar"
 import { SentimentChart } from "@/components/paper/SentimentChart"
@@ -32,8 +33,10 @@ export default async function PaperPage({ params }: { params: Promise<{ id: stri
                     <Button variant="outline">
                         <MessageSquare className="mr-2 h-4 w-4" /> Chat
                     </Button>
-                    <Button>
-                        <Play className="mr-2 h-4 w-4" /> Run Reproduction
+                    <Button asChild>
+                        <Link href={`/studio?title=${encodeURIComponent(paper.title)}&abstract=${encodeURIComponent(paper.abstract)}`}>
+                            <Play className="mr-2 h-4 w-4" /> Run Reproduction
+                        </Link>
                     </Button>
                 </div>
             </div>

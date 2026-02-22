@@ -23,6 +23,7 @@ from .routes import (
     newsletter,
     harvest,
     model_endpoints,
+    studio_chat,
 )
 from paperbot.infrastructure.event_log.logging_event_log import LoggingEventLog
 from paperbot.infrastructure.event_log.composite_event_log import CompositeEventLog
@@ -69,6 +70,7 @@ app.include_router(paperscool.router, prefix="/api", tags=["PapersCool"])
 app.include_router(newsletter.router, prefix="/api", tags=["Newsletter"])
 app.include_router(harvest.router, prefix="/api", tags=["Harvest"])
 app.include_router(model_endpoints.router, prefix="/api", tags=["Model Endpoints"])
+app.include_router(studio_chat.router, prefix="/api", tags=["Studio Chat"])
 
 
 @app.on_event("startup")

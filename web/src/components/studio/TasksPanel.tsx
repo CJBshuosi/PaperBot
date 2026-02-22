@@ -1,3 +1,7 @@
+/**
+ * @deprecated This component has been merged into ReproductionLog
+ * in the new 3-panel CodePilot-style layout. Kept for reference during transition.
+ */
 "use client"
 
 import { useStudioStore, Task } from "@/lib/store/studio-store"
