@@ -13,7 +13,6 @@ from .routes import (
     gen_code,
     review,
     chat,
-    studio_chat,
     runs,
     jobs,
     sandbox,
@@ -24,6 +23,7 @@ from .routes import (
     newsletter,
     harvest,
     model_endpoints,
+    studio_chat,
 )
 from paperbot.infrastructure.event_log.logging_event_log import LoggingEventLog
 from paperbot.infrastructure.event_log.composite_event_log import CompositeEventLog
@@ -60,7 +60,6 @@ app.include_router(analyze.router, prefix="/api", tags=["Paper Analysis"])
 app.include_router(gen_code.router, prefix="/api", tags=["Paper2Code"])
 app.include_router(review.router, prefix="/api", tags=["Review"])
 app.include_router(chat.router, prefix="/api", tags=["Chat"])
-app.include_router(studio_chat.router, prefix="/api", tags=["Studio Chat"])
 app.include_router(runs.router, prefix="/api", tags=["Runs"])
 app.include_router(jobs.router, prefix="/api", tags=["Jobs"])
 app.include_router(sandbox.router, prefix="/api", tags=["Sandbox"])
@@ -71,6 +70,7 @@ app.include_router(paperscool.router, prefix="/api", tags=["PapersCool"])
 app.include_router(newsletter.router, prefix="/api", tags=["Newsletter"])
 app.include_router(harvest.router, prefix="/api", tags=["Harvest"])
 app.include_router(model_endpoints.router, prefix="/api", tags=["Model Endpoints"])
+app.include_router(studio_chat.router, prefix="/api", tags=["Studio Chat"])
 
 
 @app.on_event("startup")

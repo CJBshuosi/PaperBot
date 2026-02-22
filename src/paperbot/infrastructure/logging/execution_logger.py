@@ -74,7 +74,7 @@ class ExecutionLogger:
         Usage:
             logger = ExecutionLogger()
             callback = logger.get_log_callback(run_id)
-            executor = SomeExecutor(log_callback=callback)
+            executor = DockerExecutor(log_callback=callback)
         """
         def callback(level: str, message: str, source: str = "executor") -> None:
             entry = LogEntry(
